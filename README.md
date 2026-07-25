@@ -160,6 +160,15 @@ rossi validate --continue-on-error crates/rossi/examples/*.eventb
 # Skip semantic checks for .zip inputs, or skip advisory lints
 rossi validate --no-semantic crates/rossi/examples/base-model.zip
 rossi validate --no-lints crates/rossi/examples/base-model.zip
+
+# Write the report to a file instead of the terminal (any format)
+rossi validate --format sarif --output rossi.sarif ./my-project
+
+# Fail on advisory lints too, not just errors
+rossi validate --deny-warnings ./my-project
+
+# Name the analysis a SARIF run belongs to
+rossi validate --format sarif --sarif-category rossi ./my-project
 ```
 
 **Text output:**
@@ -180,6 +189,7 @@ Summary:
 [
   {
     "file": "crates/rossi/examples/counter.eventb",
+    "input": "file",
     "success": true,
     "component_type": "Context",
     "component_name": "counter_ctx"
@@ -192,6 +202,38 @@ For `.zip` archives, it also runs rossi-build semantic checks and advisory
 lints unless `--no-semantic` is set; `--no-lints` keeps semantic checks but
 drops advisory lint rows. Directory inputs are treated as unzipped Rodin
 projects and require semantic checks, so `--no-semantic` is rejected for them.
+
+#### Locating a diagnostic
+
+A row names the input in `file` and, when the diagnostic belongs to one
+component inside it, the member in `inner_filename`. `input` says how the two
+join: a `directory` member is a real path (`my-project/M.eventb`), while an
+`archive` member uses the archive separator (`model.zip!/M.bum`) because no
+such file exists on disk. SARIF `artifactLocation.uri` values follow the same
+rule, so a directory member resolves against the repository tree.
+
+#### Using it in CI
+
+`--format sarif` always emits exactly **one** `runs[]` entry, however many
+files, directories and archives it was given. Code scanning
+[rejects an upload whose runs share a category][sarif-runs], so this is what
+lets a whole workspace be uploaded in a single SARIF file. `--sarif-category`
+names that run, and `--output` writes it where an upload step can find it:
+
+```yaml
+- run: rossi validate --format sarif --sarif-category rossi --output rossi.sarif models/
+  continue-on-error: true          # upload the findings even when the gate fails
+- uses: github/codeql-action/upload-sarif@v4
+  with:
+    sarif_file: rossi.sarif
+    category: rossi
+```
+
+Advisory lints exit 0 by default; add `--deny-warnings` to gate on them too.
+It changes only the exit code — a warning is still reported as a warning in
+every format, so code scanning records the severity the rule actually has.
+
+[sarif-runs]: https://github.blog/changelog/2025-07-21-code-scanning-will-stop-combining-multiple-sarif-runs-uploaded-in-the-same-sarif-file/
 
 ### Import (Rodin → Event-B text)
 
