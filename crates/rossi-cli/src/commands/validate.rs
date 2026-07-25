@@ -50,6 +50,12 @@ pub struct ValidateArgs {
     #[arg(short, long, value_name = "FILE")]
     output: Option<PathBuf>,
 
+    /// Name this SARIF run's analysis category (`runs[].automationDetails.id`).
+    /// A repository uploading more than one rossi run — one per project, say —
+    /// keeps them apart by giving each its own category.
+    #[arg(long, value_name = "NAME")]
+    sarif_category: Option<String>,
+
     /// Reported file name for `-` (stdin) input (default: `<stdin>`).
     #[arg(long, value_name = "PATH")]
     stdin_filename: Option<String>,
@@ -246,6 +252,12 @@ pub fn run(cli: ValidateArgs) -> ExitCode {
         eprintln!("rossi validate: {e}");
         return ExitCode::from(2);
     }
+    if cli.sarif_category.is_some() && cli.format != OutputFormat::Sarif {
+        // Silently ignoring it would hide a typo in a CI step that believes it
+        // is tagging its upload.
+        eprintln!("rossi validate: --sarif-category requires --format sarif");
+        return ExitCode::from(2);
+    }
     let mut report = match Report::open(cli.output.as_deref()) {
         Ok(report) => report,
         Err(e) => {
@@ -302,7 +314,9 @@ pub fn run(cli: ValidateArgs) -> ExitCode {
             OutputFormat::Text if stopped_early || cli.quiet || results.len() <= 1 => Ok(()),
             OutputFormat::Text => write_summary(&mut report, &results),
             OutputFormat::Json => report.structured(|out| write_json(&results, out)),
-            OutputFormat::Sarif => report.structured(|out| sarif::emit(&results, out)),
+            OutputFormat::Sarif => {
+                report.structured(|out| sarif::emit(&results, cli.sarif_category.as_deref(), out))
+            }
         })
         .and_then(|()| report.flush());
 
@@ -1160,6 +1174,7 @@ mod tests {
             no_semantic: false,
             no_lints: false,
             output: None,
+            sarif_category: None,
             stdin_filename: None,
         };
         let results = validate_text_source(Input::file(Path::new("m.eventb")), None, source, &cli);
@@ -1193,6 +1208,7 @@ mod tests {
             no_semantic: false,
             no_lints: false,
             output: None,
+            sarif_category: None,
             stdin_filename: None,
         };
         let results = validate_text_source(Input::file(Path::new("m.eventb")), None, source, &cli);

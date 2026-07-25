@@ -817,6 +817,111 @@ fn validate_text_joins_directory_members_as_paths() {
 }
 
 #[test]
+fn validate_sarif_category_names_the_analysis() {
+    // A repository uploading more than one rossi analysis tells them apart by
+    // category, which code scanning reads from runs[].automationDetails.id.
+    let tmp = lint_fixture_dir("rossi-cli-sarif-category");
+    let output = rossi_command()
+        .args([
+            "validate",
+            "--format",
+            "sarif",
+            "--sarif-category",
+            "rossi-models",
+            tmp.to_str().unwrap(),
+        ])
+        .output()
+        .expect("Failed to execute command");
+
+    let doc: serde_json::Value =
+        serde_json::from_slice(&output.stdout).expect("SARIF output should be valid");
+    assert_eq!(doc["runs"][0]["automationDetails"]["id"], "rossi-models");
+
+    // Absent unless asked for: an untagged run must not claim a category.
+    let untagged = rossi_command()
+        .args(["validate", "--format", "sarif", tmp.to_str().unwrap()])
+        .output()
+        .expect("Failed to execute command");
+    let doc: serde_json::Value =
+        serde_json::from_slice(&untagged.stdout).expect("SARIF output should be valid");
+    assert!(doc["runs"][0]["automationDetails"].is_null());
+
+    std::fs::remove_dir_all(&tmp).ok();
+}
+
+#[test]
+fn validate_sarif_category_requires_the_sarif_format() {
+    for format in ["text", "json"] {
+        let output = rossi_command()
+            .args([
+                "validate",
+                "--format",
+                format,
+                "--sarif-category",
+                "rossi",
+                "../rossi/examples/counter.eventb",
+            ])
+            .output()
+            .expect("Failed to execute command");
+        assert_eq!(output.status.code(), Some(2), "format {format}");
+        assert!(
+            String::from_utf8_lossy(&output.stderr).contains("--sarif-category requires"),
+            "format {format} should explain the misuse"
+        );
+    }
+}
+
+#[test]
+fn validate_sarif_emits_one_run_for_many_inputs() {
+    // Since 2025-07-21 code scanning rejects an upload whose runs share a
+    // category, so a consumer relies on rossi producing exactly one run
+    // however many inputs it was given.
+    let dir = lint_fixture_dir("rossi-cli-sarif-single-run");
+    let (zip_tmp, zip_path) = lint_fixture_zip("rossi-cli-sarif-single-run-zip");
+    let broken = broken_member_dir("rossi-cli-sarif-single-run-broken");
+
+    let output = rossi_command()
+        .args([
+            "validate",
+            "--format",
+            "sarif",
+            dir.to_str().unwrap(),
+            zip_path.to_str().unwrap(),
+            broken.to_str().unwrap(),
+            "../rossi/examples/counter.eventb",
+        ])
+        .output()
+        .expect("Failed to execute command");
+
+    let doc: serde_json::Value =
+        serde_json::from_slice(&output.stdout).expect("SARIF output should be valid");
+    let runs = doc["runs"].as_array().expect("runs array");
+    assert_eq!(runs.len(), 1, "four inputs must still be one run");
+    // …and that run really did collect rows from more than one input.
+    let uris: Vec<String> = runs[0]["results"]
+        .as_array()
+        .expect("results array")
+        .iter()
+        .map(|r| {
+            r["locations"][0]["physicalLocation"]["artifactLocation"]["uri"]
+                .as_str()
+                .unwrap_or_default()
+                .to_string()
+        })
+        .collect();
+    for input in [dir.to_str().unwrap(), zip_path.to_str().unwrap()] {
+        assert!(
+            uris.iter().any(|u| u.starts_with(input)),
+            "no result from {input}: {uris:?}"
+        );
+    }
+
+    std::fs::remove_dir_all(&dir).ok();
+    std::fs::remove_dir_all(&zip_tmp).ok();
+    std::fs::remove_dir_all(&broken).ok();
+}
+
+#[test]
 fn validate_output_writes_the_structured_report_to_a_file() {
     // A CI step wants the report in a file it can upload, without depending on
     // shell redirection inside a composite action.

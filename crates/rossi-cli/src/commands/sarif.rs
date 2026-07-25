@@ -15,32 +15,46 @@ const SCHEMA_URI: &str = "https://raw.githubusercontent.com/oasis-tcs/sarif-spec
 const INFORMATION_URI: &str = "https://github.com/eventb-rossi/rossi";
 
 /// Serialise `results` as a SARIF 2.1.0 document and write it to `out`.
-pub fn emit(results: &[ValidationResult], mut out: impl Write) -> io::Result<()> {
-    let doc = build_document(results);
+///
+/// `category` names the analysis this run belongs to. Whatever the inputs,
+/// every row goes into the one run — code scanning rejects an upload whose
+/// runs share a category, so a document that split rows across runs could not
+/// be uploaded at all.
+pub fn emit(
+    results: &[ValidationResult],
+    category: Option<&str>,
+    mut out: impl Write,
+) -> io::Result<()> {
+    let doc = build_document(results, category);
     serde_json::to_writer_pretty(&mut out, &doc)
         .map_err(|e| io::Error::new(e.io_error_kind().unwrap_or(io::ErrorKind::Other), e))?;
     writeln!(out)?;
     Ok(())
 }
 
-fn build_document(results: &[ValidationResult]) -> Value {
+fn build_document(results: &[ValidationResult], category: Option<&str>) -> Value {
     let rules: Vec<Value> = RuleId::all().iter().map(|r| rule_descriptor(*r)).collect();
     let sarif_results: Vec<Value> = results.iter().filter_map(result_to_sarif).collect();
+
+    let mut run = json!({
+        "tool": {
+            "driver": {
+                "name": "rossi",
+                "version": env!("CARGO_PKG_VERSION"),
+                "informationUri": INFORMATION_URI,
+                "rules": rules,
+            }
+        },
+        "results": sarif_results,
+    });
+    if let Some(category) = category {
+        run["automationDetails"] = json!({ "id": category });
+    }
 
     json!({
         "$schema": SCHEMA_URI,
         "version": "2.1.0",
-        "runs": [{
-            "tool": {
-                "driver": {
-                    "name": "rossi",
-                    "version": env!("CARGO_PKG_VERSION"),
-                    "informationUri": INFORMATION_URI,
-                    "rules": rules,
-                }
-            },
-            "results": sarif_results,
-        }]
+        "runs": [run],
     })
 }
 
