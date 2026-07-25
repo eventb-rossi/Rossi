@@ -711,6 +711,111 @@ fn validate_sarif_output_is_valid() {
     std::fs::remove_dir_all(&tmp).ok();
 }
 
+/// Write the lint fixture (machine + seen context) as loose files in a fresh
+/// temp directory — the unzipped Rodin project layout.
+fn lint_fixture_dir(prefix: &str) -> PathBuf {
+    let tmp = tempdir_unique(prefix);
+    std::fs::write(tmp.join("Ctx.buc"), LINT_FIXTURE_BUC).unwrap();
+    std::fs::write(tmp.join("Lint.bum"), LINT_FIXTURE_BUM).unwrap();
+    tmp
+}
+
+/// The `artifactLocation.uri` of the first result carrying one.
+fn first_sarif_uri(stdout: &str) -> String {
+    let doc: serde_json::Value =
+        serde_json::from_str(stdout).expect("SARIF output should be valid JSON");
+    doc["runs"][0]["results"][0]["locations"][0]["physicalLocation"]["artifactLocation"]["uri"]
+        .as_str()
+        .expect("a result should carry an artifactLocation.uri")
+        .to_string()
+}
+
+#[test]
+fn validate_sarif_directory_member_uri_is_a_real_path() {
+    // A SARIF consumer resolves artifactLocation.uri against the repository
+    // tree, so a member of a *directory* must be the path it really is —
+    // `proj/Lint.bum`, never the archive form `proj!/Lint.bum`.
+    let tmp = lint_fixture_dir("rossi-cli-sarif-dir");
+    let output = rossi_command()
+        .args(["validate", "--format", "sarif", tmp.to_str().unwrap()])
+        .output()
+        .expect("Failed to execute command");
+
+    let uri = first_sarif_uri(&String::from_utf8_lossy(&output.stdout));
+    assert_eq!(uri, format!("{}/Lint.bum", tmp.display()));
+    assert!(
+        !uri.contains("!/"),
+        "directory members are real paths: {uri}"
+    );
+
+    std::fs::remove_dir_all(&tmp).ok();
+}
+
+#[test]
+fn validate_sarif_archive_member_uri_keeps_archive_separator() {
+    // The other half of the rule: an archive member is not a file on disk, so
+    // it keeps SARIF's `!/` separator.
+    let (tmp, zip_path) = lint_fixture_zip("rossi-cli-sarif-zip-uri");
+    let output = rossi_command()
+        .args(["validate", "--format", "sarif", zip_path.to_str().unwrap()])
+        .output()
+        .expect("Failed to execute command");
+
+    let uri = first_sarif_uri(&String::from_utf8_lossy(&output.stdout));
+    assert_eq!(uri, format!("{}!/Lint.bum", zip_path.display()));
+
+    std::fs::remove_dir_all(&tmp).ok();
+}
+
+#[test]
+fn validate_json_reports_what_the_input_was() {
+    // A consumer joining `file` and `inner_filename` itself needs to know
+    // which separator applies, so every row says what its input was.
+    let dir = lint_fixture_dir("rossi-cli-json-input-kind");
+    let (zip_tmp, zip_path) = lint_fixture_zip("rossi-cli-json-input-kind-zip");
+
+    for (input, expected) in [
+        (dir.to_str().unwrap(), "directory"),
+        (zip_path.to_str().unwrap(), "archive"),
+        ("../rossi/examples/counter.eventb", "file"),
+    ] {
+        let output = rossi_command()
+            .args(["validate", "--format", "json", input])
+            .output()
+            .expect("Failed to execute command");
+        let rows: serde_json::Value =
+            serde_json::from_slice(&output.stdout).expect("JSON output should be valid");
+        let rows = rows.as_array().expect("rows array");
+        assert!(!rows.is_empty(), "{input} produced no rows");
+        for row in rows {
+            assert_eq!(row["input"], expected, "row: {row}");
+        }
+    }
+
+    std::fs::remove_dir_all(&dir).ok();
+    std::fs::remove_dir_all(&zip_tmp).ok();
+}
+
+#[test]
+fn validate_text_joins_directory_members_as_paths() {
+    // The human format follows the same rule, so the reported location can be
+    // opened (or clicked) directly.
+    let tmp = lint_fixture_dir("rossi-cli-text-dir-path");
+    let output = rossi_command()
+        .args(["validate", tmp.to_str().unwrap()])
+        .output()
+        .expect("Failed to execute command");
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let member = format!("{}/Lint.bum", tmp.display());
+    assert!(
+        stdout.contains(&member),
+        "expected `{member}` in output: {stdout}"
+    );
+
+    std::fs::remove_dir_all(&tmp).ok();
+}
+
 #[test]
 fn validate_sarif_includes_parse_error_region_issue_42() {
     // A reserved word used as a constant name: SARIF must carry a

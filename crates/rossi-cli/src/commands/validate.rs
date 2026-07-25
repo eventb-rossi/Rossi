@@ -69,12 +69,63 @@ pub struct Region {
     pub end_column: usize,
 }
 
+/// What a row's `file` names, and so how its `inner_filename` attaches to it.
+///
+/// SARIF consumers resolve `artifactLocation.uri` against the repository tree,
+/// so a member of a directory has to render as the path it really is
+/// (`proj/M.eventb`), while a member of an archive keeps an archive separator
+/// (`model.zip!/M.bum`) because no such file exists on disk.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "lowercase")]
+pub enum InputKind {
+    /// A single component file, or stdin. Carries no members.
+    File,
+    /// An unzipped Rodin project directory; members are files inside it.
+    Directory,
+    /// A Rodin `.zip` archive; members are entries in it.
+    Archive,
+}
+
+/// A validation input: the path as it was given on the command line, plus what
+/// that path is. Threaded into every row so a consumer can rebuild the path of
+/// the member file a diagnostic belongs to.
+#[derive(Debug, Clone, Copy)]
+struct Input<'a> {
+    path: &'a Path,
+    kind: InputKind,
+}
+
+impl<'a> Input<'a> {
+    fn file(path: &'a Path) -> Self {
+        Self {
+            path,
+            kind: InputKind::File,
+        }
+    }
+
+    fn directory(path: &'a Path) -> Self {
+        Self {
+            path,
+            kind: InputKind::Directory,
+        }
+    }
+
+    fn archive(path: &'a Path) -> Self {
+        Self {
+            path,
+            kind: InputKind::Archive,
+        }
+    }
+}
+
 /// One row of the validation report — a parsed component, a parse failure,
 /// or a semantic/lint diagnostic. All constructors live below so the
 /// derived `success` / `severity` pair stays consistent.
 #[derive(Debug, Serialize)]
 pub struct ValidationResult {
     pub file: PathBuf,
+    /// What `file` is, and so how `inner_filename` joins to it.
+    pub input: InputKind,
     pub success: bool,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub inner_filename: Option<String>,
@@ -100,6 +151,27 @@ pub struct ValidationResult {
     /// loose-text parse errors, where the source is available to resolve it.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub region: Option<Region>,
+}
+
+impl ValidationResult {
+    /// `file` and `inner_filename` joined into one displayable path.
+    ///
+    /// A directory member is a real file on disk, so it joins with a path
+    /// separator; an archive member is not, so it joins with
+    /// `archive_separator` — `:` in the human format, SARIF's `!/` in the
+    /// SARIF writer.
+    pub fn joined_path(&self, archive_separator: &str) -> String {
+        let base = self.file.display().to_string();
+        let Some(inner) = &self.inner_filename else {
+            return base;
+        };
+        match self.input {
+            InputKind::Archive => format!("{base}{archive_separator}{inner}"),
+            InputKind::Directory | InputKind::File => {
+                format!("{}/{inner}", base.trim_end_matches(['/', '\\']))
+            }
+        }
+    }
 }
 
 fn ser_severity<S: Serializer>(value: &Option<Severity>, s: S) -> Result<S::Ok, S::Error> {
@@ -183,7 +255,7 @@ fn validate_file(file: &Path, cli: &ValidateArgs) -> Vec<ValidationResult> {
 
     if !file.exists() {
         return vec![error_result(
-            file,
+            Input::file(file),
             None,
             format!("File not found: {}", file.display()),
             None,
@@ -208,23 +280,23 @@ fn validate_text_file(file: &Path, cli: &ValidateArgs) -> Vec<ValidationResult> 
         Ok(s) => s,
         Err(e) => {
             return vec![error_result(
-                file,
+                Input::file(file),
                 None,
                 format!("Failed to read file: {e}"),
                 None,
             )];
         }
     };
-    validate_text_source(file, &source, cli)
+    validate_text_source(Input::file(file), &source, cli)
 }
 
 /// Validate Event-B `-` (stdin) text, reported under `--stdin-filename`.
 fn validate_stdin(cli: &ValidateArgs) -> Vec<ValidationResult> {
     let display = Path::new(cli.stdin_filename.as_deref().unwrap_or("<stdin>"));
     match eventb_io::read_stdin_to_string() {
-        Ok(source) => validate_text_source(display, &source, cli),
+        Ok(source) => validate_text_source(Input::file(display), &source, cli),
         Err(e) => vec![error_result(
-            display,
+            Input::file(display),
             None,
             format!("Failed to read standard input: {e}"),
             None,
@@ -238,24 +310,24 @@ fn validate_stdin(cli: &ValidateArgs) -> Vec<ValidationResult> {
 /// duplicate-name errors (EB021/EB022, semantic, from the same shared core
 /// the SC uses) and the component-local lints. The reference-based lints
 /// need the project paths (directories, zip archives).
-fn validate_text_source(display: &Path, source: &str, cli: &ValidateArgs) -> Vec<ValidationResult> {
+fn validate_text_source(input: Input, source: &str, cli: &ValidateArgs) -> Vec<ValidationResult> {
     match parse_components(source) {
         Ok(components) => {
             let mut results: Vec<ValidationResult> = components
                 .iter()
-                .map(|c| success_result(display, None, c))
+                .map(|c| success_result(input, None, c))
                 .collect();
             for component in &components {
                 if !cli.no_semantic {
                     for diag in rossi_build::duplicates::component_duplicate_diagnostics(component)
                     {
                         // Loose text is a single source; every span indexes into it.
-                        results.push(fold_diagnostic(display, diag, None, Some(source)));
+                        results.push(fold_diagnostic(input, diag, None, Some(source)));
                     }
                 }
                 if !cli.no_lints {
                     for diag in rossi_build::lint::run_component(component) {
-                        results.push(fold_diagnostic(display, diag, None, Some(source)));
+                        results.push(fold_diagnostic(input, diag, None, Some(source)));
                     }
                 }
             }
@@ -273,7 +345,7 @@ fn validate_text_source(display: &Path, source: &str, cli: &ValidateArgs) -> Vec
                 .filter_map(precise_formula_error)
                 .map(|(err, absolute_span)| {
                     let mut result = error_result(
-                        display,
+                        input,
                         None,
                         format!("{err}"),
                         Some(rule_for_parse_error(err)),
@@ -290,12 +362,8 @@ fn validate_text_source(display: &Path, source: &str, cli: &ValidateArgs) -> Vec
             let only_precise_errors =
                 !results.is_empty() && results.len() == recovered.errors.len();
             if !only_precise_errors {
-                let mut fallback = error_result(
-                    display,
-                    None,
-                    format!("{e}"),
-                    Some(RuleId::CamilleParseError),
-                );
+                let mut fallback =
+                    error_result(input, None, format!("{e}"), Some(RuleId::CamilleParseError));
                 fallback.region = parse_error_region(&e, source);
                 results.push(fallback);
             }
@@ -344,11 +412,12 @@ fn precise_formula_error(err: &ParseError) -> Option<(&ParseError, Option<rossi:
 /// file still gets a granular diagnostic — an already-broken archive forgoes
 /// per-project attribution, which it never had.
 fn validate_zip_file(file: &Path, cli: &ValidateArgs) -> Vec<ValidationResult> {
+    let input = Input::archive(file);
     let bytes = match fs::read(file) {
         Ok(b) => b,
         Err(e) => {
             return vec![error_result(
-                file,
+                input,
                 None,
                 format!("Failed to read zip file: {e}"),
                 None,
@@ -375,7 +444,7 @@ fn validate_zip_file(file: &Path, cli: &ValidateArgs) -> Vec<ValidationResult> {
         .collect();
     if projects.is_empty() {
         return vec![error_result(
-            file,
+            input,
             None,
             "No Event-B components found in zip file".to_string(),
             None,
@@ -394,14 +463,14 @@ fn validate_zip_file(file: &Path, cli: &ValidateArgs) -> Vec<ValidationResult> {
         };
         for pc in &dp.components {
             results.push(success_result(
-                file,
+                input,
                 Some(format!("{prefix}{}", pc.filename)),
                 &pc.component,
             ));
         }
         if !cli.no_semantic {
             let project = dp.into_project();
-            fold_semantic(&project, file, cli, &prefix, &mut results);
+            fold_semantic(&project, input, cli, &prefix, &mut results);
         }
     }
     results
@@ -417,6 +486,7 @@ fn validate_zip_flat_fallback(
     name: &str,
     cli: &ValidateArgs,
 ) -> Vec<ValidationResult> {
+    let input = Input::archive(file);
     let parse_result = parse_zip_with_recovery(bytes);
     let mut results = Vec::new();
     let mut had_parse_error = false;
@@ -424,7 +494,7 @@ fn validate_zip_flat_fallback(
     for err in parse_result.get_errors() {
         had_parse_error = true;
         results.push(error_result(
-            file,
+            input,
             None,
             format!("{err}"),
             Some(rule_for_parse_error(err)),
@@ -434,7 +504,7 @@ fn validate_zip_flat_fallback(
     if let Some(components) = parse_result.component {
         if components.is_empty() && results.is_empty() {
             results.push(error_result(
-                file,
+                input,
                 None,
                 "No Event-B components found in zip file".to_string(),
                 None,
@@ -442,12 +512,16 @@ fn validate_zip_flat_fallback(
             had_parse_error = true;
         } else {
             for named in components {
-                results.push(success_result(file, Some(named.filename), &named.component));
+                results.push(success_result(
+                    input,
+                    Some(named.filename),
+                    &named.component,
+                ));
             }
         }
     } else if results.is_empty() {
         results.push(error_result(
-            file,
+            input,
             None,
             "Failed to parse zip file".to_string(),
             None,
@@ -458,9 +532,9 @@ fn validate_zip_flat_fallback(
     if !cli.no_semantic && !had_parse_error {
         match Project::from_zip_bytes(name, bytes) {
             // The fallback treats the whole archive as one project (no prefix).
-            Ok(project) => fold_semantic(&project, file, cli, "", &mut results),
+            Ok(project) => fold_semantic(&project, input, cli, "", &mut results),
             Err(e) => results.push(error_result(
-                file,
+                input,
                 None,
                 format!("{e}"),
                 rule_for_build_error(&e),
@@ -472,11 +546,12 @@ fn validate_zip_flat_fallback(
 }
 
 fn validate_directory(dir: &Path, cli: &ValidateArgs) -> Vec<ValidationResult> {
+    let input = Input::directory(dir);
     let mut results = Vec::new();
 
     if cli.no_semantic {
         results.push(error_result(
-            dir,
+            input,
             None,
             "directory inputs require semantic checks; drop --no-semantic or pass a .zip / .eventb file".to_string(),
             None,
@@ -488,16 +563,16 @@ fn validate_directory(dir: &Path, cli: &ValidateArgs) -> Vec<ValidationResult> {
         Ok(project) => {
             for pc in &project.components {
                 results.push(success_result(
-                    dir,
+                    input,
                     Some(pc.filename.clone()),
                     &pc.component,
                 ));
             }
             // A directory is loaded as a single project (no prefix).
-            fold_semantic(&project, dir, cli, "", &mut results);
+            fold_semantic(&project, input, cli, "", &mut results);
         }
         Err(e) => results.push(error_result(
-            dir,
+            input,
             None,
             format!("{e}"),
             rule_for_build_error(&e),
@@ -513,29 +588,30 @@ fn validate_directory(dir: &Path, cli: &ValidateArgs) -> Vec<ValidationResult> {
 /// project they came from.
 fn fold_semantic(
     project: &Project,
-    file: &Path,
+    input: Input,
     cli: &ValidateArgs,
     prefix: &str,
     out: &mut Vec<ValidationResult>,
 ) {
     let build = rossi_build::build(project);
     for diag in build.diagnostics {
-        out.push(fold_project_diagnostic(file, diag, project, prefix));
+        out.push(fold_project_diagnostic(input, diag, project, prefix));
     }
     if !cli.no_lints {
         for diag in rossi_build::lint::run(project) {
-            out.push(fold_project_diagnostic(file, diag, project, prefix));
+            out.push(fold_project_diagnostic(input, diag, project, prefix));
         }
     }
 }
 
-fn success_result(file: &Path, inner: Option<String>, component: &Component) -> ValidationResult {
+fn success_result(input: Input, inner: Option<String>, component: &Component) -> ValidationResult {
     let (component_type, component_name) = match component {
         Component::Context(c) => ("Context", c.name.clone()),
         Component::Machine(m) => ("Machine", m.name.clone()),
     };
     ValidationResult {
-        file: file.to_path_buf(),
+        file: input.path.to_path_buf(),
+        input: input.kind,
         success: true,
         inner_filename: inner,
         error: None,
@@ -553,7 +629,7 @@ fn success_result(file: &Path, inner: Option<String>, component: &Component) -> 
 /// component the span indexes into — when both are present. `inner_filename`
 /// names the component file inside a directory/archive so editors open it.
 fn fold_diagnostic(
-    file: &Path,
+    input: Input,
     diag: Diagnostic,
     inner_filename: Option<String>,
     source: Option<&str>,
@@ -563,7 +639,8 @@ fn fold_diagnostic(
         .zip(source)
         .map(|(span, src)| span_to_region(src, span));
     ValidationResult {
-        file: file.to_path_buf(),
+        file: input.path.to_path_buf(),
+        input: input.kind,
         success: diag.severity != Severity::Error,
         inner_filename,
         error: Some(diag.message),
@@ -584,7 +661,7 @@ fn fold_diagnostic(
 /// project). Components imported from Rodin XML carry no source, so their
 /// diagnostics stay region-less.
 fn fold_project_diagnostic(
-    file: &Path,
+    input: Input,
     diag: Diagnostic,
     project: &Project,
     prefix: &str,
@@ -602,7 +679,7 @@ fn fold_project_diagnostic(
     let pc = if carriers.next().is_some() { None } else { pc };
     let inner = pc.map(|pc| format!("{prefix}{}", pc.filename));
     let source = pc.and_then(|pc| pc.source.as_deref());
-    fold_diagnostic(file, diag, inner, source)
+    fold_diagnostic(input, diag, inner, source)
 }
 
 /// Pick the right [`RuleId`] for an XML-path [`ParseError`] surfaced by
@@ -657,13 +734,14 @@ fn rule_for_build_error(err: &rossi_build::Error) -> Option<RuleId> {
 }
 
 fn error_result(
-    file: &Path,
+    input: Input,
     inner: Option<String>,
     message: String,
     rule_id: Option<RuleId>,
 ) -> ValidationResult {
     ValidationResult {
-        file: file.to_path_buf(),
+        file: input.path.to_path_buf(),
+        input: input.kind,
         success: false,
         inner_filename: inner,
         error: Some(message),
@@ -720,10 +798,10 @@ fn span_to_region(source: &str, span: rossi::ast::Span) -> Region {
 }
 
 fn print_text_result(result: &ValidationResult) {
-    let mut file_info = match &result.inner_filename {
-        Some(inner) => format!("{}:{}", result.file.display(), inner),
-        None => format!("{}", result.file.display()),
-    };
+    // A directory member is joined as the real path it is (`proj/M.eventb`),
+    // so the location is clickable; an archive member keeps the historical
+    // `model.zip:M.bum`.
+    let mut file_info = result.joined_path(":");
     // Append the 1-indexed start position when known (issue #42).
     if let Some(region) = &result.region {
         file_info = format!("{file_info}:{}:{}", region.start_line, region.start_column);
@@ -895,7 +973,7 @@ mod tests {
             .into_iter()
             .find(|d| d.rule_id == Some(RuleId::ShadowedName))
             .expect("UNION shadows the quantified-union token");
-        let result = fold_diagnostic(Path::new("c.eventb"), diag, None, Some(source));
+        let result = fold_diagnostic(Input::file(Path::new("c.eventb")), diag, None, Some(source));
         let region = result.region.expect("region resolved from the lint span");
         assert_eq!((region.start_line, region.start_column), (3, 5));
         assert_eq!((region.end_line, region.end_column), (3, 10));
@@ -916,7 +994,7 @@ mod tests {
             no_lints: false,
             stdin_filename: None,
         };
-        let results = validate_text_source(Path::new("m.eventb"), source, &cli);
+        let results = validate_text_source(Input::file(Path::new("m.eventb")), source, &cli);
         let failures: Vec<_> = results.iter().filter(|r| !r.success).collect();
         assert_eq!(failures.len(), 1, "exactly one failure row: {results:?}");
         assert_eq!(failures[0].rule_id, Some(RuleId::AssignmentInPredicate));
@@ -948,7 +1026,7 @@ mod tests {
             no_lints: false,
             stdin_filename: None,
         };
-        let results = validate_text_source(Path::new("m.eventb"), source, &cli);
+        let results = validate_text_source(Input::file(Path::new("m.eventb")), source, &cli);
         assert!(
             results
                 .iter()
@@ -1029,7 +1107,8 @@ mod tests {
             .into_iter()
             .find(|d| d.message.contains("could not infer type"))
             .expect("untyped constant is flagged");
-        let result = fold_project_diagnostic(Path::new("proj"), diag, &project, "");
+        let result =
+            fold_project_diagnostic(Input::directory(Path::new("proj")), diag, &project, "");
         assert_eq!(result.inner_filename.as_deref(), Some("C.eventb"));
         let region = result.region.expect("region from the component source");
         assert_eq!((region.start_line, region.start_column), (3, 5));
@@ -1047,7 +1126,12 @@ mod tests {
             .into_iter()
             .find(|d| d.message.contains("could not infer type"))
             .expect("untyped constant is flagged");
-        let result = fold_project_diagnostic(Path::new("proj"), diag, &project, "Sub/");
+        let result = fold_project_diagnostic(
+            Input::archive(Path::new("proj.zip")),
+            diag,
+            &project,
+            "Sub/",
+        );
         assert_eq!(result.inner_filename.as_deref(), Some("Sub/C.buc"));
     }
 }

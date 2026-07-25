@@ -90,12 +90,14 @@ fn region_to_sarif(region: &Region) -> Value {
     })
 }
 
+/// The `artifactLocation.uri` for a row.
+///
+/// A consumer resolves this against the repository tree, so a member of a
+/// directory must be the path it really is (`proj/M.eventb`); only an archive
+/// member — which is not a file on disk — takes SARIF's `!/` separator. URIs
+/// are `/`-separated, so a Windows path is normalised on the way out.
 fn uri_for(result: &ValidationResult) -> String {
-    let base = result.file.display().to_string();
-    match &result.inner_filename {
-        Some(inner) => format!("{base}!/{inner}"),
-        None => base,
-    }
+    result.joined_path("!/").replace('\\', "/")
 }
 
 fn sarif_level(severity: Severity) -> &'static str {
