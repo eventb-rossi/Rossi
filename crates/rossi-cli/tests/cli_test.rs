@@ -817,6 +817,99 @@ fn validate_text_joins_directory_members_as_paths() {
 }
 
 #[test]
+fn validate_output_writes_the_structured_report_to_a_file() {
+    // A CI step wants the report in a file it can upload, without depending on
+    // shell redirection inside a composite action.
+    let tmp = lint_fixture_dir("rossi-cli-output-structured");
+    for (format, parses) in [
+        ("json", true),
+        ("sarif", true),
+        ("text", false), // not JSON, just a report
+    ] {
+        let out = tmp.join(format!("report.{format}"));
+        let output = rossi_command()
+            .args([
+                "validate",
+                "--format",
+                format,
+                "--output",
+                out.to_str().unwrap(),
+                tmp.to_str().unwrap(),
+            ])
+            .output()
+            .expect("Failed to execute command");
+
+        assert!(
+            output.stdout.is_empty(),
+            "{format}: the report went to the file, not stdout: {}",
+            String::from_utf8_lossy(&output.stdout)
+        );
+        let written = std::fs::read_to_string(&out).expect("report file written");
+        assert!(!written.is_empty(), "{format}: report file is empty");
+        if parses {
+            serde_json::from_str::<serde_json::Value>(&written)
+                .unwrap_or_else(|e| panic!("{format} report should parse: {e}"));
+        } else {
+            assert!(
+                written.contains("Valid Machine 'Lint'"),
+                "text report should hold the rows: {written}"
+            );
+        }
+    }
+
+    std::fs::remove_dir_all(&tmp).ok();
+}
+
+#[test]
+fn validate_output_captures_error_rows_that_would_go_to_stderr() {
+    // The human format splits its streams; redirecting it must not drop the
+    // error rows on the floor.
+    let tmp = broken_member_dir("rossi-cli-output-text-errors");
+    let out = tmp.join("report.txt");
+    let output = rossi_command()
+        .args([
+            "validate",
+            "--output",
+            out.to_str().unwrap(),
+            tmp.to_str().unwrap(),
+        ])
+        .output()
+        .expect("Failed to execute command");
+
+    assert_eq!(output.status.code(), Some(1));
+    assert!(output.stdout.is_empty() && output.stderr.is_empty());
+    let written = std::fs::read_to_string(&out).expect("report file written");
+    assert!(
+        written.contains("[EB004]") && written.contains("Valid Machine 'clean'"),
+        "both streams land in the file: {written}"
+    );
+
+    std::fs::remove_dir_all(&tmp).ok();
+}
+
+#[test]
+fn validate_output_to_an_unwritable_path_fails_before_validating() {
+    let output = rossi_command()
+        .args([
+            "validate",
+            "--output",
+            "no/such/directory/report.json",
+            "--format",
+            "json",
+            "../rossi/examples/counter.eventb",
+        ])
+        .output()
+        .expect("Failed to execute command");
+
+    assert_eq!(output.status.code(), Some(1));
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains("failed to open"),
+        "the failure names the output path: {stderr}"
+    );
+}
+
+#[test]
 fn validate_sarif_includes_parse_error_region_issue_42() {
     // A reserved word used as a constant name: SARIF must carry a
     // physicalLocation.region covering the offending word (issue #42).
@@ -2522,11 +2615,17 @@ fn project_descriptor(name: &str) -> Vec<u8> {
 }
 
 fn tempdir_unique(prefix: &str) -> PathBuf {
+    // The timestamp alone is not unique: tests run in parallel and the clock's
+    // resolution is coarser than the rate at which they call this, so two
+    // fixtures could share a directory and clobber each other's files. A
+    // per-process counter makes the name unique whatever the clock does.
+    static SEQ: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
     let nanos = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .unwrap()
         .as_nanos();
-    let dir = std::env::temp_dir().join(format!("{prefix}-{nanos}"));
+    let seq = SEQ.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    let dir = std::env::temp_dir().join(format!("{prefix}-{nanos}-{seq}"));
     std::fs::create_dir_all(&dir).unwrap();
     dir
 }

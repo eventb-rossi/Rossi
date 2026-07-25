@@ -44,6 +44,12 @@ pub struct ValidateArgs {
     #[arg(long)]
     no_lints: bool,
 
+    /// Write the report here instead of the terminal. Whatever the format,
+    /// the whole report goes to the file — including the rows that would
+    /// otherwise go to stderr.
+    #[arg(short, long, value_name = "FILE")]
+    output: Option<PathBuf>,
+
     /// Reported file name for `-` (stdin) input (default: `<stdin>`).
     #[arg(long, value_name = "PATH")]
     stdin_filename: Option<String>,
@@ -182,14 +188,77 @@ fn ser_rule_id<S: Serializer>(value: &Option<RuleId>, s: S) -> Result<S::Ok, S::
     s.serialize_some(value.expect("skipped by serde when None").code())
 }
 
+/// Where the report goes.
+///
+/// Without `--output` the human format keeps its stream split — error rows on
+/// stderr, everything else on stdout — so a shell can separate them. With it,
+/// every line of the report goes to the file whatever the format, and the
+/// terminal stays clean.
+enum Report {
+    Console,
+    File(io::BufWriter<fs::File>),
+}
+
+impl Report {
+    fn open(path: Option<&Path>) -> io::Result<Self> {
+        match path {
+            Some(path) => Ok(Self::File(io::BufWriter::new(fs::File::create(path)?))),
+            None => Ok(Self::Console),
+        }
+    }
+
+    /// Emit one line of the human report.
+    fn line(&mut self, line: &str, is_error: bool) -> io::Result<()> {
+        match self {
+            Self::Console if is_error => {
+                eprintln!("{line}");
+                Ok(())
+            }
+            Self::Console => {
+                println!("{line}");
+                Ok(())
+            }
+            Self::File(out) => writeln!(out, "{line}"),
+        }
+    }
+
+    /// Emit a whole structured document through `write`.
+    fn structured(
+        &mut self,
+        write: impl FnOnce(&mut dyn Write) -> io::Result<()>,
+    ) -> io::Result<()> {
+        match self {
+            Self::Console => write(&mut io::stdout().lock()),
+            Self::File(out) => write(out),
+        }
+    }
+
+    fn flush(&mut self) -> io::Result<()> {
+        match self {
+            Self::Console => Ok(()),
+            Self::File(out) => out.flush(),
+        }
+    }
+}
+
 pub fn run(cli: ValidateArgs) -> ExitCode {
     if let Err(e) = eventb_io::stdin_is_sole_input(&cli.files) {
         eprintln!("rossi validate: {e}");
         return ExitCode::from(2);
     }
+    let mut report = match Report::open(cli.output.as_deref()) {
+        Ok(report) => report,
+        Err(e) => {
+            let path = cli.output.as_deref().unwrap_or(Path::new("-")).display();
+            eprintln!("rossi validate: failed to open {path}: {e}");
+            return ExitCode::from(1);
+        }
+    };
 
     let mut results = Vec::new();
     let mut all_success = true;
+    let mut stopped_early = false;
+    let mut output_result = Ok(());
     let aggregating_format = matches!(cli.format, OutputFormat::Json | OutputFormat::Sarif);
 
     for file in &cli.files {
@@ -199,24 +268,25 @@ pub fn run(cli: ValidateArgs) -> ExitCode {
             if cli.format == OutputFormat::Text
                 && (!cli.quiet || result.severity == Some(Severity::Error))
             {
-                print_text_result(&result);
+                let (line, is_error) = text_line(&result);
+                output_result = output_result.and_then(|()| report.line(&line, is_error));
             }
 
             if !result.success {
                 all_success = false;
                 input_failed = true;
             }
-
             results.push(result);
         }
 
         // `--continue-on-error` is about *files*, so one input's rows are
         // always reported in full. Giving up mid-input would drop rows already
-        // validated, and now that a directory reports per member, which ones
+        // validated, and since a directory reports per member, which ones
         // survived would depend on the order its entries happened to come back
         // in — the same project would report differently on another machine.
         if input_failed && !cli.continue_on_error && !aggregating_format {
-            return ExitCode::from(1);
+            stopped_early = true;
+            break;
         }
     }
 
@@ -225,16 +295,16 @@ pub fn run(cli: ValidateArgs) -> ExitCode {
     } else {
         ExitCode::from(1)
     };
-    let output_result = match cli.format {
-        OutputFormat::Text => {
-            if !cli.quiet && results.len() > 1 {
-                print_summary(&results);
-            }
-            return validation_exit;
-        }
-        OutputFormat::Json => write_json(&results, &mut io::stdout().lock()),
-        OutputFormat::Sarif => sarif::emit(&results, &mut io::stdout().lock()),
-    };
+    let output_result = output_result
+        .and_then(|()| match cli.format {
+            // A run that stopped at the first failure never reached the rest of
+            // the inputs, so its counts would be misleading.
+            OutputFormat::Text if stopped_early || cli.quiet || results.len() <= 1 => Ok(()),
+            OutputFormat::Text => write_summary(&mut report, &results),
+            OutputFormat::Json => report.structured(|out| write_json(&results, out)),
+            OutputFormat::Sarif => report.structured(|out| sarif::emit(&results, out)),
+        })
+        .and_then(|()| report.flush());
 
     let mut stderr = io::stderr().lock();
     finish_structured_output(output_result, validation_exit, &mut stderr)
@@ -888,7 +958,9 @@ fn span_to_region(source: &str, span: rossi::ast::Span) -> Region {
     }
 }
 
-fn print_text_result(result: &ValidationResult) {
+/// One line of the human report, and whether it is an error line (which goes
+/// to stderr unless the report is redirected).
+fn text_line(result: &ValidationResult) -> (String, bool) {
     // A directory member is joined as the real path it is (`proj/M.eventb`),
     // so the location is clickable; an archive member keeps the historical
     // `model.zip:M.bum`.
@@ -899,13 +971,13 @@ fn print_text_result(result: &ValidationResult) {
     }
 
     if result.component_name.is_some() {
-        println!(
+        let line = format!(
             "✓ {} - Valid {} '{}'",
             file_info,
             result.component_type.unwrap_or("?"),
             result.component_name.as_deref().unwrap_or("?")
         );
-        return;
+        return (line, false);
     }
 
     let is_error = result.severity == Some(Severity::Error);
@@ -921,28 +993,32 @@ fn print_text_result(result: &ValidationResult) {
         .unwrap_or_default();
     let message = result.error.as_deref().unwrap_or("");
 
-    let line = format!("{glyph} {file_info}{where_} - {prefix}{message}");
-    if is_error {
-        eprintln!("{line}");
-    } else {
-        println!("{line}");
-    }
+    (
+        format!("{glyph} {file_info}{where_} - {prefix}{message}"),
+        is_error,
+    )
 }
 
-fn print_summary(results: &[ValidationResult]) {
+fn write_summary(report: &mut Report, results: &[ValidationResult]) -> io::Result<()> {
     let total = results.len();
     let passed = results.iter().filter(|r| r.success).count();
     let failed = total - passed;
+    let rule = "=".repeat(50);
 
-    println!("\n{}", "=".repeat(50));
-    println!("Summary:");
-    println!("  Total:  {total}");
-    println!("  Passed: {passed} ✓");
-    println!("  Failed: {failed} ✗");
-    println!("{}", "=".repeat(50));
+    for line in [
+        format!("\n{rule}"),
+        "Summary:".to_string(),
+        format!("  Total:  {total}"),
+        format!("  Passed: {passed} ✓"),
+        format!("  Failed: {failed} ✗"),
+        rule.clone(),
+    ] {
+        report.line(&line, false)?;
+    }
+    Ok(())
 }
 
-fn write_json(results: &[ValidationResult], out: &mut impl Write) -> io::Result<()> {
+fn write_json(results: &[ValidationResult], out: &mut (impl Write + ?Sized)) -> io::Result<()> {
     serde_json::to_writer_pretty(&mut *out, results)
         .map_err(|e| io::Error::new(e.io_error_kind().unwrap_or(io::ErrorKind::Other), e))?;
     writeln!(out)
@@ -1083,6 +1159,7 @@ mod tests {
             continue_on_error: false,
             no_semantic: false,
             no_lints: false,
+            output: None,
             stdin_filename: None,
         };
         let results = validate_text_source(Input::file(Path::new("m.eventb")), None, source, &cli);
@@ -1115,6 +1192,7 @@ mod tests {
             continue_on_error: false,
             no_semantic: false,
             no_lints: false,
+            output: None,
             stdin_filename: None,
         };
         let results = validate_text_source(Input::file(Path::new("m.eventb")), None, source, &cli);
