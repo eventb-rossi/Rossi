@@ -193,9 +193,9 @@ pub fn run(cli: ValidateArgs) -> ExitCode {
     let aggregating_format = matches!(cli.format, OutputFormat::Json | OutputFormat::Sarif);
 
     for file in &cli.files {
-        let file_results = validate_file(file, &cli);
+        let mut input_failed = false;
 
-        for result in file_results {
+        for result in validate_file(file, &cli) {
             if cli.format == OutputFormat::Text
                 && (!cli.quiet || result.severity == Some(Severity::Error))
             {
@@ -204,12 +204,19 @@ pub fn run(cli: ValidateArgs) -> ExitCode {
 
             if !result.success {
                 all_success = false;
-                if !cli.continue_on_error && !aggregating_format {
-                    return ExitCode::from(1);
-                }
+                input_failed = true;
             }
 
             results.push(result);
+        }
+
+        // `--continue-on-error` is about *files*, so one input's rows are
+        // always reported in full. Giving up mid-input would drop rows already
+        // validated, and now that a directory reports per member, which ones
+        // survived would depend on the order its entries happened to come back
+        // in — the same project would report differently on another machine.
+        if input_failed && !cli.continue_on_error && !aggregating_format {
+            return ExitCode::from(1);
         }
     }
 
@@ -287,14 +294,14 @@ fn validate_text_file(file: &Path, cli: &ValidateArgs) -> Vec<ValidationResult> 
             )];
         }
     };
-    validate_text_source(Input::file(file), &source, cli)
+    validate_text_source(Input::file(file), None, &source, cli)
 }
 
 /// Validate Event-B `-` (stdin) text, reported under `--stdin-filename`.
 fn validate_stdin(cli: &ValidateArgs) -> Vec<ValidationResult> {
     let display = Path::new(cli.stdin_filename.as_deref().unwrap_or("<stdin>"));
     match eventb_io::read_stdin_to_string() {
-        Ok(source) => validate_text_source(Input::file(display), &source, cli),
+        Ok(source) => validate_text_source(Input::file(display), None, &source, cli),
         Err(e) => vec![error_result(
             Input::file(display),
             None,
@@ -304,30 +311,37 @@ fn validate_stdin(cli: &ValidateArgs) -> Vec<ValidationResult> {
     }
 }
 
-/// Validate Event-B text from any source, reporting rows under `display`.
+/// Validate Event-B text from any source, reporting rows under `input` and,
+/// when the text is one member of a directory project, under `inner`.
 /// Loose text has no project (its SEES/EXTENDS parents are usually absent),
 /// so the SC build doesn't run here; the component-local checks do — the
 /// duplicate-name errors (EB021/EB022, semantic, from the same shared core
 /// the SC uses) and the component-local lints. The reference-based lints
 /// need the project paths (directories, zip archives).
-fn validate_text_source(input: Input, source: &str, cli: &ValidateArgs) -> Vec<ValidationResult> {
+fn validate_text_source(
+    input: Input,
+    inner: Option<&str>,
+    source: &str,
+    cli: &ValidateArgs,
+) -> Vec<ValidationResult> {
+    let inner = || inner.map(str::to_string);
     match parse_components(source) {
         Ok(components) => {
             let mut results: Vec<ValidationResult> = components
                 .iter()
-                .map(|c| success_result(input, None, c))
+                .map(|c| success_result(input, inner(), c))
                 .collect();
             for component in &components {
                 if !cli.no_semantic {
                     for diag in rossi_build::duplicates::component_duplicate_diagnostics(component)
                     {
                         // Loose text is a single source; every span indexes into it.
-                        results.push(fold_diagnostic(input, diag, None, Some(source)));
+                        results.push(fold_diagnostic(input, diag, inner(), Some(source)));
                     }
                 }
                 if !cli.no_lints {
                     for diag in rossi_build::lint::run_component(component) {
-                        results.push(fold_diagnostic(input, diag, None, Some(source)));
+                        results.push(fold_diagnostic(input, diag, inner(), Some(source)));
                     }
                 }
             }
@@ -346,7 +360,7 @@ fn validate_text_source(input: Input, source: &str, cli: &ValidateArgs) -> Vec<V
                 .map(|(err, absolute_span)| {
                     let mut result = error_result(
                         input,
-                        None,
+                        inner(),
                         format!("{err}"),
                         Some(rule_for_parse_error(err)),
                     );
@@ -362,8 +376,12 @@ fn validate_text_source(input: Input, source: &str, cli: &ValidateArgs) -> Vec<V
             let only_precise_errors =
                 !results.is_empty() && results.len() == recovered.errors.len();
             if !only_precise_errors {
-                let mut fallback =
-                    error_result(input, None, format!("{e}"), Some(RuleId::CamilleParseError));
+                let mut fallback = error_result(
+                    input,
+                    inner(),
+                    format!("{e}"),
+                    Some(RuleId::CamilleParseError),
+                );
                 fallback.region = parse_error_region(&e, source);
                 results.push(fallback);
             }
@@ -571,14 +589,87 @@ fn validate_directory(dir: &Path, cli: &ValidateArgs) -> Vec<ValidationResult> {
             // A directory is loaded as a single project (no prefix).
             fold_semantic(&project, input, cli, "", &mut results);
         }
-        Err(e) => results.push(error_result(
-            input,
-            None,
-            format!("{e}"),
-            rule_for_build_error(&e),
-        )),
+        Err(e) => results.extend(validate_directory_fallback(dir, &e, cli)),
     }
 
+    results
+}
+
+/// Tolerant directory validation, used when the strict project load aborts on a
+/// malformed component — the directory counterpart of
+/// [`validate_zip_flat_fallback`].
+///
+/// Every component file is validated on its own, so a failure is reported
+/// against the member it came from, with its region, and with the rule id its
+/// notation deserves: EB004 for Camille text, EB001/EB002/EB003 for Rodin XML.
+/// The aborted load collapses all of that into one EB001 against the bare
+/// directory, which no CI annotation or SARIF location can be built from.
+/// Sibling components are still reported, so one broken file no longer hides
+/// the whole project.
+///
+/// Project-level checks do not run here: the project could not be loaded, so
+/// the cross-component graph they need does not exist. If nothing individually
+/// failed after all — the load gave up for a reason no single file reproduces —
+/// the original error is reported rather than silently passing.
+fn validate_directory_fallback(
+    dir: &Path,
+    load_error: &rossi_build::Error,
+    cli: &ValidateArgs,
+) -> Vec<ValidationResult> {
+    let input = Input::directory(dir);
+    let load_error_row = || {
+        error_result(
+            input,
+            None,
+            format!("{load_error}"),
+            rule_for_build_error(load_error),
+        )
+    };
+    let Ok(files) = rossi_build::project::component_files(dir) else {
+        // The directory itself could not be walked; only the original failure
+        // is known.
+        return vec![load_error_row()];
+    };
+
+    let mut results = Vec::new();
+    for file in &files {
+        let Some(filename) = file.file_name().and_then(|n| n.to_str()) else {
+            continue;
+        };
+        let text = match fs::read_to_string(file) {
+            Ok(text) => text,
+            Err(e) => {
+                results.push(error_result(
+                    input,
+                    Some(filename.to_string()),
+                    format!("Failed to read file: {e}"),
+                    None,
+                ));
+                continue;
+            }
+        };
+        if rossi_build::project::is_xml_input(filename) {
+            match rossi_build::ProjectComponent::from_xml(filename, &text) {
+                Ok(pc) => results.push(success_result(
+                    input,
+                    Some(filename.to_string()),
+                    &pc.component,
+                )),
+                Err(e) => results.push(error_result(
+                    input,
+                    Some(filename.to_string()),
+                    format!("{e}"),
+                    rule_for_build_error(&e),
+                )),
+            }
+        } else {
+            results.extend(validate_text_source(input, Some(filename), &text, cli));
+        }
+    }
+
+    if !results.iter().any(|r| !r.success) {
+        results.push(load_error_row());
+    }
     results
 }
 
@@ -994,7 +1085,7 @@ mod tests {
             no_lints: false,
             stdin_filename: None,
         };
-        let results = validate_text_source(Input::file(Path::new("m.eventb")), source, &cli);
+        let results = validate_text_source(Input::file(Path::new("m.eventb")), None, source, &cli);
         let failures: Vec<_> = results.iter().filter(|r| !r.success).collect();
         assert_eq!(failures.len(), 1, "exactly one failure row: {results:?}");
         assert_eq!(failures[0].rule_id, Some(RuleId::AssignmentInPredicate));
@@ -1026,7 +1117,7 @@ mod tests {
             no_lints: false,
             stdin_filename: None,
         };
-        let results = validate_text_source(Input::file(Path::new("m.eventb")), source, &cli);
+        let results = validate_text_source(Input::file(Path::new("m.eventb")), None, source, &cli);
         assert!(
             results
                 .iter()

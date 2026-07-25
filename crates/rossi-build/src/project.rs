@@ -12,6 +12,8 @@
 //! and AST spans, so a caller can resolve a diagnostic's byte span to a
 //! line/column. XML imports carry neither.
 
+use std::path::{Path, PathBuf};
+
 use rossi::{Component, parse_components, parse_xml};
 
 use crate::error::{ProjectError, Result};
@@ -165,52 +167,30 @@ impl Project {
     /// Load a project from a directory of component files — `.buc` / `.bum`
     /// (Rodin XML) or `.eventb` (textual).
     ///
-    /// A directory is loaded as one kind or the other: if any Rodin XML file is
-    /// present the directory is treated as a Rodin project and loose `.eventb`
-    /// text is ignored (a real export may sit beside scratch files); otherwise
-    /// the `.eventb` files are loaded. Preferring XML keeps `rossi build` on a
-    /// Rodin directory byte-identical. Textual components retain their source
-    /// and spans (see [`ProjectComponent::source`]); XML ones do not. Only
-    /// component files are read — unrelated files (dotfiles, binaries, notes)
-    /// are never opened.
-    pub fn from_directory<P: AsRef<std::path::Path>>(path: P) -> Result<Self> {
+    /// The files loaded are exactly [`component_files`]; see there for how a
+    /// directory's kind is decided. Textual components retain their source and
+    /// spans (see [`ProjectComponent::source`]); XML ones do not.
+    ///
+    /// One malformed component aborts the whole load — a caller that wants to
+    /// report the rest anyway can re-walk [`component_files`] itself.
+    pub fn from_directory<P: AsRef<Path>>(path: P) -> Result<Self> {
         let path = path.as_ref();
-        if !path.is_dir() {
-            return Err(ProjectError::NotADirectory(path.to_path_buf()).into());
-        }
+        let files = component_files(path)?;
         let name = path
             .file_name()
             .and_then(|s| s.to_str())
             .unwrap_or("project")
             .to_string();
 
-        let mut files = Vec::new();
-        for entry in std::fs::read_dir(path)? {
-            let entry = entry?;
-            if entry.file_type()?.is_file() {
-                files.push(entry);
-            }
-        }
-        let has_xml = files
-            .iter()
-            .any(|entry| entry.file_name().to_str().is_some_and(is_xml_input));
-
         let mut components = Vec::new();
-        for entry in &files {
-            let file_name = entry.file_name();
-            let Some(filename) = file_name.to_str() else {
+        for file in &files {
+            let Some(filename) = file.file_name().and_then(|n| n.to_str()) else {
                 continue;
             };
-            // Read only the files that are actually components of this project's
-            // kind; opening unrelated files would both waste work and let a
-            // binary / non-UTF-8 entry abort the whole load.
-            if has_xml {
-                if is_xml_input(filename) {
-                    let xml = std::fs::read_to_string(entry.path())?;
-                    components.push(ProjectComponent::from_xml(filename, &xml)?);
-                }
-            } else if is_eventb_input(filename) {
-                let text = std::fs::read_to_string(entry.path())?;
+            let text = std::fs::read_to_string(file)?;
+            if is_xml_input(filename) {
+                components.push(ProjectComponent::from_xml(filename, &text)?);
+            } else {
                 components.extend(ProjectComponent::from_eventb(filename, &text)?);
             }
         }
@@ -402,8 +382,44 @@ fn archive_prefix(name: &str) -> &str {
     name.find('/').map_or("", |slash| &name[..=slash])
 }
 
+/// The component files a directory project is loaded from, in `read_dir` order.
+///
+/// A directory is one kind or the other: if any Rodin XML file is present the
+/// directory is treated as a Rodin project and loose `.eventb` text is ignored
+/// (a real export may sit beside scratch files); otherwise the `.eventb` files
+/// are the components. Preferring XML keeps `rossi build` on a Rodin directory
+/// byte-identical.
+///
+/// This is the single definition of "which files belong to this directory", so
+/// a caller reporting per-file diagnostics visits exactly what
+/// [`Project::from_directory`] would have loaded — and no unrelated file
+/// (dotfile, binary, notes) is ever opened.
+pub fn component_files(dir: &Path) -> Result<Vec<PathBuf>> {
+    if !dir.is_dir() {
+        return Err(ProjectError::NotADirectory(dir.to_path_buf()).into());
+    }
+    let mut files = Vec::new();
+    for entry in std::fs::read_dir(dir)? {
+        let entry = entry?;
+        if entry.file_type()?.is_file() {
+            files.push(entry.path());
+        }
+    }
+    let kind: fn(&str) -> bool = if files.iter().any(|p| file_name_is(p, is_xml_input)) {
+        is_xml_input
+    } else {
+        is_eventb_input
+    };
+    files.retain(|p| file_name_is(p, kind));
+    Ok(files)
+}
+
+fn file_name_is(path: &Path, pred: fn(&str) -> bool) -> bool {
+    path.file_name().and_then(|n| n.to_str()).is_some_and(pred)
+}
+
 /// A Rodin XML component file (`.buc` context / `.bum` machine).
-fn is_xml_input(name: &str) -> bool {
+pub fn is_xml_input(name: &str) -> bool {
     name.ends_with(".buc") || name.ends_with(".bum")
 }
 
@@ -445,6 +461,44 @@ fn basename(path: &str) -> &str {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn scratch_dir(name: &str) -> PathBuf {
+        let dir = std::env::temp_dir().join(format!("rossi-build-{name}-{}", std::process::id()));
+        std::fs::remove_dir_all(&dir).ok();
+        std::fs::create_dir_all(&dir).unwrap();
+        dir
+    }
+
+    fn names_in(dir: &Path) -> Vec<String> {
+        let mut names: Vec<String> = component_files(dir)
+            .unwrap()
+            .iter()
+            .map(|p| p.file_name().unwrap().to_string_lossy().into_owned())
+            .collect();
+        names.sort();
+        names
+    }
+
+    #[test]
+    fn component_files_picks_one_kind_and_opens_nothing_else() {
+        // A Rodin export may sit beside scratch text, so XML wins and the
+        // `.eventb` file is not a component of that directory.
+        let rodin = scratch_dir("component-files-xml");
+        std::fs::write(rodin.join("C.buc"), "<x/>").unwrap();
+        std::fs::write(rodin.join("scratch.eventb"), "CONTEXT C\nEND\n").unwrap();
+        std::fs::write(rodin.join("notes.txt"), "not a component").unwrap();
+        assert_eq!(names_in(&rodin), ["C.buc"]);
+
+        // Without XML the textual files are the components; `.txt` is too
+        // generic to scan for and stays out.
+        let textual = scratch_dir("component-files-text");
+        std::fs::write(textual.join("C.eventb"), "CONTEXT C\nEND\n").unwrap();
+        std::fs::write(textual.join("notes.txt"), "not a component").unwrap();
+        assert_eq!(names_in(&textual), ["C.eventb"]);
+
+        std::fs::remove_dir_all(&rodin).ok();
+        std::fs::remove_dir_all(&textual).ok();
+    }
 
     #[test]
     fn from_eventb_retains_source_name_and_spans() {

@@ -876,6 +876,126 @@ fn validate_directory_input() {
     std::fs::remove_dir_all(&tmp).ok();
 }
 
+/// A machine whose EVENTS section is empty — the Camille grammar wants at
+/// least one EVENT, so it fails to parse at the closing `END` on line 7.
+const BROKEN_MEMBER: &str =
+    "MACHINE broken\nVARIABLES\n    count\nINVARIANTS\n    @inv1 count ∈ ℕ\nEVENTS\nEND\n";
+
+/// A well-formed sibling of [`BROKEN_MEMBER`] in the same directory.
+const CLEAN_MEMBER: &str = "MACHINE clean\nVARIABLES\n    count\nINVARIANTS\n    @inv1 count ∈ ℕ\nEVENTS\n    EVENT INITIALISATION\n    THEN\n        @act1 count ≔ 0\n    END\nEND\n";
+
+fn broken_member_dir(prefix: &str) -> PathBuf {
+    let tmp = tempdir_unique(prefix);
+    std::fs::write(tmp.join("broken.eventb"), BROKEN_MEMBER).unwrap();
+    std::fs::write(tmp.join("clean.eventb"), CLEAN_MEMBER).unwrap();
+    tmp
+}
+
+#[test]
+fn validate_directory_parse_error_names_the_member_and_its_position() {
+    // Loading the project aborts on the malformed member. Reporting that as
+    // one error against the bare directory loses both the file and the
+    // position, so neither a CI annotation nor a SARIF location can be built
+    // — and the notation is Camille, so the rule is EB004, exactly as it is
+    // when the same file is validated on its own.
+    let tmp = broken_member_dir("rossi-cli-dir-parse-error");
+    let output = rossi_command()
+        .args(["validate", tmp.to_str().unwrap()])
+        .output()
+        .expect("Failed to execute command");
+
+    assert_eq!(output.status.code(), Some(1));
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    let located = format!("{}/broken.eventb:7:1", tmp.display());
+    assert!(
+        stderr.contains(&located) && stderr.contains("[EB004]"),
+        "expected `{located}` reported as EB004: {stderr}"
+    );
+    // The sibling is still validated: one broken file no longer hides the
+    // rest of the project.
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(
+        stdout.contains("Valid Machine 'clean'"),
+        "sibling components must still be reported: {stdout}"
+    );
+
+    std::fs::remove_dir_all(&tmp).ok();
+}
+
+#[test]
+fn validate_directory_reports_every_sibling_whatever_the_entry_order() {
+    // Stopping at the first failing row would drop rows this fallback had
+    // already validated, and which ones survived would depend on the order
+    // read_dir happens to return entries in — so the same project would report
+    // differently on different filesystems.
+    let tmp = tempdir_unique("rossi-cli-dir-entry-order");
+    std::fs::write(tmp.join("aaa_broken.eventb"), BROKEN_MEMBER).unwrap();
+    for name in ["b", "c", "d", "e", "f"] {
+        let source = CLEAN_MEMBER.replace("clean", &format!("{name}_clean"));
+        std::fs::write(tmp.join(format!("{name}_clean.eventb")), source).unwrap();
+    }
+
+    let output = rossi_command()
+        .args(["validate", tmp.to_str().unwrap()])
+        .output()
+        .expect("Failed to execute command");
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    for name in ["b", "c", "d", "e", "f"] {
+        assert!(
+            stdout.contains(&format!("Valid Machine '{name}_clean'")),
+            "{name}_clean is missing from the report: {stdout}"
+        );
+    }
+    assert!(String::from_utf8_lossy(&output.stderr).contains("[EB004]"));
+    assert_eq!(output.status.code(), Some(1));
+
+    std::fs::remove_dir_all(&tmp).ok();
+}
+
+#[test]
+fn validate_directory_parse_error_is_located_in_json_and_sarif() {
+    let tmp = broken_member_dir("rossi-cli-dir-parse-error-structured");
+
+    let json = rossi_command()
+        .args(["validate", "--format", "json", tmp.to_str().unwrap()])
+        .output()
+        .expect("Failed to execute command");
+    let rows: serde_json::Value =
+        serde_json::from_slice(&json.stdout).expect("JSON output should be valid");
+    let failure = rows
+        .as_array()
+        .expect("rows array")
+        .iter()
+        .find(|r| r["success"] == false)
+        .expect("the malformed member fails");
+    assert_eq!(failure["rule_id"], "EB004");
+    assert_eq!(failure["inner_filename"], "broken.eventb");
+    assert_eq!(failure["region"]["start_line"], 7);
+    assert_eq!(failure["region"]["start_column"], 1);
+
+    let sarif = rossi_command()
+        .args(["validate", "--format", "sarif", tmp.to_str().unwrap()])
+        .output()
+        .expect("Failed to execute command");
+    let doc: serde_json::Value =
+        serde_json::from_slice(&sarif.stdout).expect("SARIF output should be valid");
+    let result = doc["runs"][0]["results"]
+        .as_array()
+        .expect("results array")
+        .iter()
+        .find(|r| r["ruleId"] == "EB004")
+        .expect("the parse failure reaches SARIF");
+    let location = &result["locations"][0]["physicalLocation"];
+    assert_eq!(
+        location["artifactLocation"]["uri"],
+        serde_json::json!(format!("{}/broken.eventb", tmp.display()))
+    );
+    assert_eq!(location["region"]["startLine"], 7);
+
+    std::fs::remove_dir_all(&tmp).ok();
+}
+
 #[test]
 fn validate_duplicate_component_names_fail_with_eb019() {
     // Two `.eventb` files declaring the same machine name — a state Rodin
