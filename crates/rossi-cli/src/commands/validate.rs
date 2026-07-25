@@ -50,6 +50,12 @@ pub struct ValidateArgs {
     #[arg(short, long, value_name = "FILE")]
     output: Option<PathBuf>,
 
+    /// Exit nonzero on advisory diagnostics too, not just errors. Reported
+    /// severities are unchanged — a warning stays a warning in every format,
+    /// only the exit code hardens.
+    #[arg(long)]
+    deny_warnings: bool,
+
     /// Name this SARIF run's analysis category (`runs[].automationDetails.id`).
     /// A repository uploading more than one rossi run — one per project, say —
     /// keeps them apart by giving each its own category.
@@ -277,17 +283,21 @@ pub fn run(cli: ValidateArgs) -> ExitCode {
         let mut input_failed = false;
 
         for result in validate_file(file, &cli) {
-            if cli.format == OutputFormat::Text
-                && (!cli.quiet || result.severity == Some(Severity::Error))
-            {
+            let gate_failed = row_failed(&result, cli.deny_warnings);
+            // Under `--deny-warnings` the advisory rows are what fail the run,
+            // so `--quiet` must not suppress the very rows the exit code is
+            // about: that pairing would otherwise fail silently.
+            if cli.format == OutputFormat::Text && (!cli.quiet || gate_failed) {
                 let (line, is_error) = text_line(&result);
                 output_result = output_result.and_then(|()| report.line(&line, is_error));
             }
 
-            if !result.success {
-                all_success = false;
-                input_failed = true;
-            }
+            all_success &= !gate_failed;
+            // Giving up is about errors. `--deny-warnings` hardens the exit
+            // code; it does not cut the report short at the first advisory
+            // finding, which is the one thing a run gating on lints must see
+            // in full.
+            input_failed |= !result.success;
             results.push(result);
         }
 
@@ -312,7 +322,7 @@ pub fn run(cli: ValidateArgs) -> ExitCode {
             // A run that stopped at the first failure never reached the rest of
             // the inputs, so its counts would be misleading.
             OutputFormat::Text if stopped_early || cli.quiet || results.len() <= 1 => Ok(()),
-            OutputFormat::Text => write_summary(&mut report, &results),
+            OutputFormat::Text => write_summary(&mut report, &results, cli.deny_warnings),
             OutputFormat::Json => report.structured(|out| write_json(&results, out)),
             OutputFormat::Sarif => {
                 report.structured(|out| sarif::emit(&results, cli.sarif_category.as_deref(), out))
@@ -322,6 +332,16 @@ pub fn run(cli: ValidateArgs) -> ExitCode {
 
     let mut stderr = io::stderr().lock();
     finish_structured_output(output_result, validation_exit, &mut stderr)
+}
+
+/// Whether a row makes the run fail.
+///
+/// A row carries a severity only when it is a diagnostic, so `--deny-warnings`
+/// promoting every diagnostic is exactly "advisory lints fail the run too":
+/// EB011, EB012, EB014 and EB023 report as warnings and otherwise exit 0, and
+/// a CI job that wants to gate on them would have to parse the JSON itself.
+fn row_failed(result: &ValidationResult, deny_warnings: bool) -> bool {
+    !result.success || (deny_warnings && result.severity.is_some())
 }
 
 fn finish_structured_output(
@@ -1013,10 +1033,19 @@ fn text_line(result: &ValidationResult) -> (String, bool) {
     )
 }
 
-fn write_summary(report: &mut Report, results: &[ValidationResult]) -> io::Result<()> {
+/// The closing counts of the human report. They are counted through the same
+/// predicate as the exit code, so a run that exits 1 never claims `Failed: 0`.
+fn write_summary(
+    report: &mut Report,
+    results: &[ValidationResult],
+    deny_warnings: bool,
+) -> io::Result<()> {
     let total = results.len();
-    let passed = results.iter().filter(|r| r.success).count();
-    let failed = total - passed;
+    let failed = results
+        .iter()
+        .filter(|r| row_failed(r, deny_warnings))
+        .count();
+    let passed = total - failed;
     let rule = "=".repeat(50);
 
     for line in [
@@ -1174,6 +1203,7 @@ mod tests {
             no_semantic: false,
             no_lints: false,
             output: None,
+            deny_warnings: false,
             sarif_category: None,
             stdin_filename: None,
         };
@@ -1208,6 +1238,7 @@ mod tests {
             no_semantic: false,
             no_lints: false,
             output: None,
+            deny_warnings: false,
             sarif_category: None,
             stdin_filename: None,
         };

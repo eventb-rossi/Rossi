@@ -817,6 +817,123 @@ fn validate_text_joins_directory_members_as_paths() {
 }
 
 #[test]
+fn validate_deny_warnings_fails_on_advisory_lints() {
+    // The fixture's `dead` variable raises EB011, which is advisory and exits
+    // 0 — a CI job that wants to gate on it would otherwise have to parse the
+    // JSON itself.
+    let tmp = lint_fixture_dir("rossi-cli-deny-warnings");
+
+    let lenient = rossi_command()
+        .args(["validate", tmp.to_str().unwrap()])
+        .output()
+        .expect("Failed to execute command");
+    assert!(
+        lenient.status.success(),
+        "advisory lints keep exiting 0 by default"
+    );
+
+    let strict = rossi_command()
+        .args(["validate", "--deny-warnings", tmp.to_str().unwrap()])
+        .output()
+        .expect("Failed to execute command");
+    assert_eq!(strict.status.code(), Some(1));
+    let stdout = String::from_utf8_lossy(&strict.stdout);
+    assert!(
+        stdout.contains("[EB011]"),
+        "the warning is still reported as a warning"
+    );
+    // Hardening the gate must not cut the report short at the first finding:
+    // a run that gates on lints is exactly the one that needs to see them all.
+    assert!(
+        stdout.contains("Valid Machine 'Lint'") && stdout.contains("Valid Context 'Ctx'"),
+        "every row is still reported: {stdout}"
+    );
+
+    // The severity a consumer sees must not change: hardening the exit code
+    // must not inflate what code scanning records.
+    let sarif = rossi_command()
+        .args([
+            "validate",
+            "--deny-warnings",
+            "--format",
+            "sarif",
+            tmp.to_str().unwrap(),
+        ])
+        .output()
+        .expect("Failed to execute command");
+    let doc: serde_json::Value =
+        serde_json::from_slice(&sarif.stdout).expect("SARIF output should be valid");
+    let eb011 = doc["runs"][0]["results"]
+        .as_array()
+        .expect("results array")
+        .iter()
+        .find(|r| r["ruleId"] == "EB011")
+        .expect("EB011 is reported");
+    assert_eq!(eb011["level"], "warning");
+    assert_eq!(sarif.status.code(), Some(1));
+
+    std::fs::remove_dir_all(&tmp).ok();
+}
+
+#[test]
+fn validate_deny_warnings_still_reports_the_rows_it_fails_on() {
+    // `--quiet` keeps only what matters, and under `--deny-warnings` the
+    // advisory rows are exactly what fails the run — suppressing them would
+    // exit 1 having printed nothing at all. The summary must agree with the
+    // exit code too, rather than closing with "Failed: 0".
+    let tmp = lint_fixture_dir("rossi-cli-deny-warnings-quiet");
+
+    let quiet = rossi_command()
+        .args([
+            "validate",
+            "--quiet",
+            "--deny-warnings",
+            tmp.to_str().unwrap(),
+        ])
+        .output()
+        .expect("Failed to execute command");
+    assert_eq!(quiet.status.code(), Some(1));
+    let printed = format!(
+        "{}{}",
+        String::from_utf8_lossy(&quiet.stdout),
+        String::from_utf8_lossy(&quiet.stderr)
+    );
+    assert!(
+        printed.contains("[EB011]"),
+        "a failing run must say what failed: {printed:?}"
+    );
+
+    let loud = rossi_command()
+        .args(["validate", "--deny-warnings", tmp.to_str().unwrap()])
+        .output()
+        .expect("Failed to execute command");
+    let stdout = String::from_utf8_lossy(&loud.stdout);
+    assert!(
+        !stdout.contains("Failed: 0"),
+        "the summary must not claim nothing failed on a failing run: {stdout}"
+    );
+
+    std::fs::remove_dir_all(&tmp).ok();
+}
+
+#[test]
+fn validate_deny_warnings_leaves_a_clean_project_passing() {
+    let output = rossi_command()
+        .args([
+            "validate",
+            "--deny-warnings",
+            "../rossi/examples/counter.eventb",
+        ])
+        .output()
+        .expect("Failed to execute command");
+    assert!(
+        output.status.success(),
+        "a diagnostic-free run still passes; stderr={}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+}
+
+#[test]
 fn validate_sarif_category_names_the_analysis() {
     // A repository uploading more than one rossi analysis tells them apart by
     // category, which code scanning reads from runs[].automationDetails.id.
