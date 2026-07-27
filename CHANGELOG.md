@@ -1,5 +1,17 @@
 # Changelog
 
+## [0.1.7](https://github.com/eventb-rossi/rossi/compare/v0.1.6...v0.1.7) - 2026-07-27
+
+### Added
+- *(validate)* Fail on advisory lints with --deny-warnings
+- *(validate)* Tag SARIF runs with --sarif-category
+- *(validate)* Write the report to --output
+
+### Fixed
+- *(validate)* Report directory parse failures per component file
+- *(validate)* Render directory members as real paths
+- *(build)* Validate inherited event render state
+
 ## [0.1.6](https://github.com/eventb-rossi/rossi/compare/v0.1.5...v0.1.6) - 2026-07-21
 
 ### Added
