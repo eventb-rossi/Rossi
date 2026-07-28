@@ -1191,6 +1191,31 @@ fn validate_directory_input() {
     std::fs::remove_dir_all(&tmp).ok();
 }
 
+#[test]
+fn validate_directory_without_components_is_rejected() {
+    let tmp = tempdir_unique("rossi-cli-validate-empty-dir");
+    let output = rossi_command()
+        .args(["validate", "--format", "json", tmp.to_str().unwrap()])
+        .output()
+        .expect("Failed to execute command");
+
+    assert_eq!(output.status.code(), Some(1));
+    let rows: serde_json::Value =
+        serde_json::from_slice(&output.stdout).expect("JSON output should be valid");
+    let rows = rows.as_array().expect("rows array");
+    assert_eq!(rows.len(), 1, "empty directory should emit one row");
+    let row = &rows[0];
+    assert_eq!(row["file"], tmp.to_str().unwrap());
+    assert_eq!(row["input"], "directory");
+    assert_eq!(row["success"], false);
+    assert_eq!(row["severity"], "error");
+    assert_eq!(row["error"], "No Event-B components found in directory");
+    assert!(row.get("inner_filename").is_none());
+    assert!(row.get("rule_id").is_none());
+
+    std::fs::remove_dir_all(&tmp).ok();
+}
+
 /// A machine whose EVENTS section is empty — the Camille grammar wants at
 /// least one EVENT, so it fails to parse at the closing `END` on line 7.
 const BROKEN_MEMBER: &str =

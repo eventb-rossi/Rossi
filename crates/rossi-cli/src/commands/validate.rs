@@ -683,6 +683,14 @@ fn validate_directory(dir: &Path, cli: &ValidateArgs) -> Vec<ValidationResult> {
 
     match Project::from_directory(dir) {
         Ok(project) => {
+            if project.components.is_empty() {
+                return vec![error_result(
+                    input,
+                    None,
+                    "No Event-B components found in directory".to_string(),
+                    None,
+                )];
+            }
             for pc in &project.components {
                 results.push(success_result(
                     input,
