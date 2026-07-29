@@ -190,6 +190,14 @@ impl ValidationResult {
             }
         }
     }
+
+    /// The joined path used by structured output.
+    ///
+    /// Archive members use SARIF's `!/` separator, and every separator is
+    /// normalised to `/` so JSON and SARIF consumers receive the same value.
+    pub(crate) fn portable_path(&self) -> String {
+        self.joined_path("!/").replace('\\', "/")
+    }
 }
 
 fn ser_severity<S: Serializer>(value: &Option<Severity>, s: S) -> Result<S::Ok, S::Error> {
@@ -1069,8 +1077,22 @@ fn write_summary(
     Ok(())
 }
 
+#[derive(Serialize)]
+struct JsonValidationResult<'a> {
+    #[serde(flatten)]
+    result: &'a ValidationResult,
+    path: String,
+}
+
 fn write_json(results: &[ValidationResult], out: &mut (impl Write + ?Sized)) -> io::Result<()> {
-    serde_json::to_writer_pretty(&mut *out, results)
+    let results: Vec<_> = results
+        .iter()
+        .map(|result| JsonValidationResult {
+            result,
+            path: result.portable_path(),
+        })
+        .collect();
+    serde_json::to_writer_pretty(&mut *out, &results)
         .map_err(|e| io::Error::new(e.io_error_kind().unwrap_or(io::ErrorKind::Other), e))?;
     writeln!(out)
 }
@@ -1108,6 +1130,18 @@ mod tests {
         let error = write_json(&[], &mut out).expect_err("the newline write must fail");
 
         assert_eq!(error.kind(), io::ErrorKind::Other);
+    }
+
+    #[test]
+    fn portable_path_normalises_backslashes() {
+        let result = error_result(
+            Input::directory(Path::new(r"repo\project\")),
+            Some(r"nested\M.eventb".to_string()),
+            String::new(),
+            None,
+        );
+
+        assert_eq!(result.portable_path(), "repo/project/nested/M.eventb");
     }
 
     #[test]

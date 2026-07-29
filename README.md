@@ -192,7 +192,8 @@ Summary:
     "input": "file",
     "success": true,
     "component_type": "Context",
-    "component_name": "counter_ctx"
+    "component_name": "counter_ctx",
+    "path": "crates/rossi/examples/counter.eventb"
   }
 ]
 ```
@@ -205,12 +206,14 @@ projects and require semantic checks, so `--no-semantic` is rejected for them.
 
 #### Locating a diagnostic
 
-A row names the input in `file` and, when the diagnostic belongs to one
-component inside it, the member in `inner_filename`. `input` says how the two
-join: a `directory` member is a real path (`my-project/M.eventb`), while an
-`archive` member uses the archive separator (`model.zip!/M.bum`) because no
-such file exists on disk. SARIF `artifactLocation.uri` values follow the same
-rule, so a directory member resolves against the repository tree.
+Every JSON row includes the ready-to-use location in `path`. A `directory`
+member is a real path (`my-project/M.eventb`), while an `archive` member uses
+the archive separator (`model.zip!/M.bum`) because no such file exists on
+disk. SARIF reports the same value in `artifactLocation.uri`.
+
+The component fields remain available separately: `file` names the input,
+`inner_filename` names a member when there is one, and `input` says whether
+the input is a `file`, `directory`, or `archive`.
 
 #### Using it in CI
 

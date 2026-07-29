@@ -287,6 +287,19 @@ fn validate_multi_project_archive_is_per_project() {
         stdout.contains("\"inner_filename\": \"B/C.buc\""),
         "expected B/C.buc in {stdout}"
     );
+    let rows: Vec<serde_json::Value> =
+        serde_json::from_str(&stdout).expect("JSON output should be valid");
+    for member in ["A/C.buc", "B/C.buc"] {
+        let row = rows
+            .iter()
+            .find(|row| row["inner_filename"] == member)
+            .unwrap_or_else(|| panic!("missing {member} row in {stdout}"));
+        assert_eq!(
+            row["path"],
+            format!("{}!/{member}", zip_path.display()),
+            "row: {row}"
+        );
+    }
     // The same name across projects is NOT a duplicate component.
     assert!(
         !stdout.contains("EB019"),
@@ -768,16 +781,31 @@ fn validate_sarif_archive_member_uri_keeps_archive_separator() {
 }
 
 #[test]
-fn validate_json_reports_what_the_input_was() {
-    // A consumer joining `file` and `inner_filename` itself needs to know
-    // which separator applies, so every row says what its input was.
+fn validate_json_reports_input_kind_and_joined_path() {
+    // `path` is the ready-to-use location. The component fields stay available
+    // for consumers that need to distinguish inputs and members.
     let dir = lint_fixture_dir("rossi-cli-json-input-kind");
     let (zip_tmp, zip_path) = lint_fixture_zip("rossi-cli-json-input-kind-zip");
 
-    for (input, expected) in [
-        (dir.to_str().unwrap(), "directory"),
-        (zip_path.to_str().unwrap(), "archive"),
-        ("../rossi/examples/counter.eventb", "file"),
+    for (input, expected_kind, member, expected_path) in [
+        (
+            dir.to_str().unwrap(),
+            "directory",
+            Some("Lint.bum"),
+            format!("{}/Lint.bum", dir.display()),
+        ),
+        (
+            zip_path.to_str().unwrap(),
+            "archive",
+            Some("Lint.bum"),
+            format!("{}!/Lint.bum", zip_path.display()),
+        ),
+        (
+            "../rossi/examples/counter.eventb",
+            "file",
+            None,
+            "../rossi/examples/counter.eventb".to_string(),
+        ),
     ] {
         let output = rossi_command()
             .args(["validate", "--format", "json", input])
@@ -788,8 +816,14 @@ fn validate_json_reports_what_the_input_was() {
         let rows = rows.as_array().expect("rows array");
         assert!(!rows.is_empty(), "{input} produced no rows");
         for row in rows {
-            assert_eq!(row["input"], expected, "row: {row}");
+            assert_eq!(row["input"], expected_kind, "row: {row}");
         }
+        let row = member.map_or(&rows[0], |member| {
+            rows.iter()
+                .find(|row| row["inner_filename"] == member)
+                .unwrap_or_else(|| panic!("missing {member} row in {rows:?}"))
+        });
+        assert_eq!(row["path"], expected_path, "row: {row}");
     }
 
     std::fs::remove_dir_all(&dir).ok();

@@ -111,7 +111,7 @@ fn region_to_sarif(region: &Region) -> Value {
 /// member — which is not a file on disk — takes SARIF's `!/` separator. URIs
 /// are `/`-separated, so a Windows path is normalised on the way out.
 fn uri_for(result: &ValidationResult) -> String {
-    result.joined_path("!/").replace('\\', "/")
+    result.portable_path()
 }
 
 fn sarif_level(severity: Severity) -> &'static str {
