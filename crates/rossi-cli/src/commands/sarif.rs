@@ -69,9 +69,8 @@ fn rule_descriptor(rule: RuleId) -> Value {
 }
 
 fn result_to_sarif(result: &ValidationResult) -> Option<Value> {
-    let rule = result.rule_id?;
+    let message = result.error.as_ref()?;
     let level = sarif_level(result.severity.unwrap_or(Severity::Warning));
-    let message = result.error.clone().unwrap_or_default();
     let uri = uri_for(result);
 
     let mut location = json!({
@@ -86,12 +85,15 @@ fn result_to_sarif(result: &ValidationResult) -> Option<Value> {
         location["logicalLocations"] = json!([{ "name": origin }]);
     }
 
-    Some(json!({
-        "ruleId": rule.code(),
+    let mut sarif_result = json!({
         "level": level,
         "message": { "text": message },
         "locations": [location],
-    }))
+    });
+    if let Some(rule) = result.rule_id {
+        sarif_result["ruleId"] = json!(rule.code());
+    }
+    Some(sarif_result)
 }
 
 /// A SARIF `region` object (1-indexed lines/columns, character units).

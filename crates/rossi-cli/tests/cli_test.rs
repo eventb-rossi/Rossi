@@ -724,6 +724,49 @@ fn validate_sarif_output_is_valid() {
     std::fs::remove_dir_all(&tmp).ok();
 }
 
+#[test]
+fn validate_sarif_keeps_ruleless_errors() {
+    let tmp = tempdir_unique("rossi-cli-sarif-ruleless");
+    let missing = tmp.join("missing.eventb");
+    let empty = tmp.join("empty");
+    std::fs::create_dir(&empty).unwrap();
+
+    for (input, expected_message) in [
+        (
+            &missing,
+            format!("File not found: {}", missing.to_string_lossy()),
+        ),
+        (
+            &empty,
+            "No Event-B components found in directory".to_string(),
+        ),
+    ] {
+        let output = rossi_command()
+            .args(["validate", "--format", "sarif", input.to_str().unwrap()])
+            .output()
+            .expect("Failed to execute command");
+
+        assert_eq!(output.status.code(), Some(1));
+        let doc: serde_json::Value =
+            serde_json::from_slice(&output.stdout).expect("SARIF output should be valid");
+        let results = doc["runs"][0]["results"].as_array().expect("results array");
+        assert_eq!(results.len(), 1, "one result for {}", input.display());
+        let result = &results[0];
+        assert!(
+            result.get("ruleId").is_none(),
+            "operational errors have no validation rule: {result}"
+        );
+        assert_eq!(result["level"], "error");
+        assert_eq!(result["message"]["text"], expected_message);
+        assert_eq!(
+            result["locations"][0]["physicalLocation"]["artifactLocation"]["uri"],
+            input.to_string_lossy().as_ref()
+        );
+    }
+
+    std::fs::remove_dir_all(&tmp).ok();
+}
+
 /// Write the lint fixture (machine + seen context) as loose files in a fresh
 /// temp directory — the unzipped Rodin project layout.
 fn lint_fixture_dir(prefix: &str) -> PathBuf {
