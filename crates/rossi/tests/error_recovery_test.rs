@@ -526,10 +526,13 @@ fn trailing_operator_does_not_flag_the_following_predicate() {
 }
 
 #[test]
-fn recovery_spans_are_absolute_in_multi_component_files() {
-    // In a merged file a recovered declaration's span must be shifted out of its
-    // per-component region into absolute document coordinates. Here C0 is healthy
-    // and M0 is broken, so M0 recovers from a non-zero region offset.
+fn recovery_spans_and_clause_regions_are_absolute_in_multi_component_files() {
+    use rossi::keywords::KeywordId;
+
+    // In a merged file a recovered declaration's span and clause regions must be
+    // shifted out of their per-component region into absolute document
+    // coordinates. Here C0 is healthy and M0 is broken, so M0 recovers from a
+    // non-zero region offset.
     let source = "CONTEXT C0\nCONSTANTS\n    k\nEND\n\nMACHINE M0\nVARIABLES\n    counter\nINVARIANTS\n    @i counter ∈\nEND\n";
     let result = parse_components_with_recovery(source);
 
@@ -547,6 +550,20 @@ fn recovery_spans_are_absolute_in_multi_component_files() {
         .expect("recovered variable carries a span");
     assert_eq!(span.start, source.find("    counter\n").unwrap() + 4);
     assert_eq!(&source[span.start..span.end], "counter");
+
+    let vars = machine
+        .clauses
+        .iter()
+        .find(|c| c.keyword == KeywordId::Variables)
+        .expect("variables region recovered");
+    // The region indexes into the full source at the second component, not the
+    // per-region slice.
+    assert!(
+        source[vars.span.start..vars.span.end].starts_with("VARIABLES"),
+        "got {:?}",
+        &source[vars.span.start..vars.span.end]
+    );
+    assert!(vars.span.start > source.find("MACHINE M0").unwrap());
 }
 
 #[test]
@@ -1404,39 +1421,6 @@ END
         source[events.span.end..].contains("END"),
         "EVENTS region must end before the machine END"
     );
-}
-
-#[test]
-fn recovery_clause_regions_are_absolute_in_multi_component_files() {
-    use rossi::keywords::KeywordId;
-
-    // A recovered clause region in a merged file must be shifted into absolute
-    // document coordinates, like declaration spans. M0 is broken, so it recovers
-    // from a non-zero region offset.
-    let source = "CONTEXT C0\nCONSTANTS\n    k\nEND\n\nMACHINE M0\nVARIABLES\n    counter\nINVARIANTS\n    @i counter ∈\nEND\n";
-    let result = parse_components_with_recovery(source);
-    let components = result.component.expect("recovered components");
-    let machine = components
-        .iter()
-        .find_map(|c| match c {
-            Component::Machine(m) => Some(m),
-            Component::Context(_) => None,
-        })
-        .expect("machine M0 recovered");
-
-    let vars = machine
-        .clauses
-        .iter()
-        .find(|c| c.keyword == KeywordId::Variables)
-        .expect("variables region recovered");
-    // The region indexes into the full source at the second component, not the
-    // per-region slice.
-    assert!(
-        source[vars.span.start..vars.span.end].starts_with("VARIABLES"),
-        "got {:?}",
-        &source[vars.span.start..vars.span.end]
-    );
-    assert!(vars.span.start > source.find("MACHINE M0").unwrap());
 }
 
 #[test]
