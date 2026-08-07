@@ -85,6 +85,9 @@ fn initialisation_refines_event_synthesised() {
         target.contains("M0.bcm") && target.contains("scMachineFile#M0"),
         "scRefinesEvent should point at M0's scMachineFile; got {target}"
     );
+    // Action inheritance works on the implicit path too (pinned in depth
+    // by M5's `extended_event_inherits_parent_actions`).
+    assert_eq!(init.actions.len(), 1);
 }
 
 #[test]
@@ -102,15 +105,6 @@ fn regular_extended_event_refines_event_synthesised() {
         target.contains("M0.bcm") && target.contains("scMachineFile#M0"),
         "scRefinesEvent should point at M0's scMachineFile; got {target}"
     );
-}
-
-#[test]
-fn extended_event_inherits_actions() {
-    // Sanity: the inherited actions show up (already tested by M5 but
-    // useful to pin here so B2 doesn't accidentally re-break it).
-    let v = m1_view();
-    let init = v.events.get("INITIALISATION").expect("INITIALISATION");
-    assert_eq!(init.actions.len(), 1);
-    let e = v.events.get("E").expect("E");
+    // Action inheritance works on the implicit path too.
     assert_eq!(e.actions.len(), 1);
 }
