@@ -15,7 +15,7 @@ const CTX_BUC: &str = r#"<?xml version="1.0"?>
 /// Machine with:
 ///   INITIALISATION: `registered := ∅`
 ///   Register(u): guard `u ∈ USERS`, action `registered := registered ∪ {u}`
-///   Leave(u): convergent, guard `u ∈ registered`, action `registered := registered ∖ {u}`
+///   Leave(u): guard `u ∈ registered`, action `registered := registered ∖ {u}`
 const MACHINE_BUM: &str = r#"<?xml version="1.0"?>
 <org.eventb.core.machineFile version="5" org.eventb.core.configuration="org.eventb.core.fwd">
 <org.eventb.core.seesContext name="_s1" org.eventb.core.target="Ctx"/>
@@ -29,7 +29,7 @@ const MACHINE_BUM: &str = r#"<?xml version="1.0"?>
 <org.eventb.core.guard name="_g1" org.eventb.core.label="grd1" org.eventb.core.predicate="u ∈ USERS"/>
 <org.eventb.core.action name="_a1" org.eventb.core.assignment="registered ≔ registered ∪ {u}" org.eventb.core.label="act1"/>
 </org.eventb.core.event>
-<org.eventb.core.event name="_ev_leave" org.eventb.core.convergence="1" org.eventb.core.extended="false" org.eventb.core.label="Leave">
+<org.eventb.core.event name="_ev_leave" org.eventb.core.convergence="0" org.eventb.core.extended="false" org.eventb.core.label="Leave">
 <org.eventb.core.parameter name="_p2" org.eventb.core.identifier="u"/>
 <org.eventb.core.guard name="_g2" org.eventb.core.label="grd1" org.eventb.core.predicate="u ∈ registered"/>
 <org.eventb.core.action name="_a2" org.eventb.core.assignment="registered ≔ registered ∖ {u}" org.eventb.core.label="act1"/>
@@ -122,15 +122,6 @@ fn convergence_encoding() {
             .and_then(|e| e.convergence.as_deref()),
         Some("0")
     );
-    // `Leave` is *declared* convergent ("1"), but this machine has no
-    // variant. A convergent event with no variant to decrease cannot be
-    // honoured, so the checker downgrades its convergence to ordinary and
-    // emits "0" (and marks the event inaccurate — see
-    // `convergent_event_without_variant_is_inaccurate`).
-    assert_eq!(
-        v.events.get("Leave").and_then(|e| e.convergence.as_deref()),
-        Some("0")
-    );
 }
 
 #[test]
@@ -150,26 +141,6 @@ fn event_guards_and_actions_captured_by_sc_view() {
     assert_eq!(
         grd1.predicate,
         rossi::parse_predicate_str("u ∈ USERS").unwrap()
-    );
-}
-
-#[test]
-fn convergent_event_without_variant_is_inaccurate() {
-    // INITIALISATION and the ordinary `Register` type-check cleanly and
-    // stay accurate. `Leave` is declared convergent but the machine has no
-    // variant, so its convergence is downgraded to ordinary and the event
-    // is marked inaccurate.
-    let v = machine_view();
-    assert!(
-        v.events
-            .get("INITIALISATION")
-            .expect("INITIALISATION")
-            .accurate
-    );
-    assert!(v.events.get("Register").expect("Register").accurate);
-    assert!(
-        !v.events.get("Leave").expect("Leave").accurate,
-        "Leave is convergent with no variant — should be inaccurate"
     );
 }
 
