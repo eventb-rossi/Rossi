@@ -4,6 +4,7 @@
 //! and produce partial ASTs with error information.
 
 use rossi::{Component, parse, parse_components_with_recovery, parse_with_recovery};
+use test_case::test_case;
 
 /// Unwrap the recovered component as a context, failing the test otherwise.
 fn expect_context(result: &rossi::ParseResult<Component>) -> &rossi::ast::Context {
@@ -853,60 +854,71 @@ fn recovery_errors(result: &rossi::ParseResult<Component>) -> Vec<String> {
     result.errors[1..].iter().map(|e| e.to_string()).collect()
 }
 
-#[test]
-fn test_recovery_colon_in_comment_axiom_not_flagged() {
-    let source = r#"
-    CONTEXT issue24
-    CONSTANTS
-        c1
-        +
-    AXIOMS
-        @axm1 c1 = 1 // note: positive
-        @axm2 c1 = 1 // plain comment without it
-    END
-    "#;
+// One scaffold for the issue-#24 label-handling family: an optional SETS
+// clause and the AXIOMS block under test are spliced into a context whose
+// stray `+` in CONSTANTS forces the recovery path; recovery must then parse
+// the axioms without spurious errors and with the expected labels/flags.
+//
+// A colon inside a `//` comment must not flag valid axioms.
+#[test_case(
+    None,
+    "@axm1 c1 = 1 // note: positive\n        @axm2 c1 = 1 // plain comment without it",
+    &[(Some("axm1"), false), (Some("axm2"), false)]
+    ; "colon_in_comment_axiom_not_flagged"
+)]
+// The ASCII spelling of ∈ is `:`; it must not act as a label separator.
+#[test_case(Some("S"), "@axm1 c1 : S", &[(Some("axm1"), false)] ; "ascii_membership_with_at_label")]
+// Colons inside a block comment must not produce errors either.
+#[test_case(
+    None,
+    "/* background: this constant\n           is the answer: to everything */\n        @axm1 c1 = 42",
+    &[(Some("axm1"), false)]
+    ; "block_comment_with_colon"
+)]
+// The undocumented `label: predicate` form must keep working, including
+// with a trailing colon comment.
+#[test_case(None, "axm1: c1 = 1 // note: colon label form", &[(Some("axm1"), false)] ; "colon_label_syntax_still_works")]
+// `c1 : S` is a membership predicate, not label `c1` + predicate `S`.
+#[test_case(Some("S"), "c1 : S", &[(None, false)] ; "bare_membership_line_not_mislabeled")]
+// `@axm1: P` is the eventb-to-txt label spelling: the strict parser strips
+// the trailing colon (label "axm1"), and recovery must agree.
+#[test_case(None, "@axm1: c1 = 1", &[(Some("axm1"), false)] ; "trailing_colon_label_matches_strict_parser")]
+// The legacy `label: P` colon form permits Unicode labels (Rodin does).
+#[test_case(None, "метка: c1 = 1", &[(Some("метка"), false)] ; "colon_label_accepts_unicode")]
+// `@axm1//note` is a complete label per the grammar; masking must not
+// truncate it into an unparseable `@axm1` stub.
+#[test_case(None, "@axm1//note c1 = 1", &[(Some("axm1//note"), false)] ; "comment_markers_in_label_no_spurious_error")]
+// The grammar allows `theorem @label P` and `@label theorem P` inline;
+// recovery must parse both and set the theorem flag.
+#[test_case(
+    None,
+    "@axm1 c1 = 1\n        theorem @thm1 c1 > 0\n        @thm2 theorem c1 < 2",
+    &[(Some("axm1"), false), (Some("thm1"), true), (Some("thm2"), true)]
+    ; "inline_theorem_forms"
+)]
+fn test_recovery_issue24_label_family(
+    sets: Option<&str>,
+    axioms: &str,
+    expected: &[(Option<&str>, bool)],
+) {
+    let sets_clause = sets.map_or_else(String::new, |names| format!("    SETS\n        {names}\n"));
+    let source = format!(
+        "\n    CONTEXT issue24\n{sets_clause}    CONSTANTS\n        c1\n        +\n    AXIOMS\n        {axioms}\n    END\n    "
+    );
 
-    let result = parse_with_recovery(source);
+    let result = parse_with_recovery(&source);
 
     assert!(result.has_recovered(), "Expected recovery with errors");
     let extra = recovery_errors(&result);
-    assert!(
-        extra.is_empty(),
-        "Colon in comment must not flag valid axioms, got: {extra:?}"
-    );
+    assert!(extra.is_empty(), "Expected no extra errors, got: {extra:?}");
 
     let ctx = expect_context(&result);
-    assert_eq!(ctx.axioms.len(), 2);
-    assert_eq!(ctx.axioms[0].label.as_deref(), Some("axm1"));
-    assert_eq!(ctx.axioms[1].label.as_deref(), Some("axm2"));
-}
-
-#[test]
-fn test_recovery_ascii_membership_with_at_label() {
-    // The ASCII spelling of ∈ is `:`; it must not act as a label separator.
-    let source = r#"
-    CONTEXT issue24_membership
-    SETS
-        S
-    CONSTANTS
-        c1
-        +
-    AXIOMS
-        @axm1 c1 : S
-    END
-    "#;
-
-    let result = parse_with_recovery(source);
-
-    let extra = recovery_errors(&result);
-    assert!(
-        extra.is_empty(),
-        "ASCII membership colon must not flag the axiom, got: {extra:?}"
-    );
-
-    let ctx = expect_context(&result);
-    assert_eq!(ctx.axioms.len(), 1);
-    assert_eq!(ctx.axioms[0].label.as_deref(), Some("axm1"));
+    let flags: Vec<(Option<&str>, bool)> = ctx
+        .axioms
+        .iter()
+        .map(|a| (a.label.as_deref(), a.is_theorem))
+        .collect();
+    assert_eq!(flags, expected);
 }
 
 #[test]
@@ -933,82 +945,6 @@ fn test_recovery_comment_only_lines_no_errors() {
     let m = expect_machine(&result);
     assert_eq!(m.invariants.len(), 1);
     assert_eq!(m.invariants[0].label.as_deref(), Some("inv1"));
-}
-
-#[test]
-fn test_recovery_block_comment_with_colon() {
-    let source = r#"
-    CONTEXT issue24_block
-    CONSTANTS
-        c1
-        +
-    AXIOMS
-        /* background: this constant
-           is the answer: to everything */
-        @axm1 c1 = 42
-    END
-    "#;
-
-    let result = parse_with_recovery(source);
-
-    let extra = recovery_errors(&result);
-    assert!(
-        extra.is_empty(),
-        "Block comment must not produce errors, got: {extra:?}"
-    );
-
-    let ctx = expect_context(&result);
-    assert_eq!(ctx.axioms.len(), 1);
-    assert_eq!(ctx.axioms[0].label.as_deref(), Some("axm1"));
-}
-
-#[test]
-fn test_recovery_colon_label_syntax_still_works() {
-    // The undocumented `label: predicate` form must keep working, including
-    // with a trailing colon comment.
-    let source = r#"
-    CONTEXT issue24_colon_label
-    CONSTANTS
-        c1
-        +
-    AXIOMS
-        axm1: c1 = 1 // note: colon label form
-    END
-    "#;
-
-    let result = parse_with_recovery(source);
-
-    let extra = recovery_errors(&result);
-    assert!(extra.is_empty(), "Expected no extra errors, got: {extra:?}");
-
-    let ctx = expect_context(&result);
-    assert_eq!(ctx.axioms.len(), 1);
-    assert_eq!(ctx.axioms[0].label.as_deref(), Some("axm1"));
-}
-
-#[test]
-fn test_recovery_bare_membership_line_not_mislabeled() {
-    // `c1 : S` is a membership predicate, not label `c1` + predicate `S`.
-    let source = r#"
-    CONTEXT issue24_bare_membership
-    SETS
-        S
-    CONSTANTS
-        c1
-        +
-    AXIOMS
-        c1 : S
-    END
-    "#;
-
-    let result = parse_with_recovery(source);
-
-    let extra = recovery_errors(&result);
-    assert!(extra.is_empty(), "Expected no extra errors, got: {extra:?}");
-
-    let ctx = expect_context(&result);
-    assert_eq!(ctx.axioms.len(), 1);
-    assert_eq!(ctx.axioms[0].label, None, "must not mistake c1 for a label");
 }
 
 #[test]
@@ -1120,67 +1056,6 @@ fn test_recovery_dispatch_ignores_keyword_inside_identifier() {
 }
 
 #[test]
-fn test_recovery_trailing_colon_label_matches_strict_parser() {
-    // `@axm1: P` is the eventb-to-txt label spelling: the strict parser
-    // strips the trailing colon (label "axm1"), and recovery must agree.
-    let source = r#"
-    CONTEXT issue24_label_colon
-    CONSTANTS
-        c1
-        +
-    AXIOMS
-        @axm1: c1 = 1
-    END
-    "#;
-
-    let result = parse_with_recovery(source);
-
-    let extra = recovery_errors(&result);
-    assert!(extra.is_empty(), "Expected no extra errors, got: {extra:?}");
-
-    let ctx = expect_context(&result);
-    assert_eq!(ctx.axioms.len(), 1);
-    assert_eq!(ctx.axioms[0].label.as_deref(), Some("axm1"));
-}
-
-#[test]
-fn test_recovery_inline_theorem_forms() {
-    // The grammar allows `theorem @label P` and `@label theorem P` inline;
-    // recovery must parse both, set the flag, and report no errors.
-    let source = r#"
-    CONTEXT issue24_theorem
-    CONSTANTS
-        c1
-        +
-    AXIOMS
-        @axm1 c1 = 1
-        theorem @thm1 c1 > 0
-        @thm2 theorem c1 < 2
-    END
-    "#;
-
-    let result = parse_with_recovery(source);
-
-    let extra = recovery_errors(&result);
-    assert!(extra.is_empty(), "Expected no extra errors, got: {extra:?}");
-
-    let ctx = expect_context(&result);
-    let flags: Vec<(Option<&str>, bool)> = ctx
-        .axioms
-        .iter()
-        .map(|a| (a.label.as_deref(), a.is_theorem))
-        .collect();
-    assert_eq!(
-        flags,
-        [
-            (Some("axm1"), false),
-            (Some("thm1"), true),
-            (Some("thm2"), true),
-        ]
-    );
-}
-
-#[test]
 fn test_recovery_error_names_label_with_position() {
     // Two broken axioms. The strict parse pinpoints the first, so its recovery
     // duplicate is collapsed away; recovery still reports the second one, with
@@ -1289,31 +1164,6 @@ fn test_recovery_context_identifier_does_not_flip_dispatch() {
 }
 
 #[test]
-fn test_recovery_colon_label_accepts_unicode() {
-    // The legacy `label: P` colon form permits Unicode labels (Rodin does).
-    let source = r#"
-    CONTEXT unicode_label
-    CONSTANTS
-        c1
-        +
-    AXIOMS
-        метка: c1 = 1
-    END
-    "#;
-
-    let result = parse_with_recovery(source);
-
-    let ctx = expect_context(&result);
-    assert_eq!(ctx.axioms.len(), 1);
-    assert_eq!(ctx.axioms[0].label.as_deref(), Some("метка"));
-    assert!(
-        recovery_errors(&result).is_empty(),
-        "no spurious error for the Unicode colon label: {:?}",
-        recovery_errors(&result)
-    );
-}
-
-#[test]
 fn test_recovery_inline_clause_content() {
     // Identifiers and predicates written on the clause keyword's own line
     // must be recovered like any other.
@@ -1395,32 +1245,6 @@ fn test_recovery_keyword_inside_label_does_not_truncate_clause() {
     assert!(
         recovery_errors(&result).is_empty(),
         "no spurious error for the keyword-bearing label: {:?}",
-        recovery_errors(&result)
-    );
-}
-
-#[test]
-fn test_recovery_comment_markers_in_label_no_spurious_error() {
-    // `@axm1//note` is a complete label per the grammar; masking must not
-    // truncate it into an unparseable `@axm1` stub.
-    let source = r#"
-    CONTEXT label_slashes
-    CONSTANTS
-        c1
-        +
-    AXIOMS
-        @axm1//note c1 = 1
-    END
-    "#;
-
-    let result = parse_with_recovery(source);
-
-    let ctx = expect_context(&result);
-    assert_eq!(ctx.axioms.len(), 1);
-    assert_eq!(ctx.axioms[0].label.as_deref(), Some("axm1//note"));
-    assert!(
-        recovery_errors(&result).is_empty(),
-        "no spurious error for the slash-bearing label: {:?}",
         recovery_errors(&result)
     );
 }
