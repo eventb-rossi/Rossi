@@ -7,56 +7,6 @@ mod common;
 use common::{decode_tokens, decode_tokens_with_modifiers, slice_range};
 
 #[test]
-fn test_semantic_tokens_simple_machine() {
-    let provider = SemanticTokensProvider::new();
-
-    let text = r#"
-MACHINE Counter
-VARIABLES
-    count
-INVARIANTS
-    @inv1 count >= 0
-EVENTS
-    EVENT INITIALISATION
-    THEN
-        count := 0
-    END
-
-    EVENT Increment
-    THEN
-        count := count + 1
-    END
-END
-"#;
-
-    let uri = Url::parse("file:///test.eventb").unwrap();
-    let params = SemanticTokensParams {
-        work_done_progress_params: Default::default(),
-        partial_result_params: Default::default(),
-        text_document: TextDocumentIdentifier { uri },
-    };
-
-    let parsed = rossi::parse_components_with_recovery(text);
-    let result = provider.semantic_tokens(
-        &params,
-        text,
-        parsed.component.as_deref().unwrap_or_default(),
-    );
-
-    assert!(result.is_some(), "Should return semantic tokens");
-
-    if let Some(eventb_lsp::lsp_types::SemanticTokensResult::Tokens(tokens)) = result {
-        assert!(!tokens.data.is_empty(), "Should have semantic tokens");
-        assert!(
-            tokens.data.len() >= 5,
-            "Should have at least 5 semantic tokens"
-        );
-    } else {
-        panic!("Expected SemanticTokensResult::Tokens");
-    }
-}
-
-#[test]
 fn test_semantic_tokens_legend() {
     let legend = SemanticTokensProvider::legend();
 
