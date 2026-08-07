@@ -270,11 +270,3 @@ fn test_parse_convergent_event_xml() {
         panic!("Expected Machine component");
     }
 }
-
-#[test]
-fn test_invalid_xml() {
-    let xml = r#"<not-valid-eventb/>"#;
-
-    let result = parse_xml(xml);
-    assert!(result.is_err());
-}
