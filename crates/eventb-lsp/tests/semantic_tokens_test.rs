@@ -77,65 +77,50 @@ fn comment_text(text: &str, line: u32, col: u32, len: u32) -> String {
 }
 
 #[test]
-fn test_no_identifier_tokens_inside_comments() {
-    // The comment mentions `x` before its declaration; the variable token
-    // must land on the declaration, not inside the comment (issue #24).
-    let text = "MACHINE m\nVARIABLES\n    // state: x is the counter\n    x\nINVARIANTS\n    @inv1 x >= 0\nEVENTS\n    EVENT INITIALISATION\n    THEN\n        x := 0\n    END\nEND\n";
+fn test_tokens_never_land_inside_comments() {
+    // Each fixture's comment mentions the entity before its real occurrence
+    // (issue #24): no token of the row's type may sit on the comment line, and
+    // each real occurrence must carry it.
+    // (case, text, token_type, comment_line, real_positions)
+    let cases: [(&str, &str, &str, u32, &[(u32, u32)]); 3] = [
+        (
+            "variable mentioned in a comment before its declaration",
+            "MACHINE m\nVARIABLES\n    // state: x is the counter\n    x\nINVARIANTS\n    @inv1 x >= 0\nEVENTS\n    EVENT INITIALISATION\n    THEN\n        x := 0\n    END\nEND\n",
+            "variable",
+            2,
+            &[(3, 4)],
+        ),
+        (
+            "label mentioned in a comment before the real @inv1",
+            "MACHINE m\nVARIABLES\n    x\nINVARIANTS\n    // inv1: x stays a natural\n    @inv1 x >= 0\nEVENTS\n    EVENT INITIALISATION\n    THEN\n        x := 0\n    END\nEND\n",
+            "macro", // labels use the MACRO slot
+            4,
+            &[(5, 5)],
+        ),
+        (
+            "AXIOMS and END spelled in a comment before the real keywords",
+            "CONTEXT c\n// the AXIOMS: section and its END: marker\nAXIOMS\n    @axm1 1 = 1\nEND\n",
+            "keyword",
+            1,
+            &[(2, 0), (4, 0)],
+        ),
+    ];
 
-    let tokens = decode_tokens(text);
-
-    let variable = token_type_index("variable");
-    let variables: Vec<_> = tokens.iter().filter(|t| t.3 == variable).collect();
-    assert!(
-        variables.iter().all(|t| t.0 != 2),
-        "no variable token may sit on the comment line, got {variables:?}"
-    );
-    assert!(
-        variables.iter().any(|t| t.0 == 3 && t.1 == 4),
-        "the declaration of x must carry the variable token, got {variables:?}"
-    );
-}
-
-#[test]
-fn test_no_label_tokens_inside_comments() {
-    let text = "MACHINE m\nVARIABLES\n    x\nINVARIANTS\n    // inv1: x stays a natural\n    @inv1 x >= 0\nEVENTS\n    EVENT INITIALISATION\n    THEN\n        x := 0\n    END\nEND\n";
-
-    let tokens = decode_tokens(text);
-
-    let label = token_type_index("macro"); // labels use the MACRO slot
-    let labels: Vec<_> = tokens.iter().filter(|t| t.3 == label).collect();
-    assert!(
-        labels.iter().all(|t| t.0 != 4),
-        "no label token may sit on the comment line, got {labels:?}"
-    );
-    assert!(
-        labels.iter().any(|t| t.0 == 5 && t.1 == 5),
-        "the real @inv1 must carry the label token, got {labels:?}"
-    );
-}
-
-#[test]
-fn test_keyword_in_comment_not_tokenized() {
-    // "AXIOMS" and "END" appear in a comment before the real keywords.
-    let text =
-        "CONTEXT c\n// the AXIOMS: section and its END: marker\nAXIOMS\n    @axm1 1 = 1\nEND\n";
-
-    let tokens = decode_tokens(text);
-
-    let keyword = token_type_index("keyword");
-    let keywords: Vec<_> = tokens.iter().filter(|t| t.3 == keyword).collect();
-    assert!(
-        keywords.iter().all(|t| t.0 != 1),
-        "no keyword token may sit on the comment line, got {keywords:?}"
-    );
-    assert!(
-        keywords.iter().any(|t| t.0 == 2 && t.1 == 0),
-        "the real AXIOMS keyword must be tokenized, got {keywords:?}"
-    );
-    assert!(
-        keywords.iter().any(|t| t.0 == 4 && t.1 == 0),
-        "the real END keyword must be tokenized, got {keywords:?}"
-    );
+    for (case, text, token_type, comment_line, real_positions) in cases {
+        let tokens = decode_tokens(text);
+        let ty = token_type_index(token_type);
+        let of_type: Vec<_> = tokens.iter().filter(|t| t.3 == ty).collect();
+        assert!(
+            of_type.iter().all(|t| t.0 != comment_line),
+            "{case}: no {token_type} token may sit on comment line {comment_line}, got {of_type:?}"
+        );
+        for &(line, col) in real_positions {
+            assert!(
+                of_type.iter().any(|t| t.0 == line && t.1 == col),
+                "{case}: the real occurrence at ({line}, {col}) must carry the {token_type} token, got {of_type:?}"
+            );
+        }
+    }
 }
 
 #[test]
