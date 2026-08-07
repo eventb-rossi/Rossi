@@ -718,6 +718,28 @@ fn test_successful_parse_no_errors() {
 }
 
 #[test]
+fn test_recovery_result_api() {
+    // The ParseResult accessor surface on a clean parse. into_component and
+    // into_result each consume the result, so each gets a fresh parse.
+    let source = r#"
+    CONTEXT test
+    END
+    "#;
+
+    let result = parse_with_recovery(source);
+    assert!(result.is_ok());
+    assert!(!result.is_err());
+    assert!(!result.has_recovered());
+    assert!(result.get_errors().is_empty());
+
+    let component = parse_with_recovery(source).into_component();
+    assert!(component.is_some());
+
+    let result = parse_with_recovery(source).into_result();
+    assert!(result.is_ok(), "Valid input should convert to Ok result");
+}
+
+#[test]
 fn test_recovery_preserves_valid_data() {
     let source = r#"
     CONTEXT recovery_test

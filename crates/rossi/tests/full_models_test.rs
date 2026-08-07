@@ -376,43 +376,6 @@ fn test_variant_clause_arithmetic_expression() {
 }
 
 // ============================================================================
-// parse_with_recovery() tests
-// ============================================================================
-
-#[test]
-fn test_recovery_result_api() {
-    use rossi::parse_with_recovery;
-
-    // Test ParseResult API methods
-    let valid_source = r#"
-    CONTEXT test
-    END
-    "#;
-
-    let result = parse_with_recovery(valid_source);
-    assert!(result.is_ok());
-    assert!(!result.is_err());
-    assert!(!result.has_recovered());
-    assert!(result.get_errors().is_empty());
-
-    let component = result.into_component();
-    assert!(component.is_some());
-}
-
-#[test]
-fn test_recovery_into_result_valid() {
-    use rossi::parse_with_recovery;
-
-    let source = r#"
-    CONTEXT test
-    END
-    "#;
-
-    let result = parse_with_recovery(source).into_result();
-    assert!(result.is_ok(), "Valid input should convert to Ok result");
-}
-
-// ============================================================================
 // Mixed labeled/unlabeled actions test
 // ============================================================================
 
