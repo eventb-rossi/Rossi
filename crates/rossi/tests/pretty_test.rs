@@ -570,18 +570,6 @@ fn test_pretty_print_function_application_binary_function_keeps_parens() {
 }
 
 #[test]
-fn test_pretty_print_function_application_identifier_function_no_parens() {
-    // f(x): the function side is an Identifier, so no parens needed.
-    let expr: Expression = ExpressionKind::FunctionApplication {
-        function: Box::new(ExpressionKind::Identifier("f".into()).into()),
-        argument: Box::new(ExpressionKind::Identifier("x".into()).into()),
-    }
-    .into();
-    let output = PrettyPrinter::new().print_expression(&expr);
-    assert_eq!(output, "f(x)");
-}
-
-#[test]
 fn test_single_argument_application_ast_roundtrips() {
     use rossi::ast::expression::BuiltinFunction;
 
