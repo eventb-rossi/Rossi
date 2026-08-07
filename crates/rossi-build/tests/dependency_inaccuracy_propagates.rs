@@ -52,39 +52,24 @@ fn context_project() -> Project {
 }
 
 #[test]
-fn inaccurate_context_baseline() {
-    // Sanity: the lever actually produces an inaccurate context file.
+fn context_inaccuracy_propagates() {
     let r = build(&context_project());
+    // Sanity first: the lever actually produces an inaccurate context file.
     assert!(
         !r.file("C1.bcc").expect("C1.bcc").accurate,
         "C1 should be inaccurate (unresolved constant); {:?}",
         r.diagnostics
     );
-}
-
-#[test]
-fn extends_inaccurate_context_propagates() {
-    let r = build(&context_project());
     assert!(
         !r.file("C2.bcc").expect("C2.bcc").accurate,
         "C2 EXTENDS inaccurate C1 ⇒ inaccurate; {:?}",
         r.diagnostics
     );
-}
-
-#[test]
-fn extends_propagation_is_transitive() {
-    let r = build(&context_project());
     assert!(
         !r.file("C3.bcc").expect("C3.bcc").accurate,
         "C3 EXTENDS C2 (inaccurate via propagation) ⇒ inaccurate; {:?}",
         r.diagnostics
     );
-}
-
-#[test]
-fn sees_inaccurate_context_propagates() {
-    let r = build(&context_project());
     assert!(
         !r.file("MS.bcm").expect("MS.bcm").accurate,
         "MS SEES inaccurate C1 ⇒ inaccurate; {:?}",
@@ -116,18 +101,14 @@ fn machine_project() -> Project {
 }
 
 #[test]
-fn inaccurate_machine_baseline() {
+fn machine_inaccuracy_propagates() {
     let r = build(&machine_project());
+    // Sanity first: the lever actually produces an inaccurate machine file.
     assert!(
         !r.file("M0.bcm").expect("M0.bcm").accurate,
         "M0 should be inaccurate (dropped invariant); {:?}",
         r.diagnostics
     );
-}
-
-#[test]
-fn refines_inaccurate_machine_propagates() {
-    let r = build(&machine_project());
     assert!(
         !r.file("M1.bcm").expect("M1.bcm").accurate,
         "M1 REFINES inaccurate M0 ⇒ inaccurate; {:?}",
