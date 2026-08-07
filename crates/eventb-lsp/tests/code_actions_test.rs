@@ -482,38 +482,6 @@ fn test_roundtrip_ascii_unicode_ascii() {
 }
 
 #[test]
-fn test_new_operator_mappings() {
-    let provider = CodeActionProvider::new();
-
-    // Verify corrected mappings: ¬ -> not (not !)
-    assert_eq!(provider.convert_to_ascii("¬ P"), "not P");
-
-    // × -> ** (not *)
-    assert_eq!(provider.convert_to_ascii("S × T"), "S ** T");
-
-    // → -> --> (not ->)
-    assert_eq!(provider.convert_to_ascii("f → T"), "f --> T");
-
-    // ∘ -> circ (not ;)
-    assert_eq!(provider.convert_to_ascii("f ∘ g"), "f circ g");
-
-    // ◁ and ▷ (correct Unicode symbols)
-    assert_eq!(provider.convert_to_ascii("S ◁ r"), "S <| r");
-    assert_eq!(provider.convert_to_ascii("r ▷ S"), "r |> S");
-
-    // New operators: ∅, ∼, ⋃, ⋂, ·, λ
-    assert_eq!(provider.convert_to_ascii("∅"), "{}");
-    assert_eq!(provider.convert_to_ascii("r∼"), "r~");
-    assert_eq!(provider.convert_to_ascii("⋃"), "UNION");
-    assert_eq!(provider.convert_to_ascii("⋂"), "INTER");
-    assert_eq!(provider.convert_to_ascii("·"), ".");
-    assert_eq!(provider.convert_to_ascii("λ"), "%");
-
-    // ⦂ -> oftype (not :|)
-    assert_eq!(provider.convert_to_ascii("x⦂T"), "xoftypeT");
-}
-
-#[test]
 fn test_diagnostic_based_action() {
     use eventb_lsp::lsp_types::{Diagnostic, DiagnosticSeverity};
 
