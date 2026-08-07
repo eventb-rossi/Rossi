@@ -801,17 +801,21 @@ fn test_recovery_with_commas_in_lists() {
 
 #[test]
 fn test_recovery_unknown_component_type() {
-    let source = r#"
+    // An undispatchable header — an unknown component keyword or free prose —
+    // must fail completely since we can't determine the component type.
+    for source in [
+        r#"
     UNKNOWN something
     SETS
         MySet
     END
-    "#;
-
-    let result = parse_with_recovery(source);
-
-    // Should fail completely since we can't determine the component type
-    assert!(result.is_err(), "Expected complete failure");
+    "#,
+        "this is not Event-B at all",
+    ] {
+        let result = parse_with_recovery(source);
+        assert!(result.is_err(), "Expected complete failure for {source:?}");
+        assert!(result.component.is_none(), "no component for {source:?}");
+    }
 }
 
 // ============================================================================
