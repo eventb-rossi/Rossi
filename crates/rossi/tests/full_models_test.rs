@@ -957,14 +957,17 @@ fn assert_applied_atom(left: &ExpressionKind, kind: AtomicBuiltinKind) {
 #[test]
 fn test_builtin_id_prj() {
     // V2: `id(x)`/`prj1(x)` are function application of the generic atom; a
-    // projection of a pair uses a maplet argument (`prj1(S ↦ T)`).
+    // projection of a pair uses a maplet argument (`prj1(S ↦ T)`), and a
+    // plain identifier argument (`prj1(S)`, `prj2(cv)`) is the same form.
     let ctx = common::parse_context(
-        "CONTEXT test\nAXIOMS\n    @axm1 id(S) = S\n    @axm2 prj1(S ↦ T) = S\n    @axm3 prj2(S ↦ T) = T\nEND\n",
+        "CONTEXT test\nAXIOMS\n    @axm1 id(S) = S\n    @axm2 prj1(S ↦ T) = S\n    @axm3 prj2(S ↦ T) = T\n    @axm4 prj1(S) = T\n    @axm5 prj2(cv) = FALSE\nEND\n",
     );
     let atom = |i: usize, k| assert_applied_atom(comparison_lhs(&ctx.axioms[i].predicate.kind), k);
     atom(0, AtomicBuiltinKind::Id);
     atom(1, AtomicBuiltinKind::Prj1);
     atom(2, AtomicBuiltinKind::Prj2);
+    atom(3, AtomicBuiltinKind::Prj1);
+    atom(4, AtomicBuiltinKind::Prj2);
 }
 
 #[test]
@@ -1077,26 +1080,6 @@ fn test_builtin_card_comma_form_rejected() {
     // function application is single-argument.
     let source = "CONTEXT test\nAXIOMS\n    @axm1 card(S, T) = 5\nEND\n";
     assert!(parse(source).is_err(), "Expected error for card(S, T)");
-}
-
-#[test]
-fn test_builtin_prj1_single_arg() {
-    // V2: prj1(S) is function application of the generic projection atom.
-    let ctx = common::parse_context("CONTEXT test\nAXIOMS\n    @axm1 prj1(S) = T\nEND\n");
-    assert_applied_atom(
-        comparison_lhs(&ctx.axioms[0].predicate.kind),
-        AtomicBuiltinKind::Prj1,
-    );
-}
-
-#[test]
-fn test_builtin_prj2_single_arg() {
-    // V2: prj2(cv) is function application of the generic projection atom.
-    let ctx = common::parse_context("CONTEXT test\nAXIOMS\n    @axm1 prj2(cv) = FALSE\nEND\n");
-    assert_applied_atom(
-        comparison_lhs(&ctx.axioms[0].predicate.kind),
-        AtomicBuiltinKind::Prj2,
-    );
 }
 
 #[test]
