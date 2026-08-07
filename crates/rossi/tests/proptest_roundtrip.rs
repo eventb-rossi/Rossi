@@ -171,7 +171,10 @@ fn arb_atomic_builtin() -> impl Strategy<Value = AtomicBuiltinKind> {
 // Expression strategy (recursive, depth-limited)
 // =============================================================================
 
-fn arb_leaf_expression() -> impl Strategy<Value = Expression> {
+/// Leaf expressions without the `Bool(...)` branch — also used as comparison
+/// operands inside `Bool` below, to avoid unbounded mutual recursion between
+/// the expression and predicate strategies.
+fn arb_bool_free_leaf_expression() -> impl Strategy<Value = Expression> {
     // NOTE: Expression::True and Expression::False are excluded because their
     // printed form (⊤/⊥ or TRUE/FALSE) is ambiguous with Predicate::True/False
     // at parse boundaries (e.g. as LHS of a comparison). They are still reachable
@@ -185,10 +188,27 @@ fn arb_leaf_expression() -> impl Strategy<Value = Expression> {
         Just(ExpressionKind::Naturals1.into()),
         Just(ExpressionKind::Integers.into()),
         Just(ExpressionKind::BoolType.into()),
-        // Bool(predicate) — inline simple predicates to avoid circular type dependency
-        prop_oneof![
+    ]
+}
+
+fn arb_leaf_expression() -> impl Strategy<Value = Expression> {
+    // The weights keep every Bool-free leaf as likely as before (8 branches),
+    // with Bool(...) as a ninth equally-likely branch.
+    prop_oneof![
+        8 => arb_bool_free_leaf_expression(),
+        // Bool(predicate) — leaf predicates only (True/False or a comparison
+        // of Bool-free leaves) to avoid circular strategy recursion.
+        1 => prop_oneof![
             Just(Predicate::from(PredicateKind::True)),
-            Just(Predicate::from(PredicateKind::False))
+            Just(Predicate::from(PredicateKind::False)),
+            (
+                arb_comparison_op(),
+                arb_bool_free_leaf_expression(),
+                arb_bool_free_leaf_expression()
+            )
+                .prop_map(|(op, left, right)| {
+                    Predicate::from(PredicateKind::Comparison { op, left, right })
+                }),
         ]
         .prop_map(|p| ExpressionKind::Bool(Box::new(p)).into()),
     ]
@@ -711,6 +731,17 @@ fn arb_context() -> impl Strategy<Value = Component> {
 
 fn arb_machine() -> impl Strategy<Value = Component> {
     (
+        // REFINES is a single optional machine name (Machine::refines is
+        // Option<String>), never a list.
+        proptest::option::of(prop_oneof![
+            Just("abs1".to_string()),
+            Just("abs2".to_string())
+        ]),
+        // SEES is a list of 0..3 distinct context names.
+        proptest::sample::subsequence(
+            vec!["ctx1".to_string(), "ctx2".to_string(), "ctx3".to_string()],
+            0..3,
+        ),
         proptest::collection::vec(arb_identifier(), 0..4),
         proptest::collection::vec(arb_axiom(), 0..3),
         proptest::collection::vec(arb_theorem(), 0..2),
@@ -719,8 +750,19 @@ fn arb_machine() -> impl Strategy<Value = Component> {
         proptest::collection::vec(arb_event(), 0..3),
     )
         .prop_map(
-            |(variables, mut invariants, theorems, variant, initialisation, events)| {
+            |(
+                refines,
+                sees,
+                variables,
+                mut invariants,
+                theorems,
+                variant,
+                initialisation,
+                events,
+            )| {
                 let mut machine = Machine::new("PropMch".into());
+                machine.refines = refines;
+                machine.sees = sees;
                 machine.variables = variables.into_iter().map(NamedElement::new).collect();
                 invariants.extend(theorems);
                 machine.invariants = invariants;
@@ -789,6 +831,40 @@ fn wrap_action_in_machine(action: &Action, variables: &[String]) -> Component {
 // Roundtrip assertion helpers
 // =============================================================================
 
+/// Run a property over `cases` random values of the built strategy, with
+/// everything — strategy construction, value generation, shrinking, and the
+/// property body — on a thread with a 16 MiB stack.
+///
+/// The `proptest!` macro would run all of that on the default 2 MiB libtest
+/// thread, which can overflow in debug builds: strategy generation recurses
+/// through the whole combinator chain per AST level, and the
+/// recursive-descent reparse has a comparable per-level cost (cf.
+/// `test_deep_predicate_fits_in_small_stack` in simple_predicate_test.rs).
+fn check_roundtrip_property<S: Strategy>(
+    cases: u32,
+    make_strategy: impl FnOnce() -> S + Send,
+    property: impl Fn(&S::Value) + Send,
+) {
+    std::thread::scope(|scope| {
+        std::thread::Builder::new()
+            .stack_size(16 * 1024 * 1024)
+            .spawn_scoped(scope, move || {
+                let mut config = ProptestConfig::with_cases(cases);
+                config.source_file = Some(file!());
+                let mut runner = proptest::test_runner::TestRunner::new(config);
+                runner
+                    .run(&make_strategy(), |value| {
+                        property(&value);
+                        Ok(())
+                    })
+                    .unwrap_or_else(|failure| panic!("{failure}"));
+            })
+            .expect("failed to spawn property thread")
+            .join()
+            .unwrap_or_else(|panic| std::panic::resume_unwind(panic));
+    });
+}
+
 /// Print a Component with the given printer, re-parse, and assert ASTs match.
 fn assert_component_roundtrip(original: &Component, printer: &PrettyPrinter) {
     let mode = if printer.use_unicode {
@@ -813,93 +889,113 @@ fn assert_component_roundtrip(original: &Component, printer: &PrettyPrinter) {
 }
 
 // =============================================================================
-// proptest! tests
+// Property tests (via check_roundtrip_property — see its doc comment for why
+// these do not use the proptest! macro)
 // =============================================================================
 
-proptest! {
-    #![proptest_config(ProptestConfig::with_cases(500))]
+// --- Expression roundtrips ---
 
-    // --- Expression roundtrips ---
-
-    #[test]
-    fn expression_roundtrip_unicode(expr in arb_expression()) {
-        let component = wrap_expression_in_context(&expr);
+#[test]
+fn expression_roundtrip_unicode() {
+    check_roundtrip_property(500, arb_expression, |expr| {
+        let component = wrap_expression_in_context(expr);
         assert_component_roundtrip(&component, &PrettyPrinter::new());
-    }
-
-    #[test]
-    fn expression_roundtrip_ascii(expr in arb_expression()) {
-        let component = wrap_expression_in_context(&expr);
-        assert_component_roundtrip(&component, &PrettyPrinter::ascii());
-    }
-
-    // --- Predicate roundtrips ---
-
-    #[test]
-    fn predicate_roundtrip_unicode(pred in arb_predicate()) {
-        let component = wrap_predicate_in_context(&pred);
-        assert_component_roundtrip(&component, &PrettyPrinter::new());
-    }
-
-    #[test]
-    fn predicate_roundtrip_ascii(pred in arb_predicate()) {
-        let component = wrap_predicate_in_context(&pred);
-        assert_component_roundtrip(&component, &PrettyPrinter::ascii());
-    }
-
-    // --- Action roundtrips ---
-
-    #[test]
-    fn action_roundtrip_unicode((action, vars) in arb_action()) {
-        let component = wrap_action_in_machine(&action, &vars);
-        assert_component_roundtrip(&component, &PrettyPrinter::new());
-    }
-
-    #[test]
-    fn action_roundtrip_ascii((action, vars) in arb_action()) {
-        let component = wrap_action_in_machine(&action, &vars);
-        assert_component_roundtrip(&component, &PrettyPrinter::ascii());
-    }
-
-    // Standalone-action roundtrip: guards the `action ⊆ standalone_action`
-    // superset property (a new action form added to the text grammar but
-    // forgotten in `standalone_action` would fail here, not first in a
-    // Rodin-import regression) and gives parse_action_str + the printer's
-    // `;`-guard generative coverage.
-    #[test]
-    fn action_roundtrip_standalone((action, _vars) in arb_action()) {
-        let printed = PrettyPrinter::new().print_action(&action);
-        let reparsed = rossi::parse_action_str(&printed).unwrap_or_else(|e| {
-            panic!("Failed to parse printed action:\n{e}\n\nPrinted:\n{printed}\n\nOriginal AST:\n{action:#?}")
-        });
-        prop_assert_eq!(&action, &reparsed, "standalone roundtrip mismatch.\nPrinted:\n{}", printed);
-    }
+    });
 }
 
-proptest! {
-    #![proptest_config(ProptestConfig::with_cases(200))]
-
-    // --- Context roundtrips ---
-
-    #[test]
-    fn context_roundtrip_unicode(component in arb_context()) {
-        assert_component_roundtrip(&component, &PrettyPrinter::new());
-    }
-
-    #[test]
-    fn context_roundtrip_ascii(component in arb_context()) {
+#[test]
+fn expression_roundtrip_ascii() {
+    check_roundtrip_property(500, arb_expression, |expr| {
+        let component = wrap_expression_in_context(expr);
         assert_component_roundtrip(&component, &PrettyPrinter::ascii());
-    }
+    });
+}
 
-    // --- Machine roundtrips ---
+// --- Predicate roundtrips ---
 
-    #[test]
-    fn machine_roundtrip_unicode(component in arb_machine()) {
+#[test]
+fn predicate_roundtrip_unicode() {
+    check_roundtrip_property(500, arb_predicate, |pred| {
+        let component = wrap_predicate_in_context(pred);
         assert_component_roundtrip(&component, &PrettyPrinter::new());
-    }
+    });
+}
 
-    #[test]
-    fn machine_roundtrip_ascii(component in arb_machine()) {
+#[test]
+fn predicate_roundtrip_ascii() {
+    check_roundtrip_property(500, arb_predicate, |pred| {
+        let component = wrap_predicate_in_context(pred);
         assert_component_roundtrip(&component, &PrettyPrinter::ascii());
-    }
+    });
+}
+
+// --- Action roundtrips ---
+
+#[test]
+fn action_roundtrip_unicode() {
+    check_roundtrip_property(500, arb_action, |(action, vars)| {
+        let component = wrap_action_in_machine(action, vars);
+        assert_component_roundtrip(&component, &PrettyPrinter::new());
+    });
+}
+
+#[test]
+fn action_roundtrip_ascii() {
+    check_roundtrip_property(500, arb_action, |(action, vars)| {
+        let component = wrap_action_in_machine(action, vars);
+        assert_component_roundtrip(&component, &PrettyPrinter::ascii());
+    });
+}
+
+// Standalone-action roundtrip: guards the `action ⊆ standalone_action`
+// superset property (a new action form added to the text grammar but
+// forgotten in `standalone_action` would fail here, not first in a
+// Rodin-import regression) and gives parse_action_str + the printer's
+// `;`-guard generative coverage.
+#[test]
+fn action_roundtrip_standalone() {
+    check_roundtrip_property(500, arb_action, |(action, _vars)| {
+        let printed = PrettyPrinter::new().print_action(action);
+        let reparsed = rossi::parse_action_str(&printed).unwrap_or_else(|e| {
+            panic!(
+                "Failed to parse printed action:\n{e}\n\nPrinted:\n{printed}\n\nOriginal AST:\n{action:#?}"
+            )
+        });
+        assert_eq!(
+            action, &reparsed,
+            "standalone roundtrip mismatch.\nPrinted:\n{printed}"
+        );
+    });
+}
+
+// --- Context roundtrips ---
+
+#[test]
+fn context_roundtrip_unicode() {
+    check_roundtrip_property(200, arb_context, |component| {
+        assert_component_roundtrip(component, &PrettyPrinter::new());
+    });
+}
+
+#[test]
+fn context_roundtrip_ascii() {
+    check_roundtrip_property(200, arb_context, |component| {
+        assert_component_roundtrip(component, &PrettyPrinter::ascii());
+    });
+}
+
+// --- Machine roundtrips ---
+
+#[test]
+fn machine_roundtrip_unicode() {
+    check_roundtrip_property(200, arb_machine, |component| {
+        assert_component_roundtrip(component, &PrettyPrinter::new());
+    });
+}
+
+#[test]
+fn machine_roundtrip_ascii() {
+    check_roundtrip_property(200, arb_machine, |component| {
+        assert_component_roundtrip(component, &PrettyPrinter::ascii());
+    });
 }

@@ -653,46 +653,11 @@ END
 }
 
 // ============================================================================
-// Roundtrip operator tests (parametrized)
-// ============================================================================
-
-#[test_case(r#"MACHINE counter
-SEES
-    counter_ctx
-VARIABLES
-    count
-INVARIANTS
-    @inv1 count >= 0
-    @inv2 count <= max_value
-EVENTS
-    EVENT INITIALISATION
-    THEN
-        count := 0
-    END
-
-    EVENT increment
-    WHERE
-        @grd1 count < max_value
-    THEN
-        count := count + 1
-    END
-
-    EVENT decrement
-    WHERE
-        @grd1 count > 0
-    THEN
-        count := count - 1
-    END
-END
-"# ; "counter_example")]
-fn test_roundtrip_operator(source: &str) {
-    common::assert_roundtrip(source);
-}
-
-// ============================================================================
 // Roundtrip feature tests (parametrized)
 // ============================================================================
 
+// Kept as a readable pinned example of machine-level REFINES with event-level
+// REFINES/WITH; generative cover: machine_roundtrip_* in proptest_roundtrip.rs.
 #[test_case(r#"MACHINE test
 REFINES
     abs
@@ -716,42 +681,8 @@ EVENTS
     END
 END
 "# ; "with_clause")]
-#[test_case(r#"MACHINE test
-REFINES
-    abs
-VARIABLES
-    x
-EVENTS
-    EVENT INITIALISATION
-    THEN
-        x := 0
-    END
-
-    EVENT update
-    REFINES
-        abs_update
-    ANY
-        val
-    WHERE
-        @grd1 val > 0
-    WITNESS
-        @abs_param val > 0
-    THEN
-        x := val
-    END
-END
-"# ; "witness_clause")]
 #[test_case("CONTEXT test\nAXIOMS\n    \u{2200}x\u{2982}\u{2124}\u{00B7}x > 0\nEND\n" ; "typed_forall")]
 fn test_roundtrip_feature(source: &str) {
-    common::assert_roundtrip(source);
-}
-
-// ============================================================================
-// Roundtrip builtin tests (parametrized)
-// ============================================================================
-
-#[test_case("CONTEXT test\nAXIOMS\n    @axm1 bool(x > 0) = TRUE\nEND\n" ; "bool_expr")]
-fn test_roundtrip_builtin(source: &str) {
     common::assert_roundtrip(source);
 }
 
@@ -759,13 +690,10 @@ fn test_roundtrip_builtin(source: &str) {
 // ASCII roundtrip tests (parametrized)
 // ============================================================================
 
-// Variant clause
 // Oftype
 #[test_case("MACHINE test\nVARIABLES\n    x\nINVARIANTS\n    @inv1 x \u{2208} \u{2115} \u{2982} \u{2124}\nEND\n" ; "oftype")]
 // Typed identifiers in quantifiers
 #[test_case("CONTEXT test\nAXIOMS\n    \u{2200}x\u{2982}\u{2124}\u{00B7}x > 0\nEND\n" ; "typed_forall")]
-// Bool (not in proptest)
-#[test_case("CONTEXT test\nAXIOMS\n    @axm1 bool(x > 0) = TRUE\nEND\n" ; "bool_expr")]
 fn test_roundtrip_ascii(source: &str) {
     common::assert_roundtrip_ascii(source);
 }
