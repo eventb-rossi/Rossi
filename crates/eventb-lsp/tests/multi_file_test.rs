@@ -1,9 +1,9 @@
 //! Integration tests for multi-file cross-reference functionality
 //!
-//! These tests verify that the cross-reference manager correctly tracks
-//! dependencies between Event-B files and that workspace-wide operations work.
+//! These tests verify cross-file provider behavior (find-references across
+//! seen/extended/refined components) on top of the cross-reference manager.
 
-use eventb_lsp::cross_references::{CrossReferenceManager, ReferenceKind};
+use eventb_lsp::cross_references::CrossReferenceManager;
 use eventb_lsp::document::DocumentManager;
 use eventb_lsp::lsp_types::*;
 use eventb_lsp::references::ReferenceProvider;
@@ -277,100 +277,6 @@ fn test_abstract_machine_variable_references_include_concrete_usages_when_not_sh
     assert!(refs.iter().any(|location| location.uri == abstract_uri));
     assert!(refs.iter().any(|location| location.uri == concrete_uri));
     assert_eq!(refs.len(), 3);
-}
-
-#[test]
-fn test_local_symbol_not_tracked_as_component() {
-    let mch_uri = make_uri("machine.eventb");
-
-    let mch_source = r#"
-MACHINE machine
-VARIABLES
-    count
-INVARIANTS
-    @inv1 count ∈ ℕ
-END
-"#;
-
-    let manager = CrossReferenceManager::new();
-    manager.update_component(mch_uri.to_string(), mch_source);
-
-    // Verify machine is tracked as a component
-    assert!(manager.find_component_uri("machine").is_some());
-
-    // Verify local variable is NOT tracked as a component
-    assert!(manager.find_component_uri("count").is_none());
-}
-
-#[test]
-fn test_component_with_multiple_sees() {
-    let ctx1_uri = make_uri("ctx1.eventb");
-    let ctx2_uri = make_uri("ctx2.eventb");
-    let mch_uri = make_uri("machine.eventb");
-
-    let ctx1_source = r#"
-CONTEXT ctx1
-CONSTANTS
-    c1
-END
-"#;
-
-    let ctx2_source = r#"
-CONTEXT ctx2
-CONSTANTS
-    c2
-END
-"#;
-
-    let mch_source = r#"
-MACHINE machine
-SEES ctx1 ctx2
-VARIABLES
-    v
-END
-"#;
-
-    let manager = CrossReferenceManager::new();
-    manager.update_component(ctx1_uri.to_string(), ctx1_source);
-    manager.update_component(ctx2_uri.to_string(), ctx2_source);
-    manager.update_component(mch_uri.to_string(), mch_source);
-
-    // Verify machine SEES both contexts
-    let mch_info = manager.get_component("machine").unwrap();
-    let sees_refs = mch_info.references.get(&ReferenceKind::Sees).unwrap();
-    assert_eq!(sees_refs.len(), 2);
-    assert!(sees_refs.contains(&"ctx1".to_string()));
-    assert!(sees_refs.contains(&"ctx2".to_string()));
-
-    // Verify both contexts can be found
-    assert!(manager.find_component_uri("ctx1").is_some());
-    assert!(manager.find_component_uri("ctx2").is_some());
-}
-
-#[test]
-fn test_component_name_update() {
-    let uri = make_uri("component.eventb");
-
-    let old_source = r#"
-CONTEXT old_name
-END
-"#;
-
-    let new_source = r#"
-CONTEXT new_name
-END
-"#;
-
-    let manager = CrossReferenceManager::new();
-
-    // Add component with old name
-    manager.update_component(uri.to_string(), old_source);
-    assert!(manager.find_component_uri("old_name").is_some());
-
-    // Update to new name
-    manager.update_component(uri.to_string(), new_source);
-    assert!(manager.find_component_uri("new_name").is_some());
-    assert!(manager.find_component_uri("old_name").is_none());
 }
 
 /// Issue #84 — find-references stays consistent with go-to-definition on an

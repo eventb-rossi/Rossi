@@ -618,6 +618,94 @@ END
     }
 
     #[test]
+    fn test_component_name_update() {
+        let uri = "file:///component.eventb".to_string();
+
+        let old_source = r#"
+CONTEXT old_name
+END
+"#;
+
+        let new_source = r#"
+CONTEXT new_name
+END
+"#;
+
+        let manager = CrossReferenceManager::new();
+
+        // Add component with old name
+        manager.update_component(uri.clone(), old_source);
+        assert!(manager.find_component_uri("old_name").is_some());
+
+        // Update to new name
+        manager.update_component(uri, new_source);
+        assert!(manager.find_component_uri("new_name").is_some());
+        assert!(manager.find_component_uri("old_name").is_none());
+    }
+
+    #[test]
+    fn test_component_with_multiple_sees() {
+        let ctx1_source = r#"
+CONTEXT ctx1
+CONSTANTS
+    c1
+END
+"#;
+
+        let ctx2_source = r#"
+CONTEXT ctx2
+CONSTANTS
+    c2
+END
+"#;
+
+        let mch_source = r#"
+MACHINE machine
+SEES ctx1 ctx2
+VARIABLES
+    v
+END
+"#;
+
+        let manager = CrossReferenceManager::new();
+        manager.update_component("file:///ctx1.eventb".to_string(), ctx1_source);
+        manager.update_component("file:///ctx2.eventb".to_string(), ctx2_source);
+        manager.update_component("file:///machine.eventb".to_string(), mch_source);
+
+        // Verify machine SEES both contexts
+        let mch_info = manager.get_component("machine").unwrap();
+        let sees_refs = mch_info.references.get(&ReferenceKind::Sees).unwrap();
+        assert_eq!(sees_refs.len(), 2);
+        assert!(sees_refs.contains(&"ctx1".to_string()));
+        assert!(sees_refs.contains(&"ctx2".to_string()));
+
+        // Verify both contexts can be found
+        assert!(manager.find_component_uri("ctx1").is_some());
+        assert!(manager.find_component_uri("ctx2").is_some());
+    }
+
+    #[test]
+    fn test_local_symbol_not_tracked_as_component() {
+        let mch_source = r#"
+MACHINE machine
+VARIABLES
+    count
+INVARIANTS
+    @inv1 count ∈ ℕ
+END
+"#;
+
+        let manager = CrossReferenceManager::new();
+        manager.update_component("file:///machine.eventb".to_string(), mch_source);
+
+        // Verify machine is tracked as a component
+        assert!(manager.find_component_uri("machine").is_some());
+
+        // Verify local variable is NOT tracked as a component
+        assert!(manager.find_component_uri("count").is_none());
+    }
+
+    #[test]
     fn test_duplicate_names_in_one_file_first_wins() {
         let manager = CrossReferenceManager::new();
         let uri = "file:///dup.eventb".to_string();
