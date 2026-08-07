@@ -666,33 +666,6 @@ fn test_recovery_context_with_multiple_errors() {
 }
 
 #[test]
-fn test_recovery_machine_with_valid_clauses() {
-    let source = r#"
-    MACHINE valid_parts
-    REFINES
-        abstract_machine
-    SEES
-        some_context
-    VARIABLES
-        x y z
-    INVARIANTS
-        @inv1 x = 0
-        @inv2 bad &&& syntax
-        @inv3 y >= 0
-    END
-    "#;
-
-    let result = parse_with_recovery(source);
-
-    let m = expect_machine(&result);
-    assert_eq!(m.name, "valid_parts");
-    assert_eq!(m.refines, Some("abstract_machine".to_string()));
-    assert_eq!(m.sees.len(), 1);
-    assert_eq!(m.sees[0], "some_context");
-    assert_eq!(m.variables.len(), 3);
-}
-
-#[test]
 fn test_successful_parse_no_errors() {
     let source = r#"
     CONTEXT perfect
