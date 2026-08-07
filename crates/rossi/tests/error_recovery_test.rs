@@ -714,39 +714,6 @@ fn test_recovery_result_api() {
 }
 
 #[test]
-fn test_recovery_preserves_valid_data() {
-    let source = r#"
-    CONTEXT recovery_test
-    EXTENDS
-        parent1 parent2
-    SETS
-        Set1 Set2 Set3
-    CONSTANTS
-        c1 c2 c3
-    AXIOMS
-        @axm1 c1 = 1
-        @axm2 c2 = 2
-        @axm3 invalid
-        @axm4 c3 = 3
-        @thm1 theorem c1 < c2
-    END
-    "#;
-
-    let result = parse_with_recovery(source);
-
-    let ctx = expect_context(&result);
-    // Check that valid data is preserved
-    assert_eq!(ctx.name, "recovery_test");
-    assert_eq!(ctx.extends.len(), 2);
-    assert!(ctx.extends.contains(&"parent1".to_string()));
-    assert!(ctx.extends.contains(&"parent2".to_string()));
-    assert_eq!(ctx.sets.len(), 3);
-    assert_eq!(ctx.constants.len(), 3);
-    // Should have recovered some axioms (at least the valid ones)
-    assert!(!ctx.axioms.is_empty());
-}
-
-#[test]
 fn test_recovery_with_commas_in_lists() {
     let source = r#"
     CONTEXT comma_test
@@ -1500,12 +1467,13 @@ fn recovery_context_clause_regions_and_payloads_characterized() {
 
     // The broken @axm2 forces the whole context into recovery; every context
     // clause kind (EXTENDS/SETS/CONSTANTS/AXIOMS/THEOREMS) is present so the
-    // recorded clause regions cover the full set.
+    // recorded clause regions cover the full set. EXTENDS and SETS carry two
+    // whitespace-separated names each to pin exact multi-name recovery.
     let source = "\
 CONTEXT characterized
-EXTENDS base
+EXTENDS base1 base2
 SETS
-    S
+    S T
 CONSTANTS
     k
 AXIOMS
@@ -1528,8 +1496,8 @@ END
     assert_eq!(
         regions,
         vec![
-            (KeywordId::Extends, "EXTENDS base"),
-            (KeywordId::Sets, "SETS\n    S"),
+            (KeywordId::Extends, "EXTENDS base1 base2"),
+            (KeywordId::Sets, "SETS\n    S T"),
             (KeywordId::Constants, "CONSTANTS\n    k"),
             (
                 KeywordId::Axioms,
@@ -1541,9 +1509,9 @@ END
 
     // Recovered payloads: names from declaration clauses, predicates from AXIOMS
     // and THEOREMS (the latter flagged, lowered into the same axioms vec).
-    assert_eq!(ctx.extends, vec!["base".to_string()]);
-    assert_eq!(ctx.sets.len(), 1);
-    assert_eq!(ctx.sets[0].name(), "S");
+    assert_eq!(ctx.extends, vec!["base1".to_string(), "base2".to_string()]);
+    let set_names: Vec<&str> = ctx.sets.iter().map(|s| s.name()).collect();
+    assert_eq!(set_names, ["S", "T"]);
     assert_eq!(ctx.constants.len(), 1);
     assert_eq!(ctx.constants[0].name, "k");
     let axioms: Vec<(Option<&str>, bool)> = ctx
