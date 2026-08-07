@@ -5,6 +5,8 @@
 //! - `events` (M2): events without refinement.
 //! - `sees_diamond` (M3): transitively-seen context diamond.
 //! - `variant` (B1): scVariant emission.
+//! - `variable_typing`: buried-identifier inference + untyped-variable
+//!   accuracy regressions.
 
 mod invariants_variables {
     //! M1: smallest useful machine — SEES a context, declares variables, and
@@ -581,5 +583,151 @@ mod variant {
         let bcm = &r.file("Mch.bcm").expect("Mch.bcm").contents;
         let view = ScView::from_xml(bcm).unwrap();
         assert_eq!(view.variant.as_deref(), Some("n"));
+    }
+}
+
+mod variable_typing {
+    //! Variable-typing regressions, one fixture per scenario.
+
+    use rossi_build::{Project, ProjectComponent, Severity, build, sc_view::ScView};
+
+    /// A machine variable whose only typing invariant *buries* it inside an
+    /// operand expression — here `w` in `f ∈ ℤ ⇸ ℤ ∖ {w}` — must still be
+    /// typed. Rodin types every free identifier by giving it a fresh type
+    /// variable (`getIdentType`) and solving the surrounding equations; the
+    /// SETMINUS forces `{w} : ℙ(ℤ)`, hence `w : ℤ`. Regression guard for the
+    /// "could not infer variable type" / "unknown identifier" cascade that
+    /// otherwise drops the variable and every clause referencing it.
+    const BURIED_IDENT_BUM: &str = r#"<?xml version="1.0"?>
+<org.eventb.core.machineFile version="5" org.eventb.core.configuration="org.eventb.core.fwd">
+<org.eventb.core.variable name="_v1" org.eventb.core.identifier="w"/>
+<org.eventb.core.variable name="_v2" org.eventb.core.identifier="f"/>
+<org.eventb.core.invariant name="_i1" org.eventb.core.label="inv1" org.eventb.core.predicate="f ∈ ℤ ⇸ ℤ ∖ {w}"/>
+<org.eventb.core.event name="_init" org.eventb.core.convergence="0" org.eventb.core.extended="false" org.eventb.core.label="INITIALISATION">
+<org.eventb.core.action name="_a1" org.eventb.core.assignment="w ≔ 0" org.eventb.core.label="act1"/>
+<org.eventb.core.action name="_a2" org.eventb.core.assignment="f ≔ ∅" org.eventb.core.label="act2"/>
+</org.eventb.core.event>
+</org.eventb.core.machineFile>
+"#;
+
+    fn buried_project() -> Project {
+        Project::new(
+            "p",
+            vec![ProjectComponent::from_xml("M.bum", BURIED_IDENT_BUM).unwrap()],
+        )
+    }
+
+    #[test]
+    fn variable_buried_in_invariant_is_typed() {
+        let r = build(&buried_project());
+
+        // The buried identifier must not raise the "could not infer variable
+        // type" warning (the bug signature).
+        let untyped: Vec<_> = r
+            .diagnostics
+            .iter()
+            .filter(|d| d.message.contains("could not infer variable type"))
+            .collect();
+        assert!(
+            untyped.is_empty(),
+            "no variable should be left untyped; diagnostics: {:?}",
+            r.diagnostics
+        );
+
+        // ... and no "unknown identifier" cascade either.
+        let errors: Vec<_> = r
+            .diagnostics
+            .iter()
+            .filter(|d| d.severity == Severity::Error)
+            .collect();
+        assert!(
+            errors.is_empty(),
+            "no error diagnostics expected; diagnostics: {:?}",
+            r.diagnostics
+        );
+
+        let bcm = r.file("M.bcm").expect("M.bcm");
+        assert!(bcm.accurate, "file should be accurate: {:?}", r.diagnostics);
+
+        let v = ScView::from_xml(&bcm.contents).unwrap();
+        assert_eq!(
+            v.variables.get("w").map(|row| row.type_str.as_str()),
+            Some("ℤ"),
+            "w should be typed ℤ via the buried `ℤ ∖ {{w}}`"
+        );
+        assert_eq!(
+            v.variables.get("f").map(|row| row.type_str.as_str()),
+            Some("ℙ(ℤ×ℤ)"),
+        );
+    }
+
+    /// Group P: untyped variables alone are not a file-level inaccuracy
+    /// signal. Rodin parity — verified against a real-world corpus
+    /// machine whose variables are untyped (no invariants) but the file stays
+    /// `accurate="true"` with only the writing event marked
+    /// `accurate="false"`. A bystander event that doesn't touch the
+    /// untyped variable stays `accurate="true"`.
+    const UNTYPED_VAR_BUM: &str = r#"<?xml version="1.0"?>
+<org.eventb.core.machineFile version="5" org.eventb.core.configuration="org.eventb.core.fwd">
+<org.eventb.core.variable name="_v1" org.eventb.core.identifier="x"/>
+<org.eventb.core.event name="_init" org.eventb.core.convergence="0" org.eventb.core.extended="false" org.eventb.core.label="INITIALISATION">
+<org.eventb.core.action name="_a1" org.eventb.core.assignment="x ≔ 0" org.eventb.core.label="act1"/>
+</org.eventb.core.event>
+<org.eventb.core.event name="_ev1" org.eventb.core.convergence="0" org.eventb.core.extended="false" org.eventb.core.label="evt1"/>
+</org.eventb.core.machineFile>
+"#;
+
+    fn untyped_project() -> Project {
+        Project::new(
+            "p",
+            vec![ProjectComponent::from_xml("M.bum", UNTYPED_VAR_BUM).unwrap()],
+        )
+    }
+
+    #[test]
+    fn file_stays_accurate_and_untyped_variable_emits_error() {
+        // The cascade-drop emits an Error diagnostic on the dropped action,
+        // so `r.is_ok()` is intentionally false here. The file itself must
+        // still emit, and the file-level `accurate` flag must stay `true`.
+        let r = build(&untyped_project());
+        let bcm = r.file("M.bcm").expect("M.bcm");
+        assert!(
+            bcm.accurate,
+            "file should stay accurate; diagnostics: {:?}",
+            r.diagnostics
+        );
+        let v = ScView::from_xml(&bcm.contents).unwrap();
+        let init = v
+            .events
+            .get("INITIALISATION")
+            .expect("INITIALISATION present");
+        assert!(
+            !init.accurate,
+            "INITIALISATION should be inaccurate (untyped LHS); diagnostics: {:?}",
+            r.diagnostics
+        );
+        let evt1 = v.events.get("evt1").expect("evt1 present");
+        assert!(
+            evt1.accurate,
+            "evt1 should stay accurate (doesn't touch x); diagnostics: {:?}",
+            r.diagnostics
+        );
+
+        // Rodin's UntypedVariableError is an error marker (the variable is
+        // dropped from the output); the file-accuracy behaviour above is
+        // unaffected by the severity.
+        let errors: Vec<_> = r
+            .diagnostics
+            .iter()
+            .filter(|d| d.severity == Severity::Error)
+            .filter(|d| d.message.contains("could not infer variable type"))
+            .collect();
+        assert_eq!(
+            errors.len(),
+            1,
+            "expected exactly one untyped-variable error; diagnostics: {:?}",
+            r.diagnostics
+        );
+        assert_eq!(errors[0].origin, "M.x");
     }
 }
