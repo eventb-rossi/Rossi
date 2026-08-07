@@ -14,8 +14,9 @@
 //! - scRefinesMachine pointing at M0.bcm
 //! - M0's invariant copied in with source= back to M0.bum (label kept)
 //! - M1's invariant emitted with source= pointing to M1.bum
-//! - scVariable r: abstract=true concrete=true
-//! - scVariable k: abstract=false concrete=true
+//!
+//! (The scVariable abstract/concrete flags for this shape are pinned in
+//! `concrete_vs_abstract_variables.rs`.)
 
 use rossi_build::{Project, ProjectComponent, build, sc_view::ScView};
 
@@ -87,23 +88,6 @@ fn both_invariants_carried_in_order() {
     assert!(
         sources.iter().any(|s| s.starts_with("M1.bum")),
         "expected an invariant sourced from M1.bum, got {sources:?}"
-    );
-}
-
-#[test]
-fn abstract_flag_true_for_inherited_variable() {
-    let r = build(&project());
-    let bcm = &r.file("M1.bcm").expect("M1.bcm").contents;
-    // r was declared in M0 and NOT redeclared in M1 → abstract=true concrete=false
-    // (vanishes to abstract-only; Group R / Rodin parity).
-    assert!(
-        bcm.contains(r#"<org.eventb.core.scVariable name="r" org.eventb.core.abstract="true" org.eventb.core.concrete="false""#),
-        "r should be abstract=true concrete=false:\n{bcm}"
-    );
-    // k is new in M1 → abstract=false concrete=true.
-    assert!(
-        bcm.contains(r#"<org.eventb.core.scVariable name="k" org.eventb.core.abstract="false" org.eventb.core.concrete="true""#),
-        "k should be abstract=false concrete=true:\n{bcm}"
     );
 }
 
