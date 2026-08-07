@@ -9,6 +9,7 @@
 use rossi::ast::expression::BinaryOp;
 use rossi::op_info::set_ops_acceptable;
 use rossi::{parse_expression_str, parse_predicate_str};
+use test_case::test_case;
 
 /// Assert a parse `result` is the incompatible-operators rejection naming both
 /// operators. Generic over the Ok type so the expression and predicate entry
@@ -124,17 +125,20 @@ fn other_binary_levels_are_unaffected() {
 }
 
 // ---------------------------------------------------------------------------
-// ∧ / ∨ may not be mixed without parentheses
+// Incompatible logical-operator pairs need parentheses
 // ---------------------------------------------------------------------------
 
-#[test]
-fn and_then_or_is_rejected() {
-    pred_incompatible("x > 0 ∧ y > 0 ∨ z > 0", "∧", "∨");
-}
-
-#[test]
-fn or_then_and_is_rejected() {
-    pred_incompatible("x > 0 ∨ y > 0 ∧ z > 0", "∨", "∧");
+/// Every rejected adjacent pair at the two logical levels: ∧ and ∨ mix only
+/// with themselves, while ⇒ and ⇔ are non-associative singletons — even
+/// their self-chains need parentheses.
+#[test_case("x > 0 ∧ y > 0 ∨ z > 0", "∧", "∨" ; "and_then_or")]
+#[test_case("x > 0 ∨ y > 0 ∧ z > 0", "∨", "∧" ; "or_then_and")]
+#[test_case("x > 0 ⇒ y > 0 ⇒ z > 0", "⇒", "⇒" ; "implication_chain")]
+#[test_case("x > 0 ⇔ y > 0 ⇔ z > 0", "⇔", "⇔" ; "equivalence_chain")]
+#[test_case("x > 0 ⇒ y > 0 ⇔ z > 0", "⇒", "⇔" ; "implication_then_equivalence")]
+#[test_case("x > 0 ⇔ y > 0 ⇒ z > 0", "⇔", "⇒" ; "equivalence_then_implication")]
+fn incompatible_logical_pair_is_rejected(src: &str, left: &str, right: &str) {
+    pred_incompatible(src, left, right);
 }
 
 #[test]
@@ -218,26 +222,6 @@ fn quantifier_conjunct_not_bounded_by_a_bracket_is_rejected() {
 // Each is a non-associative singleton, and the two are mutually incompatible —
 // so every adjacent pair of them needs explicit parentheses, unlike the ∧/∨
 // level where same-operator chains are fine.
-
-#[test]
-fn implication_chain_is_rejected() {
-    pred_incompatible("x > 0 ⇒ y > 0 ⇒ z > 0", "⇒", "⇒");
-}
-
-#[test]
-fn equivalence_chain_is_rejected() {
-    pred_incompatible("x > 0 ⇔ y > 0 ⇔ z > 0", "⇔", "⇔");
-}
-
-#[test]
-fn implication_then_equivalence_is_rejected() {
-    pred_incompatible("x > 0 ⇒ y > 0 ⇔ z > 0", "⇒", "⇔");
-}
-
-#[test]
-fn equivalence_then_implication_is_rejected() {
-    pred_incompatible("x > 0 ⇔ y > 0 ⇒ z > 0", "⇔", "⇒");
-}
 
 #[test]
 fn a_surrounding_bracket_does_not_license_an_implication_chain() {
