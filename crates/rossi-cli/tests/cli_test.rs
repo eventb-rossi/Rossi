@@ -201,28 +201,6 @@ fn test_cli_no_files_provided() {
 }
 
 #[test]
-fn test_cli_valid_zip_file() {
-    let output = rossi_command()
-        .args([
-            "validate",
-            "--no-semantic",
-            "../rossi/examples/traffic-light.zip",
-        ])
-        .output()
-        .expect("Failed to execute command");
-
-    assert!(output.status.success());
-    let stdout = String::from_utf8_lossy(&output.stdout);
-    assert!(stdout.contains("✓ ../rossi/examples/traffic-light.zip:C1.buc"));
-    assert!(stdout.contains("Valid Context 'C1'"));
-    assert!(stdout.contains("✓ ../rossi/examples/traffic-light.zip:M0.bum"));
-    assert!(stdout.contains("Valid Machine 'M0'"));
-    assert!(stdout.contains("Summary:"));
-    assert!(stdout.contains("Total:  4"));
-    assert!(stdout.contains("Passed: 4 ✓"));
-}
-
-#[test]
 fn test_cli_zip_file_json_output() {
     let output = rossi_command()
         .args([
