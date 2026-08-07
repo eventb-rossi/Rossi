@@ -9,7 +9,7 @@
 //! against a real Rodin build.
 
 use rossi_build::sc_view::{EventRow, ScView, WitnessRow};
-use rossi_build::{Project, ProjectComponent, build};
+use rossi_build::{BuildResult, Project, ProjectComponent, build};
 
 /// Abstract machine whose variable `e` disappears in the refinement and is
 /// assigned *non-deterministically*, so its after-value `e'` must be
@@ -36,9 +36,8 @@ const ABS_DET: &str = r#"<?xml version="1.0"?>
 </org.eventb.core.machineFile>"#;
 
 /// Build `M0` (`abs`) + a refinement `M1` whose INITIALISATION body is
-/// `init_body`, and return M1's parsed `.bcm` view (whose `accurate` field is
-/// the machine-root flag).
-fn init_refinement_view(abs: &str, init_body: &str) -> ScView {
+/// `init_body`, and return the raw [`BuildResult`].
+fn init_refinement_build(abs: &str, init_body: &str) -> BuildResult {
     let m1 = format!(
         r#"<?xml version="1.0"?>
 <org.eventb.core.machineFile version="5" org.eventb.core.configuration="org.eventb.core.fwd">
@@ -57,7 +56,13 @@ fn init_refinement_view(abs: &str, init_body: &str) -> ScView {
             ProjectComponent::from_xml("M1.bum", &m1).unwrap(),
         ],
     );
-    let r = build(&project);
+    build(&project)
+}
+
+/// M1's parsed `.bcm` view (whose `accurate` field is the machine-root flag)
+/// over [`init_refinement_build`].
+fn init_refinement_view(abs: &str, init_body: &str) -> ScView {
+    let r = init_refinement_build(abs, init_body);
     let bcm = r.file("M1.bcm").expect("M1.bcm");
     ScView::from_xml(&bcm.contents).unwrap()
 }
@@ -103,11 +108,14 @@ fn missing_global_witness_is_inaccurate() {
 
 #[test]
 fn provided_global_witness_is_accurate_and_kept() {
-    let v = init_refinement_view(
+    let r = init_refinement_build(
         ABS_NONDET,
         r#"<org.eventb.core.action name="_a" org.eventb.core.assignment="x ≔ 0" org.eventb.core.label="act1"/>
 <org.eventb.core.witness name="_w" org.eventb.core.label="e'" org.eventb.core.predicate="e' = x'"/>"#,
     );
+    assert!(r.is_ok(), "diagnostics: {:?}", r.diagnostics);
+    let bcm = r.file("M1.bcm").expect("M1.bcm");
+    let v = ScView::from_xml(&bcm.contents).unwrap();
     let init = v.events.get("INITIALISATION").expect("INITIALISATION");
     assert!(
         init.accurate,
