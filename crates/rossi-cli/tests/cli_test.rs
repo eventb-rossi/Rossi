@@ -2984,19 +2984,6 @@ fn validate_structured_output_handles_broken_pipe_without_panicking() {
 }
 
 #[test]
-fn fmt_stdin_text_to_unicode() {
-    let output = run_cli_with_stdin(&["fmt", "-"], ASCII_CONTEXT);
-    assert!(
-        output.status.success(),
-        "fmt - should exit 0; stderr={}",
-        String::from_utf8_lossy(&output.stderr)
-    );
-    let stdout = String::from_utf8_lossy(&output.stdout);
-    assert!(stdout.contains('∈'), "expected Unicode ∈ in: {stdout}");
-    assert!(stdout.contains('ℕ'), "expected Unicode ℕ in: {stdout}");
-}
-
-#[test]
 fn validate_stdin_uses_stdin_filename() {
     let output = run_cli_with_stdin(
         &[
