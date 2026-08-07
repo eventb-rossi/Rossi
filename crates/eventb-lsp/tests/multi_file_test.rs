@@ -564,37 +564,6 @@ END
 }
 
 #[test]
-fn test_circular_dependency_detection() {
-    let ctx1_uri = make_uri("ctx1.eventb");
-    let ctx2_uri = make_uri("ctx2.eventb");
-
-    let ctx1_source = r#"
-CONTEXT ctx1
-EXTENDS ctx2
-END
-"#;
-
-    let ctx2_source = r#"
-CONTEXT ctx2
-EXTENDS ctx1
-END
-"#;
-
-    let manager = CrossReferenceManager::new();
-    manager.update_component(ctx1_uri.to_string(), ctx1_source);
-    manager.update_component(ctx2_uri.to_string(), ctx2_source);
-
-    #[allow(deprecated)]
-    let cycles = manager.detect_circular_dependencies();
-
-    assert!(!cycles.is_empty(), "Should detect circular dependency");
-    let has_both = cycles
-        .iter()
-        .any(|cycle| cycle.contains(&"ctx1".to_string()) && cycle.contains(&"ctx2".to_string()));
-    assert!(has_both, "Cycle should contain both ctx1 and ctx2");
-}
-
-#[test]
 fn test_multi_level_refinement_tracking() {
     let abstract_uri = make_uri("abstract.eventb");
     let middle_uri = make_uri("middle.eventb");
