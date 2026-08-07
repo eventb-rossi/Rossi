@@ -130,6 +130,20 @@ mod tests {
             !ranges.iter().any(|r| r.start_line == 4),
             "single-line CONSTANTS must not fold; got {ranges:?}"
         );
+
+        // 0 CONTEXT | 1 SETS | 2 S | 3 T | 4 CONSTANTS | 5 k | 6 AXIOMS | 7 @a1 | 8 END
+        let ranges =
+            folds("CONTEXT c\nSETS\n    S\n    T\nCONSTANTS\n    k\nAXIOMS\n    @a1 k > 0\nEND");
+        assert!(has(&ranges, 4, 5), "constants clause; got {ranges:?}");
+        assert!(has(&ranges, 6, 7), "axioms clause; got {ranges:?}");
+    }
+
+    #[test]
+    fn folds_machine_clauses() {
+        // 0 MACHINE | 1 VARIABLES | 2 x | 3 y | 4 INVARIANTS | 5 @i | 6 END
+        let ranges = folds("MACHINE m\nVARIABLES\n    x\n    y\nINVARIANTS\n    @i x > 0\nEND");
+        assert!(has(&ranges, 1, 3), "variables clause; got {ranges:?}");
+        assert!(has(&ranges, 4, 5), "invariants clause; got {ranges:?}");
     }
 
     #[test]
@@ -151,6 +165,26 @@ mod tests {
         );
     }
 
+    /// The reported bug: a machine that contains events folded only to its first
+    /// nested event END instead of its own END. Drive the real example model and
+    /// assert the whole machine folds (and the context still does too).
+    #[test]
+    fn base_model_machine_folds_to_its_own_end() {
+        let text = include_str!("../../rossi/examples/base-model.eventb");
+        let ranges = folds(text);
+
+        // `context C1` (line 16) … `end` (line 63): 0-indexed 15..62.
+        assert!(
+            has(&ranges, 15, 62),
+            "context C1 must fold 15..62; got {ranges:?}"
+        );
+        // `machine M1` (line 66) … final `end` (line 1249): 0-indexed 65..1248.
+        assert!(
+            has(&ranges, 65, 1248),
+            "machine M1 must fold to its own END (65..1248), not the first event END"
+        );
+    }
+
     #[test]
     fn folds_events_clause_and_each_event() {
         // 0 machine | 1 events | 2 event evt | 3 then | 4 @a x := 1 | 5 end | 6 end
@@ -168,6 +202,31 @@ mod tests {
         let text = "machine m\nevents\n    event INITIALISATION\n    then\n        @a x := 0\n    end\nend";
         let ranges = folds(text);
         assert!(has(&ranges, 2, 5), "initialisation block; got {ranges:?}");
+    }
+
+    /// Keywords spelled inside comments are masked by the lexer, so they can never
+    /// open or close a fold — the AST never sees them.
+    #[test]
+    fn comment_keywords_do_not_create_folds() {
+        // 0 MACHINE | 1 EVENTS | 2 EVENT evt // not the END | 3 THEN |
+        // 4 @a x := 1 /* EVENT ghost */ | 5 END | 6 END
+        let text = "\
+MACHINE test
+EVENTS
+    EVENT evt // not the END
+    THEN
+        @a x := 1 /* EVENT ghost */
+    END
+END";
+        let ranges = folds(text);
+        assert!(
+            has(&ranges, 2, 5),
+            "event fold must span 2..5 despite comment keywords; got {ranges:?}"
+        );
+        assert!(
+            !ranges.iter().any(|r| r.start_line == 4),
+            "no fold may open on the commented line; got {ranges:?}"
+        );
     }
 
     #[test]
