@@ -212,7 +212,9 @@ fn test_parse_zip_with_recovery_partial_failure() {
     <org.eventb.core.invariant name="'" label="inv1" predicate="@@@ bad predicate"/>
 </org.eventb.core.machineFile>"#;
 
-    let cases: [(&str, &[u8], fn(&ParseError)); 2] = [
+    // (bad entry name, bad entry content, inner-error check)
+    type BadEntryCase = (&'static str, &'static [u8], fn(&ParseError));
+    let cases: [BadEntryCase; 2] = [
         ("Bad.buc", missing_target_buc, |inner| match inner {
             ParseError::MissingXmlAttribute { element, attribute } => {
                 assert_eq!(element, "org.eventb.core.extendsContext");
