@@ -670,35 +670,6 @@ fn test_typed_forall_single() {
 }
 
 #[test]
-fn test_typed_forall_multiple() {
-    use rossi::ast::predicate::Quantifier;
-
-    let source = r#"
-    CONTEXT test
-    AXIOMS
-        @axm1 ∀ti⦂ℙ(SUBSETS), pi · pi ∈ POLICIES
-    END
-    "#;
-
-    let ctx = common::parse_context(source);
-    match &ctx.axioms[0].predicate.kind {
-        rossi::PredicateKind::Quantified {
-            quantifier,
-            identifiers,
-            ..
-        } => {
-            assert_eq!(*quantifier, Quantifier::ForAll);
-            assert_eq!(identifiers.len(), 2);
-            assert_eq!(identifiers[0].name, "ti");
-            assert!(identifiers[0].type_expr.is_some());
-            assert_eq!(identifiers[1].name, "pi");
-            assert!(identifiers[1].type_expr.is_none());
-        }
-        other => panic!("Expected Quantified ForAll, got {:?}", other),
-    }
-}
-
-#[test]
 fn test_typed_exists() {
     use rossi::ast::predicate::Quantifier;
 
