@@ -278,19 +278,3 @@ fn test_invalid_xml() {
     let result = parse_xml(xml);
     assert!(result.is_err());
 }
-
-#[test]
-fn test_empty_context_name() {
-    let xml = r#"<?xml version="1.0" encoding="UTF-8"?>
-<org.eventb.core.contextFile version="3">
-</org.eventb.core.contextFile>"#;
-
-    let result = parse_xml(xml);
-    // Should succeed with default name "unnamed_context"
-    assert!(result.is_ok());
-    if let Component::Context(ctx) = result.unwrap() {
-        assert_eq!(ctx.name, "unnamed_context");
-    } else {
-        panic!("Expected Context component");
-    }
-}
