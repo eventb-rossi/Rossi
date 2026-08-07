@@ -1,11 +1,11 @@
-//! Source-span coverage for expression / predicate AST nodes.
+//! Source-span coverage for expression / predicate / action AST nodes.
 //!
 //! The parser records a byte span on every expression and predicate node it
 //! builds (issue #68). These tests pin the spans of identifier leaves and a few
 //! structural nodes so navigation features can rely on them.
 
-use rossi::ast::{ExpressionKind, PredicateKind, Span};
-use rossi::{parse_expression_str, parse_predicate_str};
+use rossi::ast::{ActionKind, ExpressionKind, PredicateKind, Span};
+use rossi::{parse_action_str, parse_expression_str, parse_predicate_str};
 
 /// The source slice a span points at.
 fn slice(src: &str, span: Span) -> &str {
@@ -184,4 +184,60 @@ fn quantified_body_usage_is_spanned() {
     // The bound usage `x` in the body points at the second `x`, not the binder.
     assert_eq!(slice(src, left.span.unwrap()), "x");
     assert!(left.span.unwrap().start > 0);
+}
+
+// ============================================================================
+// Action spans — source-span coverage for action AST nodes and their write
+// targets.
+// ============================================================================
+
+#[test]
+fn assignment_target_is_spanned() {
+    let src = "count := count + 1";
+    let action = parse_action_str(src).expect("parses");
+    let ActionKind::Assignment { assignments } = &action.kind else {
+        panic!("expected assignment, got {:?}", action.kind);
+    };
+    // The write target `count` carries its own exact span (offset 0), distinct
+    // from the read `count` on the right-hand side.
+    let (target, expression) = &assignments[0];
+    assert_eq!(slice(src, target.span.expect("target span")), "count");
+    assert_eq!(target.span.unwrap().start, 0);
+    assert_eq!(slice(src, expression.span.unwrap()), "count + 1");
+    assert_eq!(slice(src, action.span.expect("action span")), src);
+}
+
+#[test]
+fn parallel_assignment_targets_each_spanned() {
+    let src = "x, y := 1, 2";
+    let action = parse_action_str(src).expect("parses");
+    let ActionKind::Assignment { assignments } = &action.kind else {
+        panic!("expected assignment");
+    };
+    assert_eq!(slice(src, assignments[0].0.span.unwrap()), "x");
+    assert_eq!(slice(src, assignments[1].0.span.unwrap()), "y");
+    assert_eq!(assignments[1].0.span.unwrap().start, 3);
+}
+
+#[test]
+fn function_override_target_is_spanned() {
+    // `f(x) := y` is lowered by the parser to `f ≔ f\u{E103}{x ↦ y}`.
+    let src = "f(x) := y";
+    let action = parse_action_str(src).expect("parses");
+    let ActionKind::Assignment { assignments } = &action.kind else {
+        panic!("expected assignment, got {:?}", action.kind);
+    };
+    let target = &assignments[0].0;
+    assert_eq!(slice(src, target.span.expect("target span")), "f");
+    assert_eq!(target.span.unwrap().start, 0);
+}
+
+#[test]
+fn becomes_such_that_target_is_spanned() {
+    let src = "x :| x' = x + 1";
+    let action = parse_action_str(src).expect("parses");
+    let ActionKind::BecomesSuchThat { variables, .. } = &action.kind else {
+        panic!("expected becomes-such-that");
+    };
+    assert_eq!(slice(src, variables[0].span.unwrap()), "x");
 }
