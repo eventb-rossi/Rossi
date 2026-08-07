@@ -13,6 +13,7 @@ use rossi::{
     MAX_NESTING_DEPTH, ParseError, enclosing_spans, parse, parse_expression_str,
     parse_predicate_str, parse_with_recovery, to_string,
 };
+use test_case::test_case;
 
 /// `((((…x…)))) = 1` with `n` parens, wrapped in a context axiom.
 fn deep_paren_context(n: usize) -> String {
@@ -47,22 +48,14 @@ fn assert_too_deep<T: std::fmt::Debug>(result: Result<T, ParseError>) {
 // Over the limit: clean error, no abort
 // ---------------------------------------------------------------------------
 
-#[test]
-fn over_limit_parens_rejected() {
-    assert_too_deep(parse(&deep_paren_context(MAX_NESTING_DEPTH + 1)));
-    // Far beyond the limit (the original crash was a fuzz file; 5000 levels
-    // would overflow even release builds without the pre-scan).
-    assert_too_deep(parse(&deep_paren_context(5000)));
-}
-
-#[test]
-fn over_limit_negations_rejected() {
-    assert_too_deep(parse(&deep_negation_context(MAX_NESTING_DEPTH + 1)));
-}
-
-#[test]
-fn over_limit_quantifiers_rejected() {
-    assert_too_deep(parse(&deep_forall_context(MAX_NESTING_DEPTH + 1)));
+#[test_case(deep_paren_context, MAX_NESTING_DEPTH + 1 ; "parens")]
+// Far beyond the limit (the original crash was a fuzz file; 5000 levels
+// would overflow even release builds without the pre-scan).
+#[test_case(deep_paren_context, 5000 ; "parens_far_beyond_limit")]
+#[test_case(deep_negation_context, MAX_NESTING_DEPTH + 1 ; "negations")]
+#[test_case(deep_forall_context, MAX_NESTING_DEPTH + 1 ; "quantifiers")]
+fn over_limit_rejected(generator: fn(usize) -> String, depth: usize) {
+    assert_too_deep(parse(&generator(depth)));
 }
 
 #[test]
@@ -96,10 +89,11 @@ fn over_limit_enclosing_spans_returns_empty() {
 // At the limit: parses successfully (stack-headroom proof in debug CI)
 // ---------------------------------------------------------------------------
 
-#[test]
-fn at_limit_parens_parse() {
-    let component = parse(&deep_paren_context(MAX_NESTING_DEPTH)).expect("at-limit parens");
-    // Parens collapse in the AST; downstream consumers must handle the result.
+// Parens collapse in the AST; downstream consumers must handle the result.
+#[test_case(deep_paren_context ; "parens")]
+#[test_case(deep_forall_context ; "quantifiers")]
+fn at_limit_parses(generator: fn(usize) -> String) {
+    let component = parse(&generator(MAX_NESTING_DEPTH)).expect("at-limit input");
     let printed = to_string(&component);
     parse(&printed).expect("pretty output reparses");
     let _ = rossi::to_xml(&component);
@@ -120,15 +114,6 @@ fn at_limit_negations_parse() {
     // chain legitimately reparses as over-limit.
     let component = parse(&deep_negation_context(MAX_NESTING_DEPTH / 2 - 1)).expect("half depth");
     parse(&to_string(&component)).expect("pretty output reparses");
-}
-
-#[test]
-fn at_limit_quantifiers_parse() {
-    let source = deep_forall_context(MAX_NESTING_DEPTH);
-    let component = parse(&source).expect("at-limit quantifiers");
-    let printed = to_string(&component);
-    parse(&printed).expect("pretty output reparses");
-    let _ = rossi::to_xml(&component);
 }
 
 #[test]
