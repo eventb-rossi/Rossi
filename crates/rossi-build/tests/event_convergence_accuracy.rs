@@ -65,54 +65,36 @@ fn project() -> Project {
     )
 }
 
-fn concrete_view() -> ScView {
-    let r = build(&project());
-    ScView::from_xml(&r.file("M1.bcm").expect("M1.bcm").contents).unwrap()
-}
-
 #[test]
-fn convergent_refining_ordinary_is_downgraded_and_inaccurate() {
-    let v = concrete_view();
-    let bad = v.events.get("bad").expect("bad");
-    // Declared convergent ("1"), emitted as ordinary ("0").
-    assert_eq!(bad.convergence.as_deref(), Some("0"));
-    assert!(
-        !bad.accurate,
-        "bad should be inaccurate (convergence downgraded)"
-    );
-}
-
-#[test]
-fn anticipated_refining_ordinary_is_downgraded_and_inaccurate() {
-    let v = concrete_view();
-    let badant = v.events.get("badant").expect("badant");
-    // Declared anticipated ("2"), emitted as ordinary ("0").
-    assert_eq!(badant.convergence.as_deref(), Some("0"));
-    assert!(
-        !badant.accurate,
-        "badant should be inaccurate (convergence downgraded)"
-    );
-}
-
-#[test]
-fn convergent_refining_convergent_stays_accurate() {
-    let v = concrete_view();
-    let good = v.events.get("good").expect("good");
-    assert_eq!(good.convergence.as_deref(), Some("1"));
-    assert!(
-        good.accurate,
-        "good keeps its convergence and stays accurate"
-    );
-}
-
-#[test]
-fn machine_file_stays_accurate_despite_downgraded_events() {
+fn refining_events_downgraded_iff_claiming_stronger_convergence() {
     let r = build(&project());
     let bcm = r.file("M1.bcm").expect("M1.bcm");
     assert!(
         bcm.accurate,
         "per-event convergence downgrades do not taint the file; diagnostics: {:?}",
         r.diagnostics
+    );
+    let v = ScView::from_xml(&bcm.contents).unwrap();
+    // Declared convergent ("1") / anticipated ("2") against the ordinary
+    // `ord`: emitted as ordinary ("0") and flipped inaccurate.
+    for label in ["bad", "badant"] {
+        let ev = v.events.get(label).expect(label);
+        assert_eq!(
+            ev.convergence.as_deref(),
+            Some("0"),
+            "{label} should be downgraded to ordinary"
+        );
+        assert!(
+            !ev.accurate,
+            "{label} should be inaccurate (convergence downgraded)"
+        );
+    }
+    // Convergent refining the convergent `conv`: kept as-is.
+    let good = v.events.get("good").expect("good");
+    assert_eq!(good.convergence.as_deref(), Some("1"));
+    assert!(
+        good.accurate,
+        "good keeps its convergence and stays accurate"
     );
 }
 
