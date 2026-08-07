@@ -58,54 +58,52 @@ const MACHINE_WITH_UNDECLARED_EVENT_EXPRESSIONS: &str = r#"<?xml version="1.0"?>
 </org.eventb.core.machineFile>
 "#;
 
+/// Build a single-component project from `fixture` and parse the emitted
+/// checked file; the tests re-fetch the file for their accuracy asserts.
+fn build_one(fixture: &str, filename: &str) -> (rossi_build::BuildResult, ScView) {
+    let component = ProjectComponent::from_xml(filename, fixture).unwrap();
+    let result = build(&Project::new("p", vec![component]));
+    let out = filename.replace(".bum", ".bcm").replace(".buc", ".bcc");
+    let view = ScView::from_xml(&result.file(&out).expect(&out).contents).unwrap();
+    (result, view)
+}
+
+fn assert_type_error(result: &rossi_build::BuildResult, expected_message: &str) {
+    assert!(
+        result.diagnostics.iter().any(|diagnostic| {
+            diagnostic.rule_id == Some(RuleId::TypeError) && diagnostic.message == expected_message
+        }),
+        "expected TypeError {expected_message:?}: {:?}",
+        result.diagnostics
+    );
+}
+
 #[test]
 fn invalid_arithmetic_is_dropped_and_marks_event_inaccurate() {
-    let project = Project::new(
-        "invalid-arithmetic",
-        vec![ProjectComponent::from_xml("M.bum", MACHINE).unwrap()],
-    );
-    let result = build(&project);
+    let (result, view) = build_one(MACHINE, "M.bum");
     let bcm = result.file("M.bcm").expect("M.bcm");
-    let view = ScView::from_xml(&bcm.contents).unwrap();
     let event = view.events.get("bad").expect("bad event");
 
     assert!(bcm.accurate, "diagnostics: {:?}", result.diagnostics);
     assert!(!event.accurate, "diagnostics: {:?}", result.diagnostics);
     assert!(event.actions.is_empty(), "invalid action was emitted");
-    assert!(result.diagnostics.iter().any(|diagnostic| {
-        diagnostic.rule_id == Some(RuleId::TypeError) && diagnostic.message == "action is ill-typed"
-    }));
+    assert_type_error(&result, "action is ill-typed");
 }
 
 #[test]
 fn invalid_variant_is_diagnosed_omitted_and_marks_machine_inaccurate() {
-    let project = Project::new(
-        "invalid-variant",
-        vec![ProjectComponent::from_xml("M.bum", MACHINE_WITH_INVALID_VARIANT).unwrap()],
-    );
-    let result = build(&project);
+    let (result, view) = build_one(MACHINE_WITH_INVALID_VARIANT, "M.bum");
     let bcm = result.file("M.bcm").expect("M.bcm");
-    let view = ScView::from_xml(&bcm.contents).unwrap();
 
     assert!(!bcm.accurate, "diagnostics: {:?}", result.diagnostics);
     assert!(view.variant.is_none(), "invalid variant was emitted");
-    assert!(result.diagnostics.iter().any(|diagnostic| {
-        diagnostic.rule_id == Some(RuleId::TypeError)
-            && diagnostic.message == "variant expression is ill-typed"
-    }));
+    assert_type_error(&result, "variant expression is ill-typed");
 }
 
 #[test]
 fn undeclared_event_expressions_report_undeclared_identifier_first() {
-    let project = Project::new(
-        "undeclared-event-expression",
-        vec![
-            ProjectComponent::from_xml("M.bum", MACHINE_WITH_UNDECLARED_EVENT_EXPRESSIONS).unwrap(),
-        ],
-    );
-    let result = build(&project);
+    let (result, view) = build_one(MACHINE_WITH_UNDECLARED_EVENT_EXPRESSIONS, "M.bum");
     let bcm = result.file("M.bcm").expect("M.bcm");
-    let view = ScView::from_xml(&bcm.contents).unwrap();
 
     assert!(bcm.accurate, "diagnostics: {:?}", result.diagnostics);
     assert!(!view.events["bad_guard"].accurate);
@@ -129,11 +127,7 @@ fn undeclared_event_expressions_report_undeclared_identifier_first() {
 
 #[test]
 fn invalid_arithmetic_axiom_is_dropped_and_marks_context_inaccurate() {
-    let project = Project::new(
-        "invalid-axiom",
-        vec![ProjectComponent::from_xml("C.buc", CONTEXT_WITH_INVALID_AXIOM).unwrap()],
-    );
-    let result = build(&project);
+    let (result, _view) = build_one(CONTEXT_WITH_INVALID_AXIOM, "C.buc");
     let bcc = result.file("C.bcc").expect("C.bcc");
 
     assert!(!bcc.accurate, "diagnostics: {:?}", result.diagnostics);
@@ -141,26 +135,16 @@ fn invalid_arithmetic_axiom_is_dropped_and_marks_context_inaccurate() {
         !bcc.contents.contains("scAxiom"),
         "invalid axiom was emitted"
     );
-    assert!(result.diagnostics.iter().any(|diagnostic| {
-        diagnostic.rule_id == Some(RuleId::TypeError)
-            && diagnostic.message == "axiom predicate is ill-typed"
-    }));
+    assert_type_error(&result, "axiom predicate is ill-typed");
 }
 
 #[test]
 fn invalid_arithmetic_invariant_is_dropped_and_marks_machine_inaccurate() {
-    let project = Project::new(
-        "invalid-invariant",
-        vec![ProjectComponent::from_xml("M.bum", MACHINE_WITH_INVALID_INVARIANT).unwrap()],
-    );
-    let result = build(&project);
+    let (result, _view) = build_one(MACHINE_WITH_INVALID_INVARIANT, "M.bum");
     let bcm = result.file("M.bcm").expect("M.bcm");
 
     assert!(!bcm.accurate, "diagnostics: {:?}", result.diagnostics);
     assert!(bcm.contents.contains(r#"org.eventb.core.label="typing""#));
     assert!(!bcm.contents.contains(r#"org.eventb.core.label="bad""#));
-    assert!(result.diagnostics.iter().any(|diagnostic| {
-        diagnostic.rule_id == Some(RuleId::TypeError)
-            && diagnostic.message == "invariant predicate is ill-typed"
-    }));
+    assert_type_error(&result, "invariant predicate is ill-typed");
 }
