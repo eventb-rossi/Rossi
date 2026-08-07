@@ -556,54 +556,25 @@ fn test_relational_image() {
 // Feature 2.1: Quantified union and intersection
 // ============================================================================
 
-#[test]
-fn test_quantified_union() {
-    let source = r#"
-    MACHINE test
-    VARIABLES
-        s
-    INVARIANTS
-        @inv1 s = UNION x · x ∈ ℕ | {x}
-    END
-    "#;
-
-    let m = common::parse_machine(source);
+#[test_case("s = UNION x · x ∈ ℕ | {x}", true, false ; "union_keyword_untyped")]
+#[test_case("s = INTER x · x ∈ ℕ | {x}", false, false ; "inter_keyword_untyped")]
+#[test_case("s = ⋃x⦂ℤ · x > 0 | {x}", true, true ; "union_glyph_typed")]
+#[test_case("s = ⋂x⦂ℤ · x > 0 | {x}", false, true ; "inter_glyph_typed")]
+fn test_quantified_union_inter(body: &str, is_union: bool, typed: bool) {
+    let source = common::invariant_machine("s", body);
+    let m = common::parse_machine(&source);
     let pred = &m.invariants[0].predicate;
-    if let rossi::PredicateKind::Comparison { right, .. } = &pred.kind {
-        match &right.kind {
-            ExpressionKind::QuantifiedUnion { identifiers, .. } => {
-                assert_eq!(identifiers, &["x"]);
-            }
-            other => panic!("Expected QuantifiedUnion, got {:?}", other),
-        }
-    } else {
-        panic!("Expected Comparison predicate");
-    }
-}
-
-#[test]
-fn test_quantified_inter() {
-    let source = r#"
-    MACHINE test
-    VARIABLES
-        s
-    INVARIANTS
-        @inv1 s = INTER x · x ∈ ℕ | {x}
-    END
-    "#;
-
-    let m = common::parse_machine(source);
-    let pred = &m.invariants[0].predicate;
-    if let rossi::PredicateKind::Comparison { right, .. } = &pred.kind {
-        match &right.kind {
-            ExpressionKind::QuantifiedInter { identifiers, .. } => {
-                assert_eq!(identifiers, &["x"]);
-            }
-            other => panic!("Expected QuantifiedInter, got {:?}", other),
-        }
-    } else {
-        panic!("Expected Comparison predicate");
-    }
+    let rossi::PredicateKind::Comparison { right, .. } = &pred.kind else {
+        panic!("Expected Comparison predicate for {body:?}");
+    };
+    let identifiers = match (&right.kind, is_union) {
+        (ExpressionKind::QuantifiedUnion { identifiers, .. }, true)
+        | (ExpressionKind::QuantifiedInter { identifiers, .. }, false) => identifiers,
+        (other, _) => panic!("Expected quantified union/inter for {body:?}, got {other:?}"),
+    };
+    assert_eq!(identifiers.len(), 1);
+    assert_eq!(identifiers[0].name, "x");
+    assert_eq!(identifiers[0].type_expr.is_some(), typed);
 }
 
 // ============================================================================
@@ -693,42 +664,6 @@ fn test_typed_forall_mixed() {
             assert!(identifiers[1].type_expr.is_none());
         }
         other => panic!("Expected Quantified ForAll, got {:?}", other),
-    }
-}
-
-#[test]
-fn test_typed_quantified_union() {
-    let source = common::invariant_machine("s", "s = ⋃x⦂ℤ · x > 0 | {x}");
-    let m = common::parse_machine(&source);
-    let pred = &m.invariants[0].predicate;
-    if let rossi::PredicateKind::Comparison { right, .. } = &pred.kind {
-        match &right.kind {
-            ExpressionKind::QuantifiedUnion { identifiers, .. } => {
-                assert_eq!(identifiers[0].name, "x");
-                assert!(identifiers[0].type_expr.is_some());
-            }
-            other => panic!("Expected QuantifiedUnion, got {:?}", other),
-        }
-    } else {
-        panic!("Expected Comparison predicate");
-    }
-}
-
-#[test]
-fn test_typed_quantified_inter() {
-    let source = common::invariant_machine("s", "s = ⋂x⦂ℤ · x > 0 | {x}");
-    let m = common::parse_machine(&source);
-    let pred = &m.invariants[0].predicate;
-    if let rossi::PredicateKind::Comparison { right, .. } = &pred.kind {
-        match &right.kind {
-            ExpressionKind::QuantifiedInter { identifiers, .. } => {
-                assert_eq!(identifiers[0].name, "x");
-                assert!(identifiers[0].type_expr.is_some());
-            }
-            other => panic!("Expected QuantifiedInter, got {:?}", other),
-        }
-    } else {
-        panic!("Expected Comparison predicate");
     }
 }
 
