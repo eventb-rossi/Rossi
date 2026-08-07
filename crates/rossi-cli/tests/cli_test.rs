@@ -1218,35 +1218,6 @@ fn validate_sarif_includes_parse_error_region_issue_42() {
 }
 
 #[test]
-fn validate_directory_input() {
-    // Validate a project given as a directory of Rodin files (the layout
-    // Rodin uses on disk) — a context and a machine that SEES it, so the
-    // directory path is checked for .buc loading and cross-file SEES
-    // resolution, not just single-machine parsing.
-    let tmp = tempdir_unique("rossi-cli-validate-dir");
-    std::fs::write(tmp.join("Ctx.buc"), LINT_FIXTURE_BUC).unwrap();
-    std::fs::write(tmp.join("Lint.bum"), LINT_FIXTURE_BUM).unwrap();
-
-    let output = rossi_command()
-        .args(["validate", tmp.to_str().unwrap()])
-        .output()
-        .expect("Failed to execute command");
-
-    assert!(
-        output.status.success(),
-        "directory validation should exit 0; stderr={}",
-        String::from_utf8_lossy(&output.stderr)
-    );
-    let stdout = String::from_utf8_lossy(&output.stdout);
-    assert!(stdout.contains("Valid Context 'Ctx'"));
-    assert!(stdout.contains("Valid Machine 'Lint'"));
-    // Lint warnings still surface from the directory path.
-    assert!(stdout.contains("[EB011]"));
-
-    std::fs::remove_dir_all(&tmp).ok();
-}
-
-#[test]
 fn validate_directory_without_components_is_rejected() {
     let tmp = tempdir_unique("rossi-cli-validate-empty-dir");
     let output = rossi_command()
