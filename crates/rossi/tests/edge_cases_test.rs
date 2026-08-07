@@ -5,14 +5,19 @@ mod common;
 use rossi::ast::expression::{BinaryOp, UnaryOp};
 use rossi::ast::predicate::Quantifier;
 use rossi::{ActionKind, EventStatus, Expression, ExpressionKind, Predicate, PredicateKind};
+use test_case::test_case;
 
 // ============================================================================
 // HIGH priority: Action::BecomesIn
 // ============================================================================
 
-#[test]
-fn test_becomes_in_unicode() {
-    let source = r#"
+// Both spellings of becomes-in — Unicode `:∈` and ASCII `::` — must parse to
+// the same BecomesIn action.
+#[test_case(":∈" ; "unicode")]
+#[test_case("::" ; "ascii")]
+fn test_becomes_in(op: &str) {
+    let source = format!(
+        r#"
     MACHINE test
     VARIABLES
         x
@@ -24,47 +29,13 @@ fn test_becomes_in_unicode() {
 
         EVENT choose
         THEN
-            x :∈ {1, 2, 3}
+            x {op} {{1, 2, 3}}
         END
     END
-    "#;
+    "#
+    );
 
-    let m = common::parse_machine(source);
-    let event = &m.events[0];
-    assert_eq!(event.actions.len(), 1);
-    match &event.actions[0].action.kind {
-        ActionKind::BecomesIn { variables, set } => {
-            assert_eq!(variables, &["x"]);
-            assert!(
-                matches!(set.kind, ExpressionKind::SetEnumeration(_)),
-                "Expected SetEnumeration, got {:?}",
-                set
-            );
-        }
-        other => panic!("Expected BecomesIn, got {:?}", other),
-    }
-}
-
-#[test]
-fn test_becomes_in_ascii() {
-    let source = r#"
-    MACHINE test
-    VARIABLES
-        x
-    EVENTS
-        EVENT INITIALISATION
-        THEN
-            x := 0
-        END
-
-        EVENT choose
-        THEN
-            x :: {1, 2, 3}
-        END
-    END
-    "#;
-
-    let m = common::parse_machine(source);
+    let m = common::parse_machine(&source);
     let event = &m.events[0];
     assert_eq!(event.actions.len(), 1);
     match &event.actions[0].action.kind {
@@ -126,10 +97,12 @@ fn test_becomes_such_that() {
 // HIGH priority: UnaryOp::Inverse
 // ============================================================================
 
-#[test]
-fn test_inverse_tilde() {
-    // Postfix ∼ (U+223C) — the only spec-defined form
-    let source = common::axiom_context("f, r", "r = f\u{223C}");
+// Postfix ∼ (U+223C) is the only spec-defined form; the ASCII ~ (U+007E)
+// must parse identically to it.
+#[test_case("r = f\u{223C}" ; "unicode")]
+#[test_case("r = f~" ; "ascii")]
+fn test_inverse_tilde(axiom: &str) {
+    let source = common::axiom_context("f, r", axiom);
     let rhs = common::parse_axiom_rhs(&source);
     match &rhs.kind {
         ExpressionKind::Unary { op, operand } => {
@@ -186,20 +159,6 @@ fn test_inverse_function_application() {
         "Expected FunctionApplication with Inverse function, got {:?}",
         rhs
     );
-}
-
-#[test]
-fn test_inverse_tilde_ascii() {
-    // Postfix ASCII ~ (U+007E) must parse identically to the Unicode ∼ form.
-    let source = common::axiom_context("f, r", "r = f~");
-    let rhs = common::parse_axiom_rhs(&source);
-    match &rhs.kind {
-        ExpressionKind::Unary { op, operand } => {
-            assert_eq!(*op, UnaryOp::Inverse);
-            assert!(matches!(&operand.kind, ExpressionKind::Identifier(n) if n == "f"));
-        }
-        other => panic!("Expected Unary Inverse, got {:?}", other),
-    }
 }
 
 // ============================================================================
