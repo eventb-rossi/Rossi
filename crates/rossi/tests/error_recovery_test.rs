@@ -709,7 +709,12 @@ fn test_successful_parse_no_errors() {
     // Should succeed with no errors
     assert!(result.is_ok(), "Expected no errors");
     assert!(result.errors.is_empty(), "Expected empty error list");
-    assert!(result.component.is_some(), "Expected a component");
+
+    let ctx = expect_context(&result);
+    assert_eq!(ctx.name, "perfect");
+    assert_eq!(ctx.sets.len(), 1);
+    assert_eq!(ctx.constants.len(), 1);
+    assert_eq!(ctx.axioms.len(), 1);
 }
 
 #[test]
