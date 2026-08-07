@@ -64,6 +64,26 @@ fn test_basic_machine() {
 }
 
 #[test]
+fn test_base_model_context_structure() {
+    // base-model.eventb bundles a context and a machine; parse_components
+    // handles the multi-component file directly.
+    let source =
+        fs::read_to_string("examples/base-model.eventb").expect("Failed to read base-model.eventb");
+    let components = parse_components(&source).expect("base-model.eventb should parse");
+    let Some(Component::Context(ctx)) = components.first() else {
+        panic!("Expected the context C1 first, got {components:?}");
+    };
+    assert_eq!(ctx.name, "C1");
+    let set_names: Vec<&str> = ctx.sets.iter().map(|s| s.name()).collect();
+    assert_eq!(
+        set_names,
+        vec!["Union", "Names", "Accesses", "AccessRights"]
+    );
+    assert_eq!(ctx.constants.len(), 15, "Expected 15 constants");
+    assert!(!ctx.axioms.is_empty(), "Expected axioms");
+}
+
+#[test]
 fn test_all_working_examples_parse() {
     // Parse *every* bundled example model — discovered from the directory rather
     // than a hand-maintained list — so an example that stops parsing cannot rot
