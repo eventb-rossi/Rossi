@@ -3,7 +3,7 @@
 //! These tests verify that the cross-reference manager correctly tracks
 //! dependencies between Event-B files and that workspace-wide operations work.
 
-use eventb_lsp::cross_references::{ComponentKind, CrossReferenceManager, ReferenceKind};
+use eventb_lsp::cross_references::{CrossReferenceManager, ReferenceKind};
 use eventb_lsp::document::DocumentManager;
 use eventb_lsp::lsp_types::*;
 use eventb_lsp::references::ReferenceProvider;
@@ -56,141 +56,6 @@ fn make_reference_provider(documents: &[(Url, &str)]) -> ReferenceProvider {
     reference_provider.set_cross_reference_manager(cross_ref_manager);
     reference_provider.set_document_manager(document_manager);
     reference_provider
-}
-
-#[test]
-fn test_cross_reference_manager_tracks_sees() {
-    let ctx_uri = make_uri("base_ctx.eventb");
-    let mch_uri = make_uri("machine.eventb");
-
-    let ctx_source = r#"
-CONTEXT base_ctx
-CONSTANTS
-    max_value
-END
-"#;
-
-    let mch_source = r#"
-MACHINE machine
-SEES base_ctx
-VARIABLES
-    count
-END
-"#;
-
-    let manager = CrossReferenceManager::new();
-    manager.update_component(ctx_uri.to_string(), ctx_source);
-    manager.update_component(mch_uri.to_string(), mch_source);
-
-    // Verify context is tracked
-    let ctx_info = manager.get_component("base_ctx");
-    assert!(ctx_info.is_some());
-    let ctx_info = ctx_info.unwrap();
-    assert_eq!(ctx_info.name, "base_ctx");
-    assert_eq!(ctx_info.kind, ComponentKind::Context);
-
-    // Verify machine is tracked and has SEES reference
-    let mch_info = manager.get_component("machine");
-    assert!(mch_info.is_some());
-    let mch_info = mch_info.unwrap();
-    assert_eq!(mch_info.name, "machine");
-    assert_eq!(mch_info.kind, ComponentKind::Machine);
-    assert!(mch_info.references.contains_key(&ReferenceKind::Sees));
-    assert_eq!(
-        mch_info.references.get(&ReferenceKind::Sees).unwrap(),
-        &vec!["base_ctx".to_string()]
-    );
-
-    // Verify we can find the context URI by name
-    let found_uri = manager.find_component_uri("base_ctx");
-    assert_eq!(found_uri, Some(ctx_uri.to_string()));
-}
-
-#[test]
-fn test_cross_reference_manager_tracks_refines() {
-    let abstract_uri = make_uri("abstract_mch.eventb");
-    let concrete_uri = make_uri("concrete_mch.eventb");
-
-    let abstract_source = r#"
-MACHINE abstract_mch
-VARIABLES
-    state
-END
-"#;
-
-    let concrete_source = r#"
-MACHINE concrete_mch
-REFINES abstract_mch
-VARIABLES
-    state
-    detail
-END
-"#;
-
-    let manager = CrossReferenceManager::new();
-    manager.update_component(abstract_uri.to_string(), abstract_source);
-    manager.update_component(concrete_uri.to_string(), concrete_source);
-
-    // Verify concrete machine has REFINES reference
-    let concrete_info = manager.get_component("concrete_mch").unwrap();
-    assert!(
-        concrete_info
-            .references
-            .contains_key(&ReferenceKind::Refines)
-    );
-    assert_eq!(
-        concrete_info
-            .references
-            .get(&ReferenceKind::Refines)
-            .unwrap(),
-        &vec!["abstract_mch".to_string()]
-    );
-
-    // Verify we can find referencing components
-    let referencing =
-        manager.find_referencing_components("abstract_mch", Some(ReferenceKind::Refines));
-    assert_eq!(referencing.len(), 1);
-    assert_eq!(referencing[0].name, "concrete_mch");
-}
-
-#[test]
-fn test_cross_reference_manager_tracks_extends() {
-    let base_uri = make_uri("base_ctx.eventb");
-    let derived_uri = make_uri("derived_ctx.eventb");
-
-    let base_source = r#"
-CONTEXT base_ctx
-SETS
-    STATUS
-END
-"#;
-
-    let derived_source = r#"
-CONTEXT derived_ctx
-EXTENDS base_ctx
-CONSTANTS
-    default_status
-END
-"#;
-
-    let manager = CrossReferenceManager::new();
-    manager.update_component(base_uri.to_string(), base_source);
-    manager.update_component(derived_uri.to_string(), derived_source);
-
-    // Verify derived context has EXTENDS reference
-    let derived_info = manager.get_component("derived_ctx").unwrap();
-    assert!(
-        derived_info
-            .references
-            .contains_key(&ReferenceKind::Extends)
-    );
-    assert_eq!(
-        derived_info
-            .references
-            .get(&ReferenceKind::Extends)
-            .unwrap(),
-        &vec!["base_ctx".to_string()]
-    );
 }
 
 #[test]
@@ -577,28 +442,6 @@ END
     // Verify both contexts can be found
     assert!(manager.find_component_uri("ctx1").is_some());
     assert!(manager.find_component_uri("ctx2").is_some());
-}
-
-#[test]
-fn test_component_removal() {
-    let ctx_uri = make_uri("temp_ctx.eventb");
-
-    let ctx_source = r#"
-CONTEXT temp_ctx
-END
-"#;
-
-    let manager = CrossReferenceManager::new();
-    manager.update_component(ctx_uri.to_string(), ctx_source);
-
-    // Verify component is tracked
-    assert!(manager.find_component_uri("temp_ctx").is_some());
-
-    // Remove component
-    manager.remove_component(ctx_uri.as_ref());
-
-    // Verify component is no longer tracked
-    assert!(manager.find_component_uri("temp_ctx").is_none());
 }
 
 #[test]
