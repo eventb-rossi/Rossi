@@ -158,119 +158,63 @@ fn test_extract_constant_action_numeric_literal() {
 }
 
 #[test]
-fn test_multiple_actions_returned() {
+fn test_operator_detection_offers_conversion_actions() {
     let provider = CodeActionProvider::new();
-    // Text with both ASCII and Unicode operators
-    let text = "x : NAT /\\ y ∈ ℤ";
-    let params = create_test_params(
-        "file:///test.eventb",
-        Range {
-            start: Position::new(0, 0),
-            end: Position::new(0, 0),
-        },
-    );
+    // (case, text, min_actions, required_title): a Some(required_title) row
+    // additionally demands one action whose title contains it and that
+    // carries a workspace edit.
+    let cases: [(&str, &str, usize, Option<&str>); 5] = [
+        (
+            "mixed ascii and unicode operators",
+            "x : NAT /\\ y ∈ ℤ",
+            2,
+            None,
+        ),
+        (
+            "quantifiers in complex expression",
+            "!(x).(x : S => #(y).(y : T /\\ x |-> y : R))",
+            1,
+            None,
+        ),
+        ("set operators", "S <: T /\\ x : S \\/ T", 1, None),
+        ("relation operators", "r : S <-> T /\\ f : S >-> T", 1, None),
+        (
+            "ascii to unicode conversion",
+            "x /\\ y \\/ z => w",
+            1,
+            Some("Unicode"),
+        ),
+    ];
 
-    let actions = provider.provide_code_actions(&params, text);
+    for (case, text, min_actions, required_title) in cases {
+        let params = create_test_params(
+            "file:///test.eventb",
+            Range {
+                start: Position::new(0, 0),
+                end: Position::new(0, 0),
+            },
+        );
+        let actions = provider
+            .provide_code_actions(&params, text)
+            .unwrap_or_default();
 
-    assert!(actions.is_some());
-    let actions = actions.unwrap();
+        assert!(
+            actions.len() >= min_actions,
+            "{case}: expected at least {min_actions} actions, got {}",
+            actions.len()
+        );
 
-    // Should have both conversion actions (to Unicode and to ASCII)
-    assert!(actions.len() >= 2, "Should have multiple actions available");
-}
-
-#[test]
-fn test_operator_conversion_correctness() {
-    let provider = CodeActionProvider::new();
-
-    // Test ASCII to Unicode
-    let ascii_text = "x /\\ y \\/ z => w";
-    let unicode_result = provider
-        .provide_code_actions(
-            &create_test_params(
-                "file:///test.eventb",
-                Range {
-                    start: Position::new(0, 0),
-                    end: Position::new(0, 0),
-                },
-            ),
-            ascii_text,
-        )
-        .unwrap();
-
-    // Verify that the conversion action exists
-    let has_action = unicode_result.iter().any(|action| {
-        if let CodeActionOrCommand::CodeAction(action) = action {
-            action.title.contains("Unicode") && action.edit.is_some()
-        } else {
-            false
+        if let Some(title) = required_title {
+            assert!(
+                actions.iter().any(|action| matches!(
+                    action,
+                    CodeActionOrCommand::CodeAction(action)
+                        if action.title.contains(title) && action.edit.is_some()
+                )),
+                "{case}: expected a {title:?} conversion action with an edit"
+            );
         }
-    });
-
-    assert!(has_action, "Should have Unicode conversion with edit");
-}
-
-#[test]
-fn test_complex_expression_operators() {
-    let provider = CodeActionProvider::new();
-    let text = "!(x).(x : S => #(y).(y : T /\\ x |-> y : R))";
-    let params = create_test_params(
-        "file:///test.eventb",
-        Range {
-            start: Position::new(0, 0),
-            end: Position::new(0, 0),
-        },
-    );
-
-    let actions = provider.provide_code_actions(&params, text);
-
-    assert!(actions.is_some());
-    let actions = actions.unwrap();
-
-    // Should detect quantifiers and other operators
-    assert!(
-        !actions.is_empty(),
-        "Should detect operators in complex expression"
-    );
-}
-
-#[test]
-fn test_set_operators() {
-    let provider = CodeActionProvider::new();
-    let text = "S <: T /\\ x : S \\/ T";
-    let params = create_test_params(
-        "file:///test.eventb",
-        Range {
-            start: Position::new(0, 0),
-            end: Position::new(0, 0),
-        },
-    );
-
-    let actions = provider.provide_code_actions(&params, text);
-
-    assert!(actions.is_some());
-    assert!(!actions.unwrap().is_empty(), "Should detect set operators");
-}
-
-#[test]
-fn test_relation_operators() {
-    let provider = CodeActionProvider::new();
-    let text = "r : S <-> T /\\ f : S >-> T";
-    let params = create_test_params(
-        "file:///test.eventb",
-        Range {
-            start: Position::new(0, 0),
-            end: Position::new(0, 0),
-        },
-    );
-
-    let actions = provider.provide_code_actions(&params, text);
-
-    assert!(actions.is_some());
-    assert!(
-        !actions.unwrap().is_empty(),
-        "Should detect relation operators"
-    );
+    }
 }
 
 #[test]
