@@ -91,31 +91,26 @@ fn transitive_extended_project() -> Project {
 }
 
 #[test]
-fn abstract_event_is_inaccurate_baseline() {
+fn extended_event_inherits_abstract_inaccuracy() {
+    let r = build(&extended_project());
     // Sanity: the abstract INITIALISATION is inaccurate, but M0 the file
     // stays accurate.
-    let r = build(&extended_project());
     let m0 = r.file("M0.bcm").expect("M0.bcm");
     assert!(
         m0.accurate,
         "M0 file should stay accurate; {:?}",
         r.diagnostics
     );
-    let v = ScView::from_xml(&m0.contents).unwrap();
-    let init = v
+    let m0_view = ScView::from_xml(&m0.contents).unwrap();
+    let m0_init = m0_view
         .events
         .get("INITIALISATION")
         .expect("INITIALISATION present");
     assert!(
-        !init.accurate,
+        !m0_init.accurate,
         "M0 INITIALISATION should be inaccurate (untyped LHS); {:?}",
         r.diagnostics
     );
-}
-
-#[test]
-fn extended_event_inherits_abstract_inaccuracy() {
-    let r = build(&extended_project());
     let m1 = r.file("M1.bcm").expect("M1.bcm");
     let v = ScView::from_xml(&m1.contents).unwrap();
     let init = v
