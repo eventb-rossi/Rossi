@@ -692,85 +692,8 @@ fn test_typed_bound_vars_in_forall() {
 }
 
 // ============================================================================
-// Feature 3.1: Additional relation types
+// Feature: empty set spellings
 // ============================================================================
-
-#[test]
-fn test_total_relation() {
-    use rossi::ast::expression::BinaryOp;
-
-    let source = common::invariant_machine("r", "r \u{2208} A <<-> B");
-    let m = common::parse_machine(&source);
-    let pred = &m.invariants[0].predicate;
-    if let rossi::PredicateKind::Comparison { right, .. } = &pred.kind {
-        assert!(
-            matches!(&right.kind, ExpressionKind::Binary { op, .. } if *op == BinaryOp::TotalRelation),
-            "Expected TotalRelation, got {:?}",
-            right
-        );
-    } else {
-        panic!("Expected Comparison predicate");
-    }
-}
-
-#[test]
-fn test_surjective_relation() {
-    use rossi::ast::expression::BinaryOp;
-
-    let source = common::invariant_machine("r", "r \u{2208} A <->> B");
-    let m = common::parse_machine(&source);
-    let pred = &m.invariants[0].predicate;
-    if let rossi::PredicateKind::Comparison { right, .. } = &pred.kind {
-        assert!(
-            matches!(&right.kind, ExpressionKind::Binary { op, .. } if *op == BinaryOp::SurjectiveRelation),
-            "Expected SurjectiveRelation, got {:?}",
-            right
-        );
-    } else {
-        panic!("Expected Comparison predicate");
-    }
-}
-
-#[test]
-fn test_total_surjective_relation() {
-    use rossi::ast::expression::BinaryOp;
-
-    let source = common::invariant_machine("r", "r \u{2208} A <<->> B");
-    let m = common::parse_machine(&source);
-    let pred = &m.invariants[0].predicate;
-    if let rossi::PredicateKind::Comparison { right, .. } = &pred.kind {
-        assert!(
-            matches!(&right.kind, ExpressionKind::Binary { op, .. } if *op == BinaryOp::TotalSurjectiveRelation),
-            "Expected TotalSurjectiveRelation, got {:?}",
-            right
-        );
-    } else {
-        panic!("Expected Comparison predicate");
-    }
-}
-
-// ============================================================================
-// Feature: ,, maplet alias
-// ============================================================================
-
-#[test]
-fn test_maplet_comma_comma() {
-    use rossi::ast::expression::BinaryOp;
-
-    // `,,` is an accepted alternative input spelling for the maplet ↦.
-    let source = common::invariant_machine("r, x, y", "r = x ,, y");
-    let m = common::parse_machine(&source);
-    let pred = &m.invariants[0].predicate;
-    if let rossi::PredicateKind::Comparison { right, .. } = &pred.kind {
-        assert!(
-            matches!(&right.kind, ExpressionKind::Binary { op, .. } if *op == BinaryOp::Maplet),
-            "Expected Maplet, got {:?}",
-            right
-        );
-    } else {
-        panic!("Expected Comparison predicate");
-    }
-}
 
 #[test]
 fn test_empty_set_spellings() {
@@ -787,46 +710,6 @@ fn test_empty_set_spellings() {
         } else {
             panic!("Expected Comparison predicate for {body:?}");
         }
-    }
-}
-
-// ============================================================================
-// Feature: oftype typing operator
-// ============================================================================
-
-#[test]
-fn test_oftype_ascii() {
-    use rossi::ast::expression::BinaryOp;
-
-    let source = common::invariant_machine("x", "x \u{2208} \u{2115} oftype \u{2124}");
-    let m = common::parse_machine(&source);
-    let pred = &m.invariants[0].predicate;
-    if let rossi::PredicateKind::Comparison { right, .. } = &pred.kind {
-        assert!(
-            matches!(&right.kind, ExpressionKind::Binary { op, .. } if *op == BinaryOp::OfType),
-            "Expected OfType, got {:?}",
-            right
-        );
-    } else {
-        panic!("Expected Comparison predicate");
-    }
-}
-
-#[test]
-fn test_oftype_unicode() {
-    use rossi::ast::expression::BinaryOp;
-
-    let source = common::invariant_machine("x", "x \u{2208} \u{2115} \u{2982} \u{2124}");
-    let m = common::parse_machine(&source);
-    let pred = &m.invariants[0].predicate;
-    if let rossi::PredicateKind::Comparison { right, .. } = &pred.kind {
-        assert!(
-            matches!(&right.kind, ExpressionKind::Binary { op, .. } if *op == BinaryOp::OfType),
-            "Expected OfType, got {:?}",
-            right
-        );
-    } else {
-        panic!("Expected Comparison predicate");
     }
 }
 

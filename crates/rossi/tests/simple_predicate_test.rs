@@ -1124,6 +1124,19 @@ fn test_surjection_alias_spellings_parse_as_surjections() {
 }
 
 #[test]
+fn test_relation_arrow_and_typing_operator_spellings() {
+    use rossi::ast::expression::BinaryOp;
+    assert_eq!(binary_op_of("A <<-> B"), BinaryOp::TotalRelation);
+    assert_eq!(binary_op_of("A <->> B"), BinaryOp::SurjectiveRelation);
+    assert_eq!(binary_op_of("A <<->> B"), BinaryOp::TotalSurjectiveRelation);
+    // Both spellings of the oftype typing operator.
+    assert_eq!(binary_op_of("\u{2115} oftype \u{2124}"), BinaryOp::OfType);
+    assert_eq!(binary_op_of("\u{2115} \u{2982} \u{2124}"), BinaryOp::OfType);
+    // Regression (d581fd2): `,,` is a maplet spelling, not the empty set.
+    assert_eq!(binary_op_of("x ,, y"), BinaryOp::Maplet);
+}
+
+#[test]
 fn test_unicode_whitespace_matches_rodin() {
     // Rodin's math lexer treats any Unicode space separator as whitespace
     // (LexicalClass.isWhitespace + FormulaFactory.isEventBWhiteSpace), including
