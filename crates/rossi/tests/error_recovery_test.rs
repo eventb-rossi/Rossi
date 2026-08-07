@@ -969,24 +969,22 @@ fn test_recovery_keyword_inside_identifier_does_not_truncate_clause() {
 }
 
 #[test]
-fn test_recovery_dispatch_ignores_keyword_inside_identifier() {
-    // `context_defs` contains CONTEXT; the broken machine must still be
-    // recovered as a machine.
-    let source = r#"
-    MACHINE issue24_sees
-    SEES
-        context_defs
-    VARIABLES
-        x
-        +
-    END
-    "#;
+fn test_recovery_sees_context_identifier_does_not_flip_dispatch() {
+    // `context_defs` contains CONTEXT as a substring, and `context` is the
+    // keyword as a whole word; neither may flip the broken machine into
+    // context recovery — the machine header comes first in the text.
+    for name in ["context_defs", "context"] {
+        let source = format!(
+            "\n    MACHINE issue24_sees\n    SEES\n        {name}\n    VARIABLES\n        x\n        +\n    END\n    "
+        );
 
-    let result = parse_with_recovery(source);
+        let result = parse_with_recovery(&source);
 
-    let m = expect_machine(&result);
-    assert_eq!(m.sees, ["context_defs"]);
-    assert_eq!(m.variables.len(), 1);
+        let m = expect_machine(&result);
+        assert_eq!(m.name, "issue24_sees", "failed for {name}");
+        assert_eq!(m.sees, [name], "failed for {name}");
+        assert_eq!(m.variables.len(), 1, "failed for {name}");
+    }
 }
 
 #[test]
@@ -1073,28 +1071,6 @@ fn test_recovery_survives_bom_before_header() {
     assert_eq!(m.name, "bom_machine");
     assert_eq!(m.variables.len(), 1);
     assert_eq!(m.invariants.len(), 1);
-}
-
-#[test]
-fn test_recovery_context_identifier_does_not_flip_dispatch() {
-    // A SEES target named `context` must not flip a broken machine into
-    // context recovery: the machine header comes first in the text.
-    let source = r#"
-    MACHINE flip_machine
-    SEES
-        context
-    VARIABLES
-        x
-        +
-    END
-    "#;
-
-    let result = parse_with_recovery(source);
-
-    let m = expect_machine(&result);
-    assert_eq!(m.name, "flip_machine");
-    assert_eq!(m.sees, ["context"]);
-    assert_eq!(m.variables.len(), 1);
 }
 
 #[test]
