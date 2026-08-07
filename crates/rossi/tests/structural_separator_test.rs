@@ -19,7 +19,9 @@ const COMMA_FORMS: &[&str] = &[
     "MACHINE m EVENTS EVENT e ANY a, b END END",
 ];
 
-/// The same clauses with whitespace separation must parse.
+/// The same clauses with whitespace separation must parse. "Whitespace" is
+/// any run of space / tab / CR / newline, so the common
+/// one-identifier-per-line block and tab separation parse identically.
 const WHITESPACE_FORMS: &[&str] = &[
     "CONTEXT c EXTENDS a b END",
     "CONTEXT c SETS S T END",
@@ -27,6 +29,11 @@ const WHITESPACE_FORMS: &[&str] = &[
     "MACHINE m SEES c1 c2 END",
     "MACHINE m VARIABLES x y END",
     "MACHINE m EVENTS EVENT e ANY a b END END",
+    // Newline / tab separated multi-line forms.
+    "CONTEXT c\nSETS\n    S\n    T\nEND",
+    "CONTEXT c\nCONSTANTS\n\ta\n\tb\nEND",
+    "MACHINE m\nVARIABLES\n    x\n    y\nEND",
+    "MACHINE m\nEVENTS\n    EVENT e\n    ANY\n        a\n        b\n    END\nEND",
 ];
 
 #[test]
@@ -43,20 +50,6 @@ fn comma_rejected_in_every_structural_clause() {
 fn whitespace_accepted_in_every_structural_clause() {
     for src in WHITESPACE_FORMS {
         parse(src).unwrap_or_else(|e| panic!("whitespace form must parse: {e:?}\n{src}"));
-    }
-}
-
-#[test]
-fn newline_and_tab_separate_structural_lists() {
-    // "Whitespace" is any run of space / tab / CR / newline, so the common
-    // one-identifier-per-line block and tab separation parse identically.
-    for src in [
-        "CONTEXT c\nSETS\n    S\n    T\nEND",
-        "CONTEXT c\nCONSTANTS\n\ta\n\tb\nEND",
-        "MACHINE m\nVARIABLES\n    x\n    y\nEND",
-        "MACHINE m\nEVENTS\n    EVENT e\n    ANY\n        a\n        b\n    END\nEND",
-    ] {
-        parse(src).unwrap_or_else(|e| panic!("multi-line form must parse: {e:?}\n{src}"));
     }
 }
 
