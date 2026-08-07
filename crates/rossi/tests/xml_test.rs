@@ -302,52 +302,39 @@ fn empty_xml_root_field_when_no_start_event() {
 }
 
 #[test]
-fn missing_extends_target_returns_eb003() {
-    let xml = r#"<?xml version="1.0" encoding="UTF-8"?>
-<org.eventb.core.contextFile version="3">
-    <org.eventb.core.context name="C0"/>
-    <org.eventb.core.extendsContext name="internal"/>
-</org.eventb.core.contextFile>"#;
+fn missing_reference_target_returns_eb003() {
+    // Every target-carrying reference element (EXTENDS/SEES/REFINES) missing
+    // its target attribute must fail with MissingXmlAttribute for "target".
+    for (root, version, child) in [
+        (
+            "org.eventb.core.contextFile",
+            "3",
+            "org.eventb.core.extendsContext",
+        ),
+        (
+            "org.eventb.core.machineFile",
+            "5",
+            "org.eventb.core.seesContext",
+        ),
+        (
+            "org.eventb.core.machineFile",
+            "5",
+            "org.eventb.core.refinesMachine",
+        ),
+    ] {
+        let xml = format!(
+            r#"<?xml version="1.0" encoding="UTF-8"?>
+<{root} version="{version}">
+    <{child} name="internal"/>
+</{root}>"#
+        );
 
-    match parse_xml(xml) {
-        Err(ParseError::MissingXmlAttribute { element, attribute }) => {
-            assert_eq!(element, "org.eventb.core.extendsContext");
-            assert_eq!(attribute, "target");
+        match parse_xml(&xml) {
+            Err(ParseError::MissingXmlAttribute { element, attribute }) => {
+                assert_eq!(element, child);
+                assert_eq!(attribute, "target");
+            }
+            other => panic!("expected MissingXmlAttribute for {child}, got {other:?}"),
         }
-        other => panic!("expected MissingXmlAttribute, got {other:?}"),
-    }
-}
-
-#[test]
-fn missing_sees_target_returns_eb003() {
-    let xml = r#"<?xml version="1.0" encoding="UTF-8"?>
-<org.eventb.core.machineFile version="5">
-    <org.eventb.core.machine name="M0"/>
-    <org.eventb.core.seesContext name="internal"/>
-</org.eventb.core.machineFile>"#;
-
-    match parse_xml(xml) {
-        Err(ParseError::MissingXmlAttribute { element, attribute }) => {
-            assert_eq!(element, "org.eventb.core.seesContext");
-            assert_eq!(attribute, "target");
-        }
-        other => panic!("expected MissingXmlAttribute, got {other:?}"),
-    }
-}
-
-#[test]
-fn missing_refines_target_returns_eb003() {
-    let xml = r#"<?xml version="1.0" encoding="UTF-8"?>
-<org.eventb.core.machineFile version="5">
-    <org.eventb.core.machine name="M1"/>
-    <org.eventb.core.refinesMachine name="internal"/>
-</org.eventb.core.machineFile>"#;
-
-    match parse_xml(xml) {
-        Err(ParseError::MissingXmlAttribute { element, attribute }) => {
-            assert_eq!(element, "org.eventb.core.refinesMachine");
-            assert_eq!(attribute, "target");
-        }
-        other => panic!("expected MissingXmlAttribute, got {other:?}"),
     }
 }
