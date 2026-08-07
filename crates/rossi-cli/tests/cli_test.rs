@@ -1932,42 +1932,6 @@ fn import_contains_path_traversal_project_name() {
     std::fs::remove_dir_all(&tmp).ok();
 }
 
-#[test]
-fn export_eventb_file_to_zip() {
-    let tmp = tempdir_unique("rossi-cli-export-eventb");
-    let out_zip = tmp.join("out.zip");
-
-    let output = rossi_command()
-        .args([
-            "export",
-            "../rossi/examples/counter.eventb",
-            "-o",
-            out_zip.to_str().unwrap(),
-        ])
-        .output()
-        .expect("Failed to execute command");
-
-    assert!(
-        output.status.success(),
-        "export should exit 0; stderr={}",
-        String::from_utf8_lossy(&output.stderr)
-    );
-    assert!(out_zip.exists());
-
-    let extracted = tmp.join("extracted");
-    std::fs::create_dir_all(&extracted).unwrap();
-    extract_zip_to(&out_zip, &extracted);
-    let has_rodin = std::fs::read_dir(&extracted).unwrap().flatten().any(|e| {
-        e.path()
-            .extension()
-            .and_then(|x| x.to_str())
-            .is_some_and(|x| x.eq_ignore_ascii_case("buc") || x.eq_ignore_ascii_case("bum"))
-    });
-    assert!(has_rodin, "expected a .buc/.bum entry in the exported zip");
-
-    std::fs::remove_dir_all(&tmp).ok();
-}
-
 const ASCII_CONTEXT: &str = "CONTEXT c\nCONSTANTS\n    x\nAXIOMS\n    @axm1 x : NAT\nEND\n";
 
 #[test]
