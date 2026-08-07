@@ -26,6 +26,7 @@ fn test_counter_context() {
     assert_eq!(ctx.constants.len(), 1);
     assert_eq!(ctx.constants[0].name, "max_value");
     assert_eq!(ctx.axioms.len(), 1);
+    assert!(ctx.extends.is_empty(), "omitted EXTENDS defaults to empty");
 }
 
 #[test]
@@ -79,6 +80,11 @@ fn test_context_extends() {
     assert_eq!(ctx.extends.len(), 2);
     assert_eq!(ctx.extends[0], "parent1");
     assert_eq!(ctx.extends[1], "parent2");
+    assert!(ctx.sets.is_empty(), "omitted SETS defaults to empty");
+    assert!(
+        ctx.constants.is_empty(),
+        "omitted CONSTANTS defaults to empty"
+    );
 }
 
 #[test]
@@ -1472,25 +1478,6 @@ fn parse_error_names_keywords_and_dedups_issue_76() {
         "EVENT named exactly once (kw_event + event collapsed): {tokens:?}"
     );
     assert!(tokens.iter().any(|t| t == "END"), "names END: {tokens:?}");
-}
-
-#[test]
-fn test_context_sparse_valid_order() {
-    let source = r#"
-    CONTEXT test
-    SETS
-        S
-    AXIOMS
-        @axm1 S = S
-    END
-    "#;
-
-    let ctx = common::parse_context(source);
-    assert_eq!(ctx.name, "test");
-    assert_eq!(ctx.sets.len(), 1);
-    assert_eq!(ctx.axioms.len(), 1);
-    assert!(ctx.extends.is_empty());
-    assert!(ctx.constants.is_empty());
 }
 
 #[test]
