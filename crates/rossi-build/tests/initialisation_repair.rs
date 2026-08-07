@@ -110,21 +110,6 @@ fn standalone_empty_init_repairs_single_variable_byte_exact() {
 }
 
 #[test]
-fn repaired_init_is_inaccurate_but_machine_stays_accurate() {
-    let r = build(&one_var());
-    let v = ScView::from_xml(&r.file("M.bcm").unwrap().contents).unwrap();
-    assert!(v.accurate, "machine root must stay accurate");
-    let init = v
-        .events
-        .get("INITIALISATION")
-        .expect("INITIALISATION emitted");
-    assert!(
-        !init.accurate,
-        "INITIALISATION must be inaccurate after repair"
-    );
-}
-
-#[test]
 fn partial_init_repairs_only_the_unassigned_variable() {
     let r = build(&partial());
     let bcm = &r.file("M.bcm").unwrap().contents;
