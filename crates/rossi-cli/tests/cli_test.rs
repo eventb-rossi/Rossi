@@ -2036,14 +2036,14 @@ fn fmt_normalizes_rodin_zip() {
         "fmt zip stderr={}",
         String::from_utf8_lossy(&output.stderr)
     );
-    assert!(out_zip.exists());
 
-    let extracted = tmp.join("extracted");
-    std::fs::create_dir_all(&extracted).unwrap();
-    extract_zip_to(&out_zip, &extracted);
+    let mut archive = zip::ZipArchive::new(std::fs::File::open(&out_zip).unwrap()).unwrap();
+    let names: Vec<String> = (0..archive.len())
+        .map(|i| archive.by_index(i).unwrap().name().to_string())
+        .collect();
     assert!(
-        dir_has_rodin_file(&extracted),
-        "expected .buc/.bum entries in the normalized zip"
+        names.iter().any(|n| n.ends_with(".buc")) && names.iter().any(|n| n.ends_with(".bum")),
+        "expected .buc/.bum entries in the normalized zip: {names:?}"
     );
 
     std::fs::remove_dir_all(&tmp).ok();
