@@ -692,31 +692,26 @@ fn first_sarif_uri(stdout: &str) -> String {
 }
 
 #[test]
-fn validate_sarif_directory_member_uri_is_a_real_path() {
+fn validate_sarif_member_uri_follows_input_kind() {
     // A SARIF consumer resolves artifactLocation.uri against the repository
     // tree, so a member of a *directory* must be the path it really is —
     // `proj/Lint.bum`, never the archive form `proj!/Lint.bum`.
-    let tmp = lint_fixture_dir("rossi-cli-sarif-dir");
+    let dir = lint_fixture_dir("rossi-cli-sarif-dir");
     let output = rossi_command()
-        .args(["validate", "--format", "sarif", tmp.to_str().unwrap()])
+        .args(["validate", "--format", "sarif", dir.to_str().unwrap()])
         .output()
         .expect("Failed to execute command");
 
     let uri = first_sarif_uri(&String::from_utf8_lossy(&output.stdout));
-    assert_eq!(uri, format!("{}/Lint.bum", tmp.display()));
+    assert_eq!(uri, format!("{}/Lint.bum", dir.display()));
     assert!(
         !uri.contains("!/"),
         "directory members are real paths: {uri}"
     );
 
-    std::fs::remove_dir_all(&tmp).ok();
-}
-
-#[test]
-fn validate_sarif_archive_member_uri_keeps_archive_separator() {
     // The other half of the rule: an archive member is not a file on disk, so
     // it keeps SARIF's `!/` separator.
-    let (tmp, zip_path) = lint_fixture_zip("rossi-cli-sarif-zip-uri");
+    let (zip_tmp, zip_path) = lint_fixture_zip("rossi-cli-sarif-zip-uri");
     let output = rossi_command()
         .args(["validate", "--format", "sarif", zip_path.to_str().unwrap()])
         .output()
@@ -725,7 +720,8 @@ fn validate_sarif_archive_member_uri_keeps_archive_separator() {
     let uri = first_sarif_uri(&String::from_utf8_lossy(&output.stdout));
     assert_eq!(uri, format!("{}!/Lint.bum", zip_path.display()));
 
-    std::fs::remove_dir_all(&tmp).ok();
+    std::fs::remove_dir_all(&dir).ok();
+    std::fs::remove_dir_all(&zip_tmp).ok();
 }
 
 #[test]
