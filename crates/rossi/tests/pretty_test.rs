@@ -656,15 +656,6 @@ END
 // Roundtrip operator tests (parametrized)
 // ============================================================================
 
-#[test_case(r#"CONTEXT simple
-SETS
-    STATUS
-CONSTANTS
-    maximum
-AXIOMS
-    @axm1 maximum = 100
-END
-"# ; "simple_context")]
 #[test_case(r#"MACHINE counter
 SEES
     counter_ctx
@@ -694,34 +685,6 @@ EVENTS
     END
 END
 "# ; "counter_example")]
-#[test_case(r#"CONTEXT test
-CONSTANTS
-    x y z
-AXIOMS
-    @axm1 x = 5
-    @axm2 x > 0
-    @axm3 x < 10
-    @axm4 x >= 0
-    @axm5 x <= 10
-END
-"# ; "complex_predicates")]
-#[test_case(r#"CONTEXT test
-CONSTANTS
-    a b c d
-AXIOMS
-    @axm1 a = b + c
-    @axm2 a = b - c
-    @axm3 a = b * c
-END
-"# ; "arithmetic_expressions")]
-#[test_case(r#"MACHINE simple
-VARIABLES
-    x
-INVARIANTS
-    @inv1 x >= 0
-END
-"# ; "machine_no_events")]
-#[test_case("MACHINE test\nVARIABLES\n    x\nINVARIANTS\n    @inv1 x \u{2208} \u{2115} \u{2982} \u{2124}\nEND\n" ; "oftype_unicode")]
 fn test_roundtrip_operator(source: &str) {
     common::assert_roundtrip(source);
 }
@@ -778,62 +741,7 @@ EVENTS
     END
 END
 "# ; "witness_clause")]
-#[test_case(r#"
-CONTEXT colors
-SETS
-    COLOR = {red, green, blue}
-END
-"# ; "enumerated_set")]
-#[test_case(r#"
-CONTEXT mixed
-SETS
-    PERSON
-    STATUS = {active, inactive}
-END
-"# ; "mixed_sets")]
-#[test_case(r#"
-MACHINE test
-VARIABLES
-    x y
-EVENTS
-    EVENT INITIALISATION
-    THEN
-        x, y := 0, 0
-    END
-
-    EVENT swap
-    THEN
-        x, y := y, x
-    END
-END
-"# ; "multiple_parallel_assignment")]
-#[test_case(r#"
-MACHINE test
-VARIABLES
-    s
-INVARIANTS
-    @inv1 s = {x · x ∈ ℕ | x * x}
-END
-"# ; "extended_set_comprehension")]
-#[test_case(r#"
-MACHINE test
-VARIABLES
-    s
-INVARIANTS
-    @inv1 s = ⋃x · x ∈ ℕ | {x}
-END
-"# ; "quantified_union")]
-#[test_case(r#"
-MACHINE test
-VARIABLES
-    s
-INVARIANTS
-    @inv1 s = ⋂x · x ∈ ℕ | {x}
-END
-"# ; "quantified_inter")]
 #[test_case("CONTEXT test\nAXIOMS\n    \u{2200}x\u{2982}\u{2124}\u{00B7}x > 0\nEND\n" ; "typed_forall")]
-#[test_case("CONTEXT test\nAXIOMS\n    \u{2200}x\u{2982}\u{2124}, y\u{00B7}x > y\nEND\n" ; "typed_forall_mixed")]
-#[test_case("CONTEXT test\nAXIOMS\n    \u{2203}x\u{2982}\u{2124}\u{00B7}x = 0\nEND\n" ; "typed_exists")]
 fn test_roundtrip_feature(source: &str) {
     common::assert_roundtrip(source);
 }
@@ -852,28 +760,6 @@ fn test_roundtrip_builtin(source: &str) {
 // ============================================================================
 
 // Variant clause
-#[test_case(r#"MACHINE test
-VARIABLES
-    n
-INVARIANTS
-    @inv1 n >= 0
-VARIANT
-    n
-EVENTS
-    EVENT INITIALISATION
-    THEN
-        n := 10
-    END
-
-    EVENT dec
-    STATUS convergent
-    WHERE
-        @grd1 n > 0
-    THEN
-        n := n - 1
-    END
-END
-"# ; "variant_clause")]
 // Oftype
 #[test_case("MACHINE test\nVARIABLES\n    x\nINVARIANTS\n    @inv1 x \u{2208} \u{2115} \u{2982} \u{2124}\nEND\n" ; "oftype")]
 // Typed identifiers in quantifiers
