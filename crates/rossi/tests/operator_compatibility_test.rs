@@ -6,6 +6,8 @@
 //! rejection. The accept/reject decisions and the exact set-operator pairs are
 //! the Rodin formula parser's.
 
+use rossi::ast::expression::BinaryOp;
+use rossi::op_info::set_ops_acceptable;
 use rossi::{parse_expression_str, parse_predicate_str};
 
 /// Assert a parse `result` is the incompatible-operators rejection naming both
@@ -52,35 +54,44 @@ fn pred_ok(src: &str) {
 // Set-operator compatibility matrix
 // ---------------------------------------------------------------------------
 
-#[test]
-fn union_intersection_mix_is_rejected() {
-    expr_incompatible("a ∪ b ∩ c", "∪", "∩");
-}
+/// The 13 set-level operators, each with the spelling the parser accepts and
+/// the incompatible-operators error names. All are the canonical Unicode
+/// glyphs except the override's `<+`: its canonical U+E103 is an unrenderable
+/// private-use code point, so errors show the ASCII form.
+const SET_OPS: [(BinaryOp, &str); 13] = [
+    (BinaryOp::Union, "∪"),
+    (BinaryOp::Intersection, "∩"),
+    (BinaryOp::Difference, "∖"),
+    (BinaryOp::CartesianProduct, "×"),
+    (BinaryOp::Overwrite, "<+"),
+    (BinaryOp::Semicolon, ";"),
+    (BinaryOp::Composition, "∘"),
+    (BinaryOp::DomainRestriction, "◁"),
+    (BinaryOp::DomainSubtraction, "⩤"),
+    (BinaryOp::RangeRestriction, "▷"),
+    (BinaryOp::RangeSubtraction, "⩥"),
+    (BinaryOp::DirectProduct, "⊗"),
+    (BinaryOp::ParallelProduct, "∥"),
+];
 
 #[test]
-fn intersection_union_mix_is_rejected() {
-    expr_incompatible("a ∩ b ∪ c", "∩", "∪");
-}
-
-#[test]
-fn union_difference_mix_is_rejected() {
-    expr_incompatible("a ∪ b ∖ c", "∪", "∖");
-}
-
-#[test]
-fn difference_intersection_mix_is_rejected() {
-    expr_incompatible("a ∖ b ∩ c", "∖", "∩");
-}
-
-#[test]
-fn range_restriction_is_not_self_associative() {
-    // `a ▷ b ▷ c` requires parentheses (▷ is not a compatible left operand).
-    expr_incompatible("a ▷ b ▷ c", "▷", "▷");
-}
-
-#[test]
-fn parallel_product_is_not_self_associative() {
-    expr_incompatible("a ∥ b ∥ c", "∥", "∥");
+fn set_operator_matrix_is_enforced_exhaustively() {
+    // Every ordered pair of set-level operators, juxtaposed as
+    // `a <child> b <parent> c`: the accepted pairs parse bare and every other
+    // pair is rejected with the incompatible-operators message naming both.
+    // The accept/reject table itself is pinned against Rodin's oracle in
+    // `op_info`'s unit tests; this sweep proves the parser gate is wired to
+    // it (and that each operator's error spelling is correct).
+    for &(child, child_tok) in &SET_OPS {
+        for &(parent, parent_tok) in &SET_OPS {
+            let src = format!("a {child_tok} b {parent_tok} c");
+            if set_ops_acceptable(child, parent) {
+                expr_ok(&src);
+            } else {
+                expr_incompatible(&src, child_tok, parent_tok);
+            }
+        }
+    }
 }
 
 #[test]
@@ -88,23 +99,6 @@ fn forward_composition_then_domain_restriction_is_rejected() {
     // An earlier table wrongly listed `; ◁` as compatible; the oracle
     // rejects it.
     expr_incompatible("a ; b ◁ c", ";", "◁");
-}
-
-#[test]
-fn self_associative_set_operators_parse() {
-    expr_ok("a ∪ b ∪ c");
-    expr_ok("a ∩ b ∩ c");
-    expr_ok("a × b × c");
-    expr_ok("a ; b ; c");
-}
-
-#[test]
-fn compatible_set_operator_pairs_parse() {
-    expr_ok("a ∩ b ∖ c"); // ∩ ∖
-    expr_ok("a ∩ b ▷ c"); // ∩ ▷
-    expr_ok("a ◁ b ∩ c"); // ◁ ∩
-    expr_ok("a ◁ b ⊗ c"); // ◁ ⊗
-    expr_ok("a ⩤ b ▷ c"); // ⩤ ▷
 }
 
 #[test]
