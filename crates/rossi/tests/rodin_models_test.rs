@@ -183,110 +183,91 @@ fn test_parse_zip_with_recovery_valid_archive() {
     }
 }
 
-/// Partial failure: one valid .buc and one invalid .bum → 1 component + 1 error
+/// Partial failure: one valid context plus one bad entry → 1 surviving
+/// component + 1 error. The recovery loop must wrap each failure in a
+/// `FileContext` that names the bad file, preserves the inner error variant,
+/// and renders the legacy "Failed to parse …" Display string.
 #[test]
 fn test_parse_zip_with_recovery_partial_failure() {
     use std::io::Write;
 
-    let valid_buc = r#"<?xml version="1.0" encoding="UTF-8" standalone="no"?>
+    let valid_buc = br#"<?xml version="1.0" encoding="UTF-8" standalone="no"?>
 <org.eventb.core.contextFile org.eventb.core.configuration="org.eventb.core.fwd" version="3">
     <org.eventb.core.carrierSet name="'" org.eventb.core.identifier="STATUS"/>
 </org.eventb.core.contextFile>"#;
 
-    // Machine with an unparseable predicate — triggers parser error in parse_xml_labeled_predicate
-    let invalid_bum = r#"<?xml version="1.0" encoding="UTF-8" standalone="no"?>
-<org.eventb.core.machineFile org.eventb.core.configuration="org.eventb.core.fwd" version="3">
-    <org.eventb.core.invariant name="'" label="inv1" predicate="@@@ bad predicate"/>
-</org.eventb.core.machineFile>"#;
-
-    let mut buf = Vec::new();
-    {
-        let mut writer = zip::ZipWriter::new(std::io::Cursor::new(&mut buf));
-        let options = zip::write::SimpleFileOptions::default()
-            .compression_method(zip::CompressionMethod::Stored);
-        writer.start_file("Good.buc", options).unwrap();
-        writer.write_all(valid_buc.as_bytes()).unwrap();
-        writer.start_file("Bad.bum", options).unwrap();
-        writer.write_all(invalid_bum.as_bytes()).unwrap();
-        writer.finish().unwrap();
-    }
-
-    let result = parse_zip_with_recovery(&buf);
-
-    let components = result.component.expect("should have Some components");
-    assert_eq!(components.len(), 1, "should have 1 successful component");
-    assert_eq!(components[0].filename, "Good.buc");
-
-    assert_eq!(result.errors.len(), 1, "should have 1 error");
-    let err_msg = format!("{}", result.errors[0]);
-    assert!(
-        err_msg.contains("Bad.bum"),
-        "error should mention the failing file: {}",
-        err_msg
-    );
-}
-
-/// The `FileContext` wrapper preserves the inner error variant through
-/// `parse_zip_with_recovery`.
-#[test]
-fn file_context_preserves_inner_variant_through_recovery() {
-    // Build a two-entry in-memory zip: one good context, one with an
-    // extendsContext missing its target attribute. The recovery loop must
-    // record a `FileContext` whose inner variant is `MissingXmlAttribute`.
-    let good = br#"<?xml version="1.0" encoding="UTF-8"?>
-<org.eventb.core.contextFile version="3">
-    <org.eventb.core.context name="Good"/>
-</org.eventb.core.contextFile>"#;
-
-    let bad = br#"<?xml version="1.0" encoding="UTF-8"?>
+    // Context with an extendsContext missing its target attribute — the
+    // recovery loop must record a `FileContext` whose inner variant is
+    // `MissingXmlAttribute`.
+    let missing_target_buc = br#"<?xml version="1.0" encoding="UTF-8"?>
 <org.eventb.core.contextFile version="3">
     <org.eventb.core.context name="Bad"/>
     <org.eventb.core.extendsContext name="internal"/>
 </org.eventb.core.contextFile>"#;
 
-    let mut buf = Vec::new();
-    {
-        let cursor = std::io::Cursor::new(&mut buf);
-        let mut zw = zip::ZipWriter::new(cursor);
-        let opts: zip::write::SimpleFileOptions = zip::write::SimpleFileOptions::default();
-        zw.start_file("Good.buc", opts).unwrap();
-        std::io::Write::write_all(&mut zw, good).unwrap();
-        zw.start_file("Bad.buc", opts).unwrap();
-        std::io::Write::write_all(&mut zw, bad).unwrap();
-        zw.finish().unwrap();
-    }
+    // Machine with an unparseable predicate — triggers parser error in
+    // parse_xml_labeled_predicate, wrapped as `MalformedAttribute`.
+    let invalid_bum = br#"<?xml version="1.0" encoding="UTF-8" standalone="no"?>
+<org.eventb.core.machineFile org.eventb.core.configuration="org.eventb.core.fwd" version="3">
+    <org.eventb.core.invariant name="'" label="inv1" predicate="@@@ bad predicate"/>
+</org.eventb.core.machineFile>"#;
 
-    let result = parse_zip_with_recovery(&buf);
-    assert_eq!(
-        result.errors.len(),
-        1,
-        "expected 1 error, got {:?}",
-        result.errors
-    );
-    match &result.errors[0] {
-        ParseError::FileContext { filename, source } => {
-            assert_eq!(filename, "Bad.buc");
-            match source.as_ref() {
-                ParseError::MissingXmlAttribute { element, attribute } => {
-                    assert_eq!(element, "org.eventb.core.extendsContext");
-                    assert_eq!(attribute, "target");
-                }
-                other => panic!("expected inner MissingXmlAttribute, got {other:?}"),
+    let cases: [(&str, &[u8], fn(&ParseError)); 2] = [
+        ("Bad.buc", missing_target_buc, |inner| match inner {
+            ParseError::MissingXmlAttribute { element, attribute } => {
+                assert_eq!(element, "org.eventb.core.extendsContext");
+                assert_eq!(attribute, "target");
             }
-            // Display impl renders the legacy "Failed to parse {filename}: …"
-            // string so console output stays human-friendly.
-            let rendered = format!("{}", result.errors[0]);
+            other => panic!("expected inner MissingXmlAttribute, got {other:?}"),
+        }),
+        ("Bad.bum", invalid_bum, |inner| {
             assert!(
-                rendered.starts_with("Failed to parse Bad.buc: "),
-                "unexpected Display rendering: {rendered:?}"
+                matches!(inner, ParseError::MalformedAttribute { .. }),
+                "expected inner MalformedAttribute, got {inner:?}"
             );
+        }),
+    ];
+
+    for (bad_name, bad_content, check_inner) in cases {
+        let mut buf = Vec::new();
+        {
+            let mut writer = zip::ZipWriter::new(std::io::Cursor::new(&mut buf));
+            let options = zip::write::SimpleFileOptions::default()
+                .compression_method(zip::CompressionMethod::Stored);
+            writer.start_file("Good.buc", options).unwrap();
+            writer.write_all(valid_buc).unwrap();
+            writer.start_file(bad_name, options).unwrap();
+            writer.write_all(bad_content).unwrap();
+            writer.finish().unwrap();
         }
-        other => panic!("expected FileContext, got {other:?}"),
+
+        let result = parse_zip_with_recovery(&buf);
+
+        assert_eq!(
+            result.errors.len(),
+            1,
+            "expected 1 error for {bad_name}, got {:?}",
+            result.errors
+        );
+        match &result.errors[0] {
+            ParseError::FileContext { filename, source } => {
+                assert_eq!(filename, bad_name);
+                check_inner(source);
+                // Display impl renders the legacy "Failed to parse {filename}: …"
+                // string so console output stays human-friendly.
+                let rendered = format!("{}", result.errors[0]);
+                assert!(
+                    rendered.starts_with(&format!("Failed to parse {bad_name}: ")),
+                    "unexpected Display rendering: {rendered:?}"
+                );
+            }
+            other => panic!("expected FileContext, got {other:?}"),
+        }
+        // The good component still parses despite the bad one.
+        let comps = result.component.expect("good component should survive");
+        assert_eq!(comps.len(), 1, "should have 1 successful component");
+        assert_eq!(comps[0].filename, "Good.buc");
     }
-    // The good component still parses despite the bad one.
-    let comps = result.component.expect("good component should survive");
-    assert_eq!(comps.len(), 1);
-    assert_eq!(comps[0].filename, "Good.buc");
 }
 
 /// All files fail: empty components vec + errors for each
