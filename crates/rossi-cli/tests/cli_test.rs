@@ -63,32 +63,6 @@ fn test_fmt_stdin_inverse_operator_conversion() {
 }
 
 #[test]
-fn test_cli_valid_context() {
-    let output = rossi_command()
-        .args(["validate", "../rossi/examples/counter.eventb"])
-        .output()
-        .expect("Failed to execute command");
-
-    assert!(output.status.success());
-    let stdout = String::from_utf8_lossy(&output.stdout);
-    assert!(stdout.contains("✓ ../rossi/examples/counter.eventb"));
-    assert!(stdout.contains("Valid Context 'counter_ctx'"));
-}
-
-#[test]
-fn test_cli_valid_machine() {
-    let output = rossi_command()
-        .args(["validate", "../rossi/examples/counter_machine.eventb"])
-        .output()
-        .expect("Failed to execute command");
-
-    assert!(output.status.success());
-    let stdout = String::from_utf8_lossy(&output.stdout);
-    assert!(stdout.contains("✓ ../rossi/examples/counter_machine.eventb"));
-    assert!(stdout.contains("Valid Machine 'counter'"));
-}
-
-#[test]
 fn test_cli_multiple_files() {
     let output = rossi_command()
         .args([
@@ -102,7 +76,9 @@ fn test_cli_multiple_files() {
     assert!(output.status.success());
     let stdout = String::from_utf8_lossy(&output.stdout);
     assert!(stdout.contains("✓ ../rossi/examples/counter.eventb"));
+    assert!(stdout.contains("Valid Context 'counter_ctx'"));
     assert!(stdout.contains("✓ ../rossi/examples/counter_machine.eventb"));
+    assert!(stdout.contains("Valid Machine 'counter'"));
     assert!(stdout.contains("Summary:"));
     assert!(stdout.contains("Total:  2"));
     assert!(stdout.contains("Passed: 2 ✓"));
