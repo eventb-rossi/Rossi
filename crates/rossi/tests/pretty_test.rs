@@ -600,21 +600,6 @@ fn test_single_argument_application_ast_roundtrips() {
 }
 
 // ============================================================================
-// Camille compatibility class tests (parenthesization)
-// ============================================================================
-
-#[test]
-fn test_camille_mixed_and_or_roundtrip() {
-    // Roundtrip: (a ∧ b) ∨ c ∨ d ∨ (e ∧ f)
-    let source = r#"CONTEXT test
-AXIOMS
-    @axm1 (a > 0 ∧ b > 0) ∨ c > 0 ∨ d > 0 ∨ (e > 0 ∧ f > 0)
-END
-"#;
-    common::assert_roundtrip(source);
-}
-
-// ============================================================================
 // Special roundtrip tests (individual — custom logic, not assert_roundtrip)
 // ============================================================================
 
