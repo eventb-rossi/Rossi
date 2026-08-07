@@ -1195,32 +1195,25 @@ fn test_context_accepts_sets_before_extends() {
     assert_eq!(ctx.extends, vec!["other_ctx".to_string()]);
 }
 
-#[test]
-fn test_context_duplicate_sets_clause() {
-    let source = r#"
-    CONTEXT test
-    SETS
-        S
-    SETS
-        T
-    END
-    "#;
-
+#[test_case("CONTEXT test\nSETS\n    S\nSETS\n    T\nEND\n", "SETS" ; "context_duplicate_sets")]
+#[test_case("MACHINE test\nVARIABLES\n    x\nVARIABLES\n    y\nEND\n", "VARIABLES" ; "machine_duplicate_variables")]
+fn test_duplicate_clause_error(source: &str, clause: &str) {
     let result = parse(source);
-    assert!(result.is_err(), "Should reject duplicate SETS");
-    let err = result.unwrap_err();
-    match &err {
+    assert!(result.is_err(), "Should reject duplicate {clause}");
+    match result.unwrap_err() {
         ParseError::ClauseError {
             clause_type,
             message,
-            ..
+            line,
+            column,
         } => {
-            assert_eq!(clause_type, "SETS");
+            assert_eq!(clause_type, clause);
             assert!(
                 message.contains("Duplicate"),
-                "Error should mention 'Duplicate', got: {}",
-                message
+                "Error should mention 'Duplicate', got: {message}"
             );
+            assert_eq!(line, 4, "duplicate {clause} clause starts on line 4");
+            assert_eq!(column, 1, "duplicate {clause} clause starts at column 1");
         }
         other => panic!("Expected ClauseError, got: {:?}", other),
     }
@@ -1359,37 +1352,6 @@ fn test_machine_accepts_sees_before_refines() {
 }
 
 #[test]
-fn test_machine_duplicate_variables_clause() {
-    let source = r#"
-    MACHINE test
-    VARIABLES
-        x
-    VARIABLES
-        y
-    END
-    "#;
-
-    let result = parse(source);
-    assert!(result.is_err(), "Should reject duplicate VARIABLES");
-    let err = result.unwrap_err();
-    match &err {
-        ParseError::ClauseError {
-            clause_type,
-            message,
-            ..
-        } => {
-            assert_eq!(clause_type, "VARIABLES");
-            assert!(
-                message.contains("Duplicate"),
-                "Error should mention 'Duplicate', got: {}",
-                message
-            );
-        }
-        other => panic!("Expected ClauseError, got: {:?}", other),
-    }
-}
-
-#[test]
 fn test_machine_rejects_clause_after_events() {
     // EVENTS is the terminal section: the events block is a list of `EVENT … END`
     // closed by the machine `END`, so a clause after it is a syntax error (only
@@ -1412,22 +1374,6 @@ fn test_machine_rejects_clause_after_events() {
         matches!(result.unwrap_err(), ParseError::PestError { .. }),
         "an events-terminal violation is a plain syntax error",
     );
-}
-
-#[test]
-fn test_clause_error_has_line_info() {
-    let source = "CONTEXT test\nSETS\n    S\nSETS\n    T\nEND\n";
-
-    let result = parse(source);
-    assert!(result.is_err());
-    let err = result.unwrap_err();
-    match &err {
-        ParseError::ClauseError { line, column, .. } => {
-            assert_eq!(*line, 4, "Duplicate SETS clause starts on line 4");
-            assert_eq!(*column, 1, "Duplicate SETS clause starts at column 1");
-        }
-        other => panic!("Expected ClauseError, got: {:?}", other),
-    }
 }
 
 /// The individual expected-token spellings from a pest error message's
