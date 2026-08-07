@@ -38,17 +38,12 @@ fn make_project() -> Project {
 }
 
 #[test]
-fn emits_bcc_and_bcm() {
+fn machine_root_is_accurate() {
     let r = build(&make_project());
+    // Exactly two files come out: the seen context's .bcc and the .bcm.
     assert_eq!(r.files.len(), 2);
     let names: Vec<_> = r.files.iter().map(|f| f.filename.as_str()).collect();
     assert!(names.contains(&"Ctx.bcc"), "expected Ctx.bcc in {names:?}");
-    assert!(names.contains(&"Mch.bcm"), "expected Mch.bcm in {names:?}");
-}
-
-#[test]
-fn machine_root_is_accurate() {
-    let r = build(&make_project());
     let bcm = r.file("Mch.bcm").expect("Mch.bcm");
     assert!(bcm.accurate, "diagnostics: {:?}", r.diagnostics);
     let view = ScView::from_xml(&bcm.contents).unwrap();
