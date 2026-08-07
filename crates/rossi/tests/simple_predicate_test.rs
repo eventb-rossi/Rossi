@@ -971,73 +971,34 @@ fn test_range_before_union() {
 
 // ── TRUE / FALSE in expressions vs predicate constants ──────────────
 
-#[test]
-fn test_true_in_set_predicate() {
-    // TRUE ∈ {queue_1, queue_2} — TRUE is an expression, not predicate constant
+// TRUE/FALSE in expression position (here: element of a set) parse as
+// expressions, not as the predicate constants.
+#[test_case::test_case("TRUE", ExpressionKind::True ; "true_literal")]
+#[test_case::test_case("FALSE", ExpressionKind::False ; "false_literal")]
+fn bool_literal_in_set(token: &str, expected: ExpressionKind) {
     use rossi::PredicateKind;
     use rossi::ast::predicate::ComparisonOp;
-    let source = "CONTEXT test\nAXIOMS\n    @axm1 TRUE ∈ {queue_1, queue_2}\nEND\n";
-    let ctx = common::parse_context(source);
+    let source = format!("CONTEXT test\nAXIOMS\n    @axm1 {token} ∈ {{queue_1, queue_2}}\nEND\n");
+    let ctx = common::parse_context(&source);
     match &ctx.axioms[0].predicate.kind {
         PredicateKind::Comparison {
             op: ComparisonOp::In,
             left,
             ..
         } => {
-            assert!(
-                matches!(left.kind, ExpressionKind::True),
-                "Expected Expression::True, got {:?}",
-                left
-            );
+            assert_eq!(left.kind, expected, "for {token}");
         }
-        other => panic!("Expected TRUE ∈ comparison, got {:?}", other),
+        other => panic!("Expected {token} ∈ comparison, got {other:?}"),
     }
 }
 
-#[test]
-fn test_false_in_set_predicate() {
-    use rossi::PredicateKind;
-    use rossi::ast::predicate::ComparisonOp;
-    let source = "CONTEXT test\nAXIOMS\n    @axm1 FALSE ∈ {queue_1, queue_2}\nEND\n";
-    let ctx = common::parse_context(source);
-    match &ctx.axioms[0].predicate.kind {
-        PredicateKind::Comparison {
-            op: ComparisonOp::In,
-            left,
-            ..
-        } => {
-            assert!(
-                matches!(left.kind, ExpressionKind::False),
-                "Expected Expression::False, got {:?}",
-                left
-            );
-        }
-        other => panic!("Expected FALSE ∈ comparison, got {:?}", other),
-    }
-}
-
-#[test]
-fn test_bare_true_predicate() {
-    use rossi::PredicateKind;
-    let source = "CONTEXT test\nAXIOMS\n    @axm1 ⊤\nEND\n";
-    let ctx = common::parse_context(source);
-    assert!(
-        matches!(&ctx.axioms[0].predicate.kind, PredicateKind::True),
-        "Expected Predicate::True, got {:?}",
-        ctx.axioms[0].predicate
-    );
-}
-
-#[test]
-fn test_bare_false_predicate() {
-    use rossi::PredicateKind;
-    let source = "CONTEXT test\nAXIOMS\n    @axm1 ⊥\nEND\n";
-    let ctx = common::parse_context(source);
-    assert!(
-        matches!(&ctx.axioms[0].predicate.kind, PredicateKind::False),
-        "Expected Predicate::False, got {:?}",
-        ctx.axioms[0].predicate
-    );
+// The bare ⊤/⊥ constants parse as predicates.
+#[test_case::test_case("⊤", rossi::PredicateKind::True ; "true_constant")]
+#[test_case::test_case("⊥", rossi::PredicateKind::False ; "false_constant")]
+fn bare_bool_predicate(axiom_body: &str, expected: rossi::PredicateKind) {
+    let source = format!("CONTEXT test\nAXIOMS\n    @axm1 {axiom_body}\nEND\n");
+    let ctx = common::parse_context(&source);
+    assert_eq!(ctx.axioms[0].predicate.kind, expected, "for {axiom_body}");
 }
 
 // TRUE parses as an expression on either side of `=` — the RHS position
