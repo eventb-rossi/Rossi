@@ -5,63 +5,68 @@ use rossi::{
 };
 
 #[test]
-fn test_single_context_via_parse_components() {
-    let source = indoc! {"
-        CONTEXT C0
-        END
-    "};
-    let result = parse_components(source).unwrap();
-    assert_eq!(result.len(), 1);
-    assert!(matches!(&result[0], Component::Context(c) if c.name == "C0"));
-}
+fn test_parse_components_dispatch() {
+    // Each row: (case, source, expected (kind, name) per component).
+    let cases: &[(&str, &str, &[(&str, &str)])] = &[
+        (
+            "single context",
+            indoc! {"
+                CONTEXT C0
+                END
+            "},
+            &[("Context", "C0")],
+        ),
+        (
+            "single machine",
+            indoc! {"
+                MACHINE M0
+                END
+            "},
+            &[("Machine", "M0")],
+        ),
+        (
+            "two contexts",
+            indoc! {"
+                CONTEXT C0
+                END
 
-#[test]
-fn test_single_machine_via_parse_components() {
-    let source = indoc! {"
-        MACHINE M0
-        END
-    "};
-    let result = parse_components(source).unwrap();
-    assert_eq!(result.len(), 1);
-    assert!(matches!(&result[0], Component::Machine(m) if m.name == "M0"));
-}
+                CONTEXT C1
+                END
+            "},
+            &[("Context", "C0"), ("Context", "C1")],
+        ),
+        (
+            "mixed context and machine",
+            indoc! {"
+                CONTEXT C0
+                SETS
+                    STATUS
+                END
 
-#[test]
-fn test_two_contexts() {
-    let source = indoc! {"
-        CONTEXT C0
-        END
-
-        CONTEXT C1
-        END
-    "};
-    let result = parse_components(source).unwrap();
-    assert_eq!(result.len(), 2);
-    assert!(matches!(&result[0], Component::Context(c) if c.name == "C0"));
-    assert!(matches!(&result[1], Component::Context(c) if c.name == "C1"));
-}
-
-#[test]
-fn test_mixed_context_and_machine() {
-    let source = indoc! {"
-        CONTEXT C0
-        SETS
-            STATUS
-        END
-
-        MACHINE M0
-        SEES
-            C0
-        VARIABLES
-            x
-        INVARIANTS
-            @inv1 x : STATUS
-        END
-    "};
-    let result = parse_components(source).unwrap();
-    assert_eq!(result.len(), 2);
-    assert!(matches!(&result[0], Component::Context(c) if c.name == "C0"));
-    assert!(matches!(&result[1], Component::Machine(m) if m.name == "M0"));
+                MACHINE M0
+                SEES
+                    C0
+                VARIABLES
+                    x
+                INVARIANTS
+                    @inv1 x : STATUS
+                END
+            "},
+            &[("Context", "C0"), ("Machine", "M0")],
+        ),
+    ];
+    for (case, source, expected) in cases {
+        let components =
+            parse_components(source).unwrap_or_else(|e| panic!("{case} should parse: {e}"));
+        let actual: Vec<(&str, &str)> = components
+            .iter()
+            .map(|component| match component {
+                Component::Context(c) => ("Context", c.name.as_str()),
+                Component::Machine(m) => ("Machine", m.name.as_str()),
+            })
+            .collect();
+        assert_eq!(actual.as_slice(), *expected, "{case}: components differ");
+    }
 }
 
 #[test]
