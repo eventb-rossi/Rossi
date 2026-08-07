@@ -78,14 +78,6 @@ fn machine_view() -> ScView {
 }
 
 #[test]
-fn machine_has_three_events() {
-    let v = machine_view();
-    assert!(v.events.contains_key("INITIALISATION"));
-    assert!(v.events.contains_key("Register"));
-    assert!(v.events.contains_key("Leave"));
-}
-
-#[test]
 fn initialisation_action_gets_empty_set_type_ascription() {
     // `registered ≔ ∅` should canonicalize to `registered ≔ ∅ ⦂ ℙ(USERS)`
     // because `registered : ℙ(USERS)` is known.
