@@ -1,0 +1,585 @@
+//! Basic (non-refinement) machine SC emission, one section module per
+//! fixture:
+//!
+//! - `invariants_variables` (M1): SEES + variables + typing invariants.
+//! - `events` (M2): events without refinement.
+//! - `sees_diamond` (M3): transitively-seen context diamond.
+//! - `variant` (B1): scVariant emission.
+
+mod invariants_variables {
+    //! M1: smallest useful machine — SEES a context, declares variables, and
+    //! invariants that type them. No REFINES. No events.
+    //!
+    //! Asserts via `ScView` (semantic diff oracle) that:
+    //! - scMachineFile wraps the right elements
+    //! - scSeesContext points at the seen context's .bcc
+    //! - scInternalContext inlines the seen context's body
+    //! - scVariable rows have their inferred types
+    //! - scInvariant predicates round-trip to the original ASTs
+
+    use rossi_build::{Project, ProjectComponent, build, sc_view::ScView};
+
+    const CTX_BUC: &str = r#"<?xml version="1.0" encoding="UTF-8" standalone="no"?>
+<org.eventb.core.contextFile version="3" org.eventb.core.configuration="org.eventb.core.fwd">
+<org.eventb.core.carrierSet name="_set1" org.eventb.core.identifier="USERS"/>
+<org.eventb.core.carrierSet name="_set2" org.eventb.core.identifier="ITEMS"/>
+</org.eventb.core.contextFile>
+"#;
+
+    const MACHINE_BUM: &str = r#"<?xml version="1.0" encoding="UTF-8" standalone="no"?>
+<org.eventb.core.machineFile version="5" org.eventb.core.configuration="org.eventb.core.fwd">
+<org.eventb.core.seesContext name="_sees1" org.eventb.core.target="Ctx"/>
+<org.eventb.core.variable name="_v1" org.eventb.core.identifier="registered"/>
+<org.eventb.core.variable name="_v2" org.eventb.core.identifier="inventory"/>
+<org.eventb.core.invariant name="_inv1" org.eventb.core.label="inv1" org.eventb.core.predicate="registered ⊆ USERS"/>
+<org.eventb.core.invariant name="_inv2" org.eventb.core.label="inv2" org.eventb.core.predicate="inventory ⊆ ITEMS"/>
+</org.eventb.core.machineFile>
+"#;
+
+    fn make_project() -> Project {
+        Project::new(
+            "m1",
+            vec![
+                ProjectComponent::from_xml("Ctx.buc", CTX_BUC).unwrap(),
+                ProjectComponent::from_xml("Mch.bum", MACHINE_BUM).unwrap(),
+            ],
+        )
+    }
+
+    #[test]
+    fn machine_root_is_accurate() {
+        let r = build(&make_project());
+        // Exactly two files come out: the seen context's .bcc and the .bcm.
+        assert_eq!(r.files.len(), 2);
+        let names: Vec<_> = r.files.iter().map(|f| f.filename.as_str()).collect();
+        assert!(names.contains(&"Ctx.bcc"), "expected Ctx.bcc in {names:?}");
+        let bcm = r.file("Mch.bcm").expect("Mch.bcm");
+        assert!(bcm.accurate, "diagnostics: {:?}", r.diagnostics);
+        let view = ScView::from_xml(&bcm.contents).unwrap();
+        assert_eq!(view.kind, rossi_build::sc_view::RootKind::Machine);
+        assert!(view.accurate);
+    }
+
+    #[test]
+    fn variables_get_powerset_types() {
+        let r = build(&make_project());
+        let bcm = r.file("Mch.bcm").expect("Mch.bcm");
+        let view = ScView::from_xml(&bcm.contents).unwrap();
+        assert_eq!(
+            view.variables
+                .get("registered")
+                .map(|v| v.type_str.as_str()),
+            Some("ℙ(USERS)")
+        );
+        assert_eq!(
+            view.variables.get("inventory").map(|v| v.type_str.as_str()),
+            Some("ℙ(ITEMS)")
+        );
+    }
+
+    #[test]
+    fn invariants_preserve_predicate_semantics() {
+        use rossi::parse_predicate_str;
+        let r = build(&make_project());
+        let bcm = r.file("Mch.bcm").expect("Mch.bcm");
+        let view = ScView::from_xml(&bcm.contents).unwrap();
+        // Invariants keyed by source URI now; look them up by label.
+        let inv1 = view
+            .invariants
+            .values()
+            .find(|i| i.label == "inv1")
+            .expect("inv1");
+        let inv2 = view
+            .invariants
+            .values()
+            .find(|i| i.label == "inv2")
+            .expect("inv2");
+        assert!(!inv1.theorem);
+        assert_eq!(
+            inv1.predicate,
+            parse_predicate_str("registered ⊆ USERS").unwrap()
+        );
+        assert_eq!(
+            inv2.predicate,
+            parse_predicate_str("inventory ⊆ ITEMS").unwrap()
+        );
+    }
+
+    #[test]
+    fn sees_produces_sc_internal_context() {
+        let r = build(&make_project());
+        let bcm = r.file("Mch.bcm").expect("Mch.bcm");
+        assert!(
+            bcm.contents.contains("<org.eventb.core.scSeesContext"),
+            "expected scSeesContext in machine .bcm:\n{}",
+            bcm.contents
+        );
+        assert!(
+            bcm.contents
+                .contains("<org.eventb.core.scInternalContext name=\"Ctx\""),
+            "expected scInternalContext for seen context:\n{}",
+            bcm.contents
+        );
+        // The seen context's carrier sets should be inlined inside it.
+        assert!(bcm.contents.contains("name=\"USERS\""));
+        assert!(bcm.contents.contains("name=\"ITEMS\""));
+    }
+}
+
+mod events {
+    //! M2: events without refinement.
+    //!
+    //! Exercises: INITIALISATION, events with parameters (ANY) / guards (WHERE) /
+    //! actions (THEN), parameter type inference from guards, convergence
+    //! encoding, and empty-set type ascription on assignment RHS.
+
+    use rossi_build::{Project, ProjectComponent, build, sc_view::ScView};
+
+    const CTX_BUC: &str = r#"<?xml version="1.0"?>
+<org.eventb.core.contextFile version="3" org.eventb.core.configuration="org.eventb.core.fwd">
+<org.eventb.core.carrierSet name="_set1" org.eventb.core.identifier="USERS"/>
+</org.eventb.core.contextFile>
+"#;
+
+    /// Machine with:
+    ///   INITIALISATION: `registered := ∅`
+    ///   Register(u): guard `u ∈ USERS`, action `registered := registered ∪ {u}`
+    ///   Leave(u): guard `u ∈ registered`, action `registered := registered ∖ {u}`
+    const MACHINE_BUM: &str = r#"<?xml version="1.0"?>
+<org.eventb.core.machineFile version="5" org.eventb.core.configuration="org.eventb.core.fwd">
+<org.eventb.core.seesContext name="_s1" org.eventb.core.target="Ctx"/>
+<org.eventb.core.variable name="_v1" org.eventb.core.identifier="registered"/>
+<org.eventb.core.invariant name="_i1" org.eventb.core.label="inv1" org.eventb.core.predicate="registered ⊆ USERS"/>
+<org.eventb.core.event name="_init" org.eventb.core.convergence="0" org.eventb.core.extended="false" org.eventb.core.label="INITIALISATION">
+<org.eventb.core.action name="_a0" org.eventb.core.assignment="registered ≔ ∅" org.eventb.core.label="act1"/>
+</org.eventb.core.event>
+<org.eventb.core.event name="_ev_reg" org.eventb.core.convergence="0" org.eventb.core.extended="false" org.eventb.core.label="Register">
+<org.eventb.core.parameter name="_p1" org.eventb.core.identifier="u"/>
+<org.eventb.core.guard name="_g1" org.eventb.core.label="grd1" org.eventb.core.predicate="u ∈ USERS"/>
+<org.eventb.core.action name="_a1" org.eventb.core.assignment="registered ≔ registered ∪ {u}" org.eventb.core.label="act1"/>
+</org.eventb.core.event>
+<org.eventb.core.event name="_ev_leave" org.eventb.core.convergence="0" org.eventb.core.extended="false" org.eventb.core.label="Leave">
+<org.eventb.core.parameter name="_p2" org.eventb.core.identifier="u"/>
+<org.eventb.core.guard name="_g2" org.eventb.core.label="grd1" org.eventb.core.predicate="u ∈ registered"/>
+<org.eventb.core.action name="_a2" org.eventb.core.assignment="registered ≔ registered ∖ {u}" org.eventb.core.label="act1"/>
+</org.eventb.core.event>
+</org.eventb.core.machineFile>
+"#;
+
+    const PARAMETER_CONFLICT_MACHINE_BUM: &str = r#"<?xml version="1.0"?>
+<org.eventb.core.machineFile version="5" org.eventb.core.configuration="org.eventb.core.fwd">
+<org.eventb.core.variable name="_v1" org.eventb.core.identifier="x"/>
+<org.eventb.core.invariant name="_i1" org.eventb.core.label="inv1" org.eventb.core.predicate="x ⊆ ℤ"/>
+<org.eventb.core.event name="_init" org.eventb.core.convergence="0" org.eventb.core.extended="false" org.eventb.core.label="INITIALISATION">
+<org.eventb.core.action name="_a0" org.eventb.core.assignment="x ≔ ∅" org.eventb.core.label="act1"/>
+</org.eventb.core.event>
+<org.eventb.core.event name="_ev" org.eventb.core.convergence="0" org.eventb.core.extended="false" org.eventb.core.label="Clash">
+<org.eventb.core.parameter name="_p1" org.eventb.core.identifier="x"/>
+<org.eventb.core.guard name="_g1" org.eventb.core.label="grd1" org.eventb.core.predicate="x ∈ ℤ"/>
+</org.eventb.core.event>
+</org.eventb.core.machineFile>
+"#;
+
+    const UNTYPED_PARAMETER_CONFLICT_MACHINE_BUM: &str = r#"<?xml version="1.0"?>
+<org.eventb.core.machineFile version="5" org.eventb.core.configuration="org.eventb.core.fwd">
+<org.eventb.core.variable name="_v1" org.eventb.core.identifier="x"/>
+<org.eventb.core.event name="_ev" org.eventb.core.convergence="0" org.eventb.core.extended="false" org.eventb.core.label="Clash">
+<org.eventb.core.parameter name="_p1" org.eventb.core.identifier="x"/>
+<org.eventb.core.guard name="_g1" org.eventb.core.label="grd1" org.eventb.core.predicate="x ∈ ℤ"/>
+</org.eventb.core.event>
+</org.eventb.core.machineFile>
+"#;
+
+    fn make_project() -> Project {
+        Project::new(
+            "m2",
+            vec![
+                ProjectComponent::from_xml("Ctx.buc", CTX_BUC).unwrap(),
+                ProjectComponent::from_xml("Mch.bum", MACHINE_BUM).unwrap(),
+            ],
+        )
+    }
+
+    fn machine_view() -> ScView {
+        let r = build(&make_project());
+        assert!(r.is_ok(), "diagnostics: {:?}", r.diagnostics);
+        ScView::from_xml(&r.file("Mch.bcm").expect("Mch.bcm").contents).unwrap()
+    }
+
+    #[test]
+    fn initialisation_action_gets_empty_set_type_ascription() {
+        // `registered ≔ ∅` should canonicalize to `registered ≔ ∅ ⦂ ℙ(USERS)`
+        // because `registered : ℙ(USERS)` is known.
+        let r = build(&make_project());
+        let bcm = &r.file("Mch.bcm").expect("Mch.bcm").contents;
+        assert!(
+            bcm.contains(r#"org.eventb.core.assignment="registered ≔ ∅ ⦂ ℙ(USERS)""#),
+            "expected empty-set type ascription in INITIALISATION:\n{bcm}"
+        );
+    }
+
+    #[test]
+    fn parameter_type_is_inferred_from_guard() {
+        // Register.u : USERS (from `u ∈ USERS`, where USERS : ℙ(USERS))
+        let v = machine_view();
+        let reg = v.events.get("Register").expect("Register");
+        assert_eq!(reg.parameters.get("u").map(String::as_str), Some("USERS"));
+    }
+
+    #[test]
+    fn parameter_typed_via_variable_reference() {
+        // Leave.u : USERS (from `u ∈ registered`, where registered : ℙ(USERS))
+        let v = machine_view();
+        let leave = v.events.get("Leave").expect("Leave");
+        assert_eq!(leave.parameters.get("u").map(String::as_str), Some("USERS"));
+    }
+
+    #[test]
+    fn convergence_encoding() {
+        let v = machine_view();
+        assert_eq!(
+            v.events
+                .get("Register")
+                .and_then(|e| e.convergence.as_deref()),
+            Some("0")
+        );
+    }
+
+    #[test]
+    fn event_guards_and_actions_captured_by_sc_view() {
+        let v = machine_view();
+        let reg = v.events.get("Register").expect("Register");
+        assert_eq!(reg.guards.len(), 1, "Register has one guard");
+        assert_eq!(reg.actions.len(), 1, "Register has one action");
+        // Guard predicate is `u∈USERS` (canonical) — ScView parses it back.
+        // Guards are keyed by source URI now (labels can collide across REFINES).
+        let grd1 = reg
+            .guards
+            .values()
+            .find(|g| g.label == "grd1")
+            .expect("grd1 by label");
+        assert!(!grd1.theorem);
+        assert_eq!(
+            grd1.predicate,
+            rossi::parse_predicate_str("u ∈ USERS").unwrap()
+        );
+    }
+
+    #[test]
+    fn machine_file_is_accurate_when_all_events_type_check() {
+        let r = build(&make_project());
+        let bcm = r.file("Mch.bcm").expect("Mch.bcm");
+        assert!(bcm.accurate, "diagnostics: {:?}", r.diagnostics);
+    }
+
+    /// Shared core of the parameter-conflict regressions: build a one-machine
+    /// project from `machine_xml`, assert the conflict diagnostic at
+    /// `Mch.Clash.x`, and assert the parameter was dropped from the checked
+    /// event. Returns the build result and parsed view for case-specific
+    /// follow-up assertions.
+    fn assert_param_conflict(machine_xml: &str, case: &str) -> (rossi_build::BuildResult, ScView) {
+        let project = Project::new(
+            "conflict",
+            vec![ProjectComponent::from_xml("Mch.bum", machine_xml).unwrap()],
+        );
+        let result = build(&project);
+        assert!(
+            result.diagnostics.iter().any(|diagnostic| {
+                diagnostic.origin == "Mch.Clash.x"
+                    && diagnostic
+                        .message
+                        .contains("parameter `x` conflicts with a visible identifier")
+            }),
+            "{case}: expected parameter conflict diagnostic: {:?}",
+            result.diagnostics
+        );
+        let bcm = result.file("Mch.bcm").expect("Mch.bcm");
+        let view = ScView::from_xml(&bcm.contents).unwrap();
+        let event = view.events.get("Clash").expect("Clash event");
+        assert!(
+            !event.parameters.contains_key("x"),
+            "{case}: parameter `x` must be dropped"
+        );
+        (result, view)
+    }
+
+    #[test]
+    fn parameter_conflicting_with_machine_variable_is_diagnosed_and_dropped() {
+        for (case, machine_xml, typed) in [
+            ("typed variable", PARAMETER_CONFLICT_MACHINE_BUM, true),
+            (
+                "untyped variable",
+                UNTYPED_PARAMETER_CONFLICT_MACHINE_BUM,
+                false,
+            ),
+        ] {
+            let (result, view) = assert_param_conflict(machine_xml, case);
+            if typed {
+                // With `x ⊆ ℤ` typing the machine variable, the clash is
+                // additionally a TypeError, the conflicting guard is dropped,
+                // and the event is marked inaccurate.
+                assert!(
+                    result.diagnostics.iter().any(|diagnostic| {
+                        diagnostic.origin == "Mch.Clash.x"
+                            && diagnostic.rule_id == Some(rossi_build::RuleId::TypeError)
+                    }),
+                    "{case}: expected TypeError diagnostic: {:?}",
+                    result.diagnostics
+                );
+                let event = view.events.get("Clash").expect("Clash event");
+                assert!(event.guards.is_empty(), "conflicting guard must be dropped");
+                assert!(
+                    !event.accurate,
+                    "the guard must be checked against the machine variable and dropped"
+                );
+            }
+        }
+    }
+}
+
+mod sees_diamond {
+    //! M3: a machine that SEES a context whose ancestors form a diamond must
+    //! emit scInternalContext for every transitively-seen context, each
+    //! appearing exactly once.
+    //!
+    //! Layout:
+    //!   Base  (sets USERS)
+    //!   Left  extends Base  (sets LEFT_ONLY)
+    //!   Right extends Base  (sets RIGHT_ONLY)
+    //!   Top   extends Left, Right
+    //!   Mch   sees Top
+    //!
+    //! Expected: Mch.bcm has scInternalContext for {Base, Left, Right, Top},
+    //! and Base appears exactly once (not once per path).
+
+    use rossi_build::{Project, ProjectComponent, build, sc_view::ScView};
+
+    fn ctx(filename: &str, body: &str) -> ProjectComponent {
+        let xml = format!(
+            r#"<?xml version="1.0"?>
+<org.eventb.core.contextFile version="3" org.eventb.core.configuration="org.eventb.core.fwd">
+{body}
+</org.eventb.core.contextFile>"#
+        );
+        ProjectComponent::from_xml(filename, &xml).unwrap()
+    }
+
+    /// Build the diamond `Base ← {Left, Right} ← Top` with the given
+    /// carrier-set names declared in Left/Right, plus the given machine.
+    fn diamond_project(
+        name: &str,
+        left_set: &str,
+        right_set: &str,
+        mch: ProjectComponent,
+    ) -> Project {
+        let base = ctx(
+            "Base.buc",
+            r#"<org.eventb.core.carrierSet name="_u" org.eventb.core.identifier="USERS"/>"#,
+        );
+        let left = ctx(
+            "Left.buc",
+            &format!(
+                r#"<org.eventb.core.extendsContext name="_e1" org.eventb.core.target="Base"/>
+<org.eventb.core.carrierSet name="_l" org.eventb.core.identifier="{left_set}"/>"#
+            ),
+        );
+        let right = ctx(
+            "Right.buc",
+            &format!(
+                r#"<org.eventb.core.extendsContext name="_e2" org.eventb.core.target="Base"/>
+<org.eventb.core.carrierSet name="_r" org.eventb.core.identifier="{right_set}"/>"#
+            ),
+        );
+        let top = ctx(
+            "Top.buc",
+            r#"<org.eventb.core.extendsContext name="_e3" org.eventb.core.target="Left"/>
+<org.eventb.core.extendsContext name="_e4" org.eventb.core.target="Right"/>"#,
+        );
+        Project::new(name, vec![base, left, right, top, mch])
+    }
+
+    fn make_project() -> Project {
+        let mch = ProjectComponent::from_xml(
+            "Mch.bum",
+            r#"<?xml version="1.0"?>
+<org.eventb.core.machineFile version="5" org.eventb.core.configuration="org.eventb.core.fwd">
+<org.eventb.core.seesContext name="_s" org.eventb.core.target="Top"/>
+</org.eventb.core.machineFile>"#,
+        )
+        .unwrap();
+        diamond_project("m3", "LEFT_ONLY", "RIGHT_ONLY", mch)
+    }
+
+    #[test]
+    fn machine_emits_internal_context_for_all_ancestors() {
+        let r = build(&make_project());
+        let bcm = &r.file("Mch.bcm").expect("Mch.bcm").contents;
+        for name in ["Base", "Left", "Right", "Top"] {
+            let marker = format!("<org.eventb.core.scInternalContext name=\"{name}\"");
+            assert!(
+                bcm.contains(&marker),
+                "expected {marker} in machine .bcm:\n{bcm}"
+            );
+        }
+    }
+
+    #[test]
+    fn sees_context_target_is_bare_uri() {
+        // Rodin emits `scSeesContext.scTarget="/PROJECT/CTX.bcc"` without a
+        // `|org.eventb.core.scContextFile#NAME` fragment; ProB rejects the
+        // fragmented form. See docs/ANIMATE_FAILURES.md (RC1).
+        let r = build(&make_project());
+        let bcm = &r.file("Mch.bcm").expect("Mch.bcm").contents;
+        assert!(
+            bcm.contains("org.eventb.core.scTarget=\"/m3/Top.bcc\""),
+            "expected bare scTarget for sees:\n{bcm}"
+        );
+        assert!(
+            !bcm.contains("/m3/Top.bcc|org.eventb.core.scContextFile#"),
+            "scSeesContext.scTarget must not carry a scContextFile fragment:\n{bcm}"
+        );
+    }
+
+    #[test]
+    fn diamond_base_appears_exactly_once() {
+        let r = build(&make_project());
+        let bcm = &r.file("Mch.bcm").expect("Mch.bcm").contents;
+        let marker = "<org.eventb.core.scInternalContext name=\"Base\"";
+        let count = bcm.matches(marker).count();
+        assert_eq!(
+            count, 1,
+            "Base should appear exactly once, found {count} times in:\n{bcm}"
+        );
+    }
+
+    #[test]
+    fn variables_can_reference_carrier_sets_from_any_ancestor() {
+        // With a diamond SEES, ancestor-defined sets must be visible for
+        // inference on invariants / guards / variables in the machine.
+        // We assert this indirectly: compile should succeed without
+        // "unknown identifier" diagnostics.
+        let mch = ProjectComponent::from_xml(
+        "Mch.bum",
+        r#"<?xml version="1.0"?>
+<org.eventb.core.machineFile version="5" org.eventb.core.configuration="org.eventb.core.fwd">
+<org.eventb.core.seesContext name="_s" org.eventb.core.target="Top"/>
+<org.eventb.core.variable name="_v1" org.eventb.core.identifier="registered"/>
+<org.eventb.core.variable name="_v2" org.eventb.core.identifier="inventory"/>
+<org.eventb.core.variable name="_v3" org.eventb.core.identifier="sales"/>
+<org.eventb.core.invariant name="_i1" org.eventb.core.label="inv1" org.eventb.core.predicate="registered ⊆ USERS"/>
+<org.eventb.core.invariant name="_i2" org.eventb.core.label="inv2" org.eventb.core.predicate="inventory ⊆ ITEMS"/>
+<org.eventb.core.invariant name="_i3" org.eventb.core.label="inv3" org.eventb.core.predicate="sales ⊆ AUCTIONS"/>
+</org.eventb.core.machineFile>"#,
+    )
+    .unwrap();
+        let project = diamond_project("m3_diamond", "ITEMS", "AUCTIONS", mch);
+        let r = build(&project);
+        assert!(r.is_ok(), "diagnostics: {:?}", r.diagnostics);
+        let view = ScView::from_xml(&r.file("Mch.bcm").unwrap().contents).unwrap();
+        assert_eq!(
+            view.variables
+                .get("registered")
+                .map(|v| v.type_str.as_str()),
+            Some("ℙ(USERS)")
+        );
+        assert_eq!(
+            view.variables.get("inventory").map(|v| v.type_str.as_str()),
+            Some("ℙ(ITEMS)")
+        );
+        assert_eq!(
+            view.variables.get("sales").map(|v| v.type_str.as_str()),
+            Some("ℙ(AUCTIONS)")
+        );
+    }
+}
+
+mod variant {
+    //! B1: emit `scVariant` element for a machine that declares a VARIANT.
+    //!
+    //! Rodin's shape (from binary-search/M2.bcm):
+    //!
+    //!   <org.eventb.core.scVariant name="C7" org.eventb.core.expression="j − i"
+    //!       org.eventb.core.label="vrn"
+    //!       org.eventb.core.source="/binary-search/M2.bum|...|variant#7"/>
+    //!
+    //! Emission order inside `scMachineFile`: scInvariants → scVariables →
+    //! scVariant → scEvents (confirmed against M2.bcm).
+
+    use rossi_build::{Project, ProjectComponent, build, sc_view::ScView};
+
+    const CTX_BUC: &str = r#"<?xml version="1.0"?>
+<org.eventb.core.contextFile version="3" org.eventb.core.configuration="org.eventb.core.fwd">
+</org.eventb.core.contextFile>
+"#;
+
+    /// Minimal machine with a VARIANT for a convergent event.
+    /// - variable `n`
+    /// - invariant `n ∈ ℕ`
+    /// - variant `n` (must decrease on each convergent event)
+    /// - event `decrement` convergent, guard `n > 0`, action `n := n − 1`
+    const MACHINE_BUM: &str = r#"<?xml version="1.0"?>
+<org.eventb.core.machineFile version="5" org.eventb.core.configuration="org.eventb.core.fwd">
+<org.eventb.core.seesContext name="_s" org.eventb.core.target="Ctx"/>
+<org.eventb.core.variable name="_v" org.eventb.core.identifier="n"/>
+<org.eventb.core.invariant name="_i" org.eventb.core.label="inv1" org.eventb.core.predicate="n ∈ ℕ"/>
+<org.eventb.core.variant name="_vr" org.eventb.core.expression="n"/>
+<org.eventb.core.event name="_init" org.eventb.core.convergence="0" org.eventb.core.extended="false" org.eventb.core.label="INITIALISATION">
+<org.eventb.core.action name="_a0" org.eventb.core.assignment="n ≔ 10" org.eventb.core.label="act1"/>
+</org.eventb.core.event>
+<org.eventb.core.event name="_dec" org.eventb.core.convergence="1" org.eventb.core.extended="false" org.eventb.core.label="decrement">
+<org.eventb.core.guard name="_g" org.eventb.core.label="grd1" org.eventb.core.predicate="n &gt; 0"/>
+<org.eventb.core.action name="_a" org.eventb.core.assignment="n ≔ n − 1" org.eventb.core.label="act1"/>
+</org.eventb.core.event>
+</org.eventb.core.machineFile>
+"#;
+
+    fn project() -> Project {
+        Project::new(
+            "mb1",
+            vec![
+                ProjectComponent::from_xml("Ctx.buc", CTX_BUC).unwrap(),
+                ProjectComponent::from_xml("Mch.bum", MACHINE_BUM).unwrap(),
+            ],
+        )
+    }
+
+    #[test]
+    fn sc_variant_element_emitted() {
+        let r = build(&project());
+        assert!(r.is_ok(), "diagnostics: {:?}", r.diagnostics);
+        let bcm = &r.file("Mch.bcm").expect("Mch.bcm").contents;
+        assert!(
+            bcm.contains("<org.eventb.core.scVariant"),
+            "expected scVariant in:\n{bcm}"
+        );
+        assert!(
+            bcm.contains(r#"org.eventb.core.expression="n""#),
+            "expected variant expression `n`:\n{bcm}"
+        );
+        assert!(
+            bcm.contains(r#"org.eventb.core.label="vrn""#),
+            "expected default label `vrn`:\n{bcm}"
+        );
+    }
+
+    #[test]
+    fn variant_appears_between_variables_and_events() {
+        let r = build(&project());
+        let bcm = &r.file("Mch.bcm").expect("Mch.bcm").contents;
+        let idx_var = bcm.find("<org.eventb.core.scVariable").unwrap();
+        let idx_variant = bcm.find("<org.eventb.core.scVariant").unwrap();
+        let idx_event = bcm.find("<org.eventb.core.scEvent").unwrap();
+        assert!(
+            idx_var < idx_variant && idx_variant < idx_event,
+            "expected scVariable → scVariant → scEvent order; got {idx_var}, {idx_variant}, {idx_event}"
+        );
+    }
+
+    #[test]
+    fn sc_view_captures_variant() {
+        let r = build(&project());
+        let bcm = &r.file("Mch.bcm").expect("Mch.bcm").contents;
+        let view = ScView::from_xml(bcm).unwrap();
+        assert_eq!(view.variant.as_deref(), Some("n"));
+    }
+}
