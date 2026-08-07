@@ -194,7 +194,7 @@ END
 }
 
 #[test]
-fn test_cross_file_references_for_extended_seen_context_constant() {
+fn extended_seen_context_constant_references_agree_from_both_ends() {
     let base_uri = make_uri("C0.eventb");
     let derived_uri = make_uri("C1.eventb");
     let mch_uri = make_uri("M1.eventb");
@@ -211,42 +211,23 @@ fn test_cross_file_references_for_extended_seen_context_constant() {
         (mch_uri.clone(), mch_source),
     ]);
 
-    let params = make_reference_params(mch_uri.clone(), 5, 14);
-    let refs = reference_provider
-        .find_references(&params, mch_source)
+    // Querying from the machine use site reaches the base-context declaration.
+    let machine_params = make_reference_params(mch_uri.clone(), 5, 14);
+    let machine_refs = reference_provider
+        .find_references(&machine_params, mch_source)
         .unwrap();
+    assert!(machine_refs.iter().any(|location| location.uri == base_uri));
+    assert!(machine_refs.iter().any(|location| location.uri == mch_uri));
+    assert_eq!(machine_refs.len(), 3);
 
-    assert!(refs.iter().any(|location| location.uri == base_uri));
-    assert!(refs.iter().any(|location| location.uri == mch_uri));
-    assert_eq!(refs.len(), 3);
-}
-
-#[test]
-fn test_extended_context_constant_declaration_references_include_seen_child_context() {
-    let base_uri = make_uri("C0.eventb");
-    let derived_uri = make_uri("C1.eventb");
-    let mch_uri = make_uri("M1.eventb");
-
-    let base_source =
-        "CONTEXT C0\nCONSTANTS\n    max_value\nAXIOMS\n    @axm1 max_value ∈ ℕ\nEND\n";
-    let derived_source = "CONTEXT C1\nEXTENDS C0\nEND\n";
-    let mch_source =
-        "MACHINE M1\nSEES C1\nVARIABLES\n    x\nINVARIANTS\n    @inv1 x = max_value\nEND\n";
-
-    let reference_provider = make_reference_provider(&[
-        (base_uri.clone(), base_source),
-        (derived_uri, derived_source),
-        (mch_uri.clone(), mch_source),
-    ]);
-
-    let params = make_reference_params(base_uri.clone(), 2, 4);
-    let refs = reference_provider
-        .find_references(&params, base_source)
+    // Querying from the base-context declaration reaches the seen machine.
+    let context_params = make_reference_params(base_uri.clone(), 2, 4);
+    let context_refs = reference_provider
+        .find_references(&context_params, base_source)
         .unwrap();
-
-    assert!(refs.iter().any(|location| location.uri == base_uri));
-    assert!(refs.iter().any(|location| location.uri == mch_uri));
-    assert_eq!(refs.len(), 3);
+    assert!(context_refs.iter().any(|location| location.uri == base_uri));
+    assert!(context_refs.iter().any(|location| location.uri == mch_uri));
+    assert_eq!(context_refs.len(), 3);
 }
 
 #[test]
