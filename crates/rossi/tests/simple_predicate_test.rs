@@ -775,38 +775,6 @@ fn lowercase_type_keyword_is_identifier(word: &str, type_set: &str) {
 }
 
 #[test]
-fn test_word_boundaries_not_keywords() {
-    use rossi::ExpressionKind;
-
-    // NATX should parse as an identifier, not as NAT + X
-    let source = common::axiom_context("NATX", "NATX = NATX");
-    let lhs = common::parse_expr_axiom(&source);
-    assert_eq!(
-        lhs,
-        ExpressionKind::Identifier("NATX".to_string()).into(),
-        "NATX should be Identifier"
-    );
-
-    // NAT1X should parse as an identifier
-    let source = common::axiom_context("NAT1X", "NAT1X = NAT1X");
-    let lhs = common::parse_expr_axiom(&source);
-    assert_eq!(
-        lhs,
-        ExpressionKind::Identifier("NAT1X".to_string()).into(),
-        "NAT1X should be Identifier"
-    );
-
-    // INTVAL should parse as an identifier
-    let source = common::axiom_context("INTVAL", "INTVAL = INTVAL");
-    let lhs = common::parse_expr_axiom(&source);
-    assert_eq!(
-        lhs,
-        ExpressionKind::Identifier("INTVAL".to_string()).into(),
-        "INTVAL should be Identifier"
-    );
-}
-
-#[test]
 fn test_nat1_int_roundtrip() {
     // Test NAT1 roundtrip via Unicode
     common::assert_roundtrip(
@@ -837,68 +805,31 @@ fn test_nat1_int_roundtrip() {
 // Word boundary tests — keyword prefixes must parse as identifiers
 // ============================================================================
 
-macro_rules! test_identifier_not_keyword {
-    ($name:ident, $ident:expr, $msg:expr) => {
-        #[test]
-        fn $name() {
-            use rossi::ExpressionKind;
-
-            let source = common::axiom_context($ident, &format!("{} = 5", $ident));
-            let lhs = common::parse_expr_axiom(&source);
-            assert_eq!(
-                lhs,
-                ExpressionKind::Identifier($ident.to_string()).into(),
-                $msg
-            );
-        }
-    };
+// A word that merely starts with (or contains) a reserved spelling — keyword,
+// operator word, or type-set token — is an ordinary identifier.
+#[test_case::test_case("domain" ; "domain_not_dom")]
+#[test_case::test_case("range" ; "range_not_ran")]
+#[test_case::test_case("truthy" ; "truthy_not_true")]
+#[test_case::test_case("falsehood" ; "falsehood_not_false")]
+#[test_case::test_case("model" ; "model_not_mod")]
+#[test_case::test_case("POWER" ; "power_not_pow")]
+#[test_case::test_case("BOOLEAN" ; "boolean_not_bool")]
+#[test_case::test_case("nothing" ; "nothing_not_negation")]
+#[test_case::test_case("circular" ; "circular_not_circ")]
+#[test_case::test_case("order" ; "order_not_or")]
+#[test_case::test_case("org" ; "org_not_or")]
+#[test_case::test_case("NATX" ; "natx_not_nat")]
+#[test_case::test_case("NAT1X" ; "nat1x_not_nat1")]
+#[test_case::test_case("INTVAL" ; "intval_not_int")]
+fn keyword_prefix_is_identifier(ident: &str) {
+    let source = common::axiom_context(ident, &format!("{ident} = 5"));
+    let lhs = common::parse_expr_axiom(&source);
+    assert_eq!(
+        lhs,
+        ExpressionKind::Identifier(ident.to_string()).into(),
+        "{ident:?} should parse as an identifier, not a keyword/operator"
+    );
 }
-
-test_identifier_not_keyword!(
-    test_domain_identifier_not_operator,
-    "domain",
-    "\"domain\" should parse as Identifier, not dom operator"
-);
-test_identifier_not_keyword!(
-    test_range_identifier_not_operator,
-    "range",
-    "\"range\" should parse as Identifier, not ran operator"
-);
-test_identifier_not_keyword!(
-    test_truthy_identifier_not_keyword,
-    "truthy",
-    "\"truthy\" should parse as Identifier, not kw_true"
-);
-test_identifier_not_keyword!(
-    test_falsehood_identifier_not_keyword,
-    "falsehood",
-    "\"falsehood\" should parse as Identifier, not kw_false"
-);
-test_identifier_not_keyword!(
-    test_model_identifier_not_mod,
-    "model",
-    "\"model\" should parse as Identifier, not mod operator"
-);
-test_identifier_not_keyword!(
-    test_power_identifier_not_pow,
-    "POWER",
-    "\"POWER\" should parse as Identifier, not POW operator"
-);
-test_identifier_not_keyword!(
-    test_boolean_identifier_not_bool,
-    "BOOLEAN",
-    "\"BOOLEAN\" should parse as Identifier, not kw_bool"
-);
-test_identifier_not_keyword!(
-    test_nothing_predicate_not_negation,
-    "nothing",
-    "\"nothing\" should parse as Identifier, not negation"
-);
-test_identifier_not_keyword!(
-    test_circular_identifier_not_circ,
-    "circular",
-    "\"circular\" should parse as Identifier, not circ operator"
-);
 
 #[test]
 fn test_keywords_still_work_after_boundary_guards() {
@@ -1023,32 +954,6 @@ fn test_disjunction_ascii_or() {
         }
         other => panic!("Expected Logical OR, got {:?}", other),
     }
-}
-
-#[test]
-fn test_or_word_boundary_order_identifier() {
-    use rossi::ExpressionKind;
-
-    let source = common::axiom_context("order", "order = 5");
-    let lhs = common::parse_expr_axiom(&source);
-    assert_eq!(
-        lhs,
-        ExpressionKind::Identifier("order".to_string()).into(),
-        "\"order\" should parse as Identifier, not 'or' operator"
-    );
-}
-
-#[test]
-fn test_or_word_boundary_org_identifier() {
-    use rossi::ExpressionKind;
-
-    let source = common::axiom_context("org", "org = 5");
-    let lhs = common::parse_expr_axiom(&source);
-    assert_eq!(
-        lhs,
-        ExpressionKind::Identifier("org".to_string()).into(),
-        "\"org\" should parse as Identifier, not 'or' operator"
-    );
 }
 
 #[test]
