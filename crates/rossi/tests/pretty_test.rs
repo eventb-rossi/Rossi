@@ -1,5 +1,7 @@
 mod common;
 
+use rossi::ast::expression::{AtomicBuiltinKind, BinaryOp, UnaryOp};
+use rossi::ast::predicate::{ComparisonOp, LogicalOp};
 use rossi::*;
 use test_case::test_case;
 
@@ -353,193 +355,196 @@ END
 }
 
 // ============================================================================
-// Precedence-aware parenthesization tests (individual — AST construction)
+// Precedence-aware parenthesization tests (parametrized — AST construction)
+//
+// Each row pins the canonical *minimal* parenthesization, which the roundtrip
+// properties cannot check (over-parenthesized output also roundtrips). The
+// shared body additionally reparses the printed form back to the same AST, so
+// every canonical form is also proven parser-stable.
 // ============================================================================
 
-#[test]
-fn test_pretty_print_no_unnecessary_parens_same_prec_left_assoc() {
-    // (a + b) + c should print as "a + b + c" (left-associative, no parens needed)
-    use rossi::ast::expression::BinaryOp;
-    let expr: Expression = ExpressionKind::Binary {
-        op: BinaryOp::Add,
-        left: Box::new(
-            ExpressionKind::Binary {
-                op: BinaryOp::Add,
-                left: Box::new(ExpressionKind::Identifier("a".into()).into()),
-                right: Box::new(ExpressionKind::Identifier("b".into()).into()),
-            }
-            .into(),
-        ),
-        right: Box::new(ExpressionKind::Identifier("c".into()).into()),
-    }
-    .into();
-    let output = PrettyPrinter::new().print_expression(&expr);
-    assert_eq!(output, "a + b + c");
+fn id(name: &str) -> Expression {
+    Expression::identifier(name)
 }
 
-#[test]
-fn test_pretty_print_parens_right_child_same_prec() {
-    // a + (b + c) must keep parens (right child, left-associative)
-    use rossi::ast::expression::BinaryOp;
-    let expr: Expression = ExpressionKind::Binary {
-        op: BinaryOp::Add,
-        left: Box::new(ExpressionKind::Identifier("a".into()).into()),
-        right: Box::new(
-            ExpressionKind::Binary {
-                op: BinaryOp::Add,
-                left: Box::new(ExpressionKind::Identifier("b".into()).into()),
-                right: Box::new(ExpressionKind::Identifier("c".into()).into()),
-            }
-            .into(),
-        ),
+fn bin(op: BinaryOp, left: Expression, right: Expression) -> Expression {
+    ExpressionKind::Binary {
+        op,
+        left: Box::new(left),
+        right: Box::new(right),
     }
-    .into();
-    let output = PrettyPrinter::new().print_expression(&expr);
-    assert_eq!(output, "a + (b + c)");
+    .into()
 }
 
-#[test]
-fn test_pretty_print_no_parens_higher_prec_child() {
-    // a + b * c should print without parens (multiply is higher precedence)
-    use rossi::ast::expression::BinaryOp;
-    let expr: Expression = ExpressionKind::Binary {
-        op: BinaryOp::Add,
-        left: Box::new(ExpressionKind::Identifier("a".into()).into()),
-        right: Box::new(
-            ExpressionKind::Binary {
-                op: BinaryOp::Multiply,
-                left: Box::new(ExpressionKind::Identifier("b".into()).into()),
-                right: Box::new(ExpressionKind::Identifier("c".into()).into()),
-            }
-            .into(),
-        ),
+fn un(op: UnaryOp, operand: Expression) -> Expression {
+    ExpressionKind::Unary {
+        op,
+        operand: Box::new(operand),
     }
-    .into();
-    let output = PrettyPrinter::new().print_expression(&expr);
-    assert_eq!(output, "a + b \u{2217} c"); // ∗ ASTERISK OPERATOR
+    .into()
 }
 
-#[test]
-fn test_pretty_print_parens_lower_prec_child() {
-    // (a + b) * c must keep parens (add is lower precedence than multiply)
-    use rossi::ast::expression::BinaryOp;
-    let expr: Expression = ExpressionKind::Binary {
-        op: BinaryOp::Multiply,
-        left: Box::new(
-            ExpressionKind::Binary {
-                op: BinaryOp::Add,
-                left: Box::new(ExpressionKind::Identifier("a".into()).into()),
-                right: Box::new(ExpressionKind::Identifier("b".into()).into()),
-            }
-            .into(),
-        ),
-        right: Box::new(ExpressionKind::Identifier("c".into()).into()),
+/// `<name> > 0` — comparison leaf for the logical-operator rows.
+fn gt0(name: &str) -> Predicate {
+    PredicateKind::Comparison {
+        op: ComparisonOp::GreaterThan,
+        left: id(name),
+        right: ExpressionKind::Integer(0).into(),
     }
-    .into();
-    let output = PrettyPrinter::new().print_expression(&expr);
-    assert_eq!(output, "(a + b) \u{2217} c"); // ∗ ASTERISK OPERATOR
+    .into()
 }
 
-#[test]
-fn test_pretty_print_maplet_right_grouped_needs_parens() {
-    // a ↦ (b ↦ c): right child is itself a Maplet, so keep parens
-    // (left-associative — same-level Maplet on the right is non-default grouping).
-    use rossi::ast::expression::BinaryOp;
-    let expr: Expression = ExpressionKind::Binary {
-        op: BinaryOp::Maplet,
-        left: Box::new(ExpressionKind::Identifier("a".into()).into()),
-        right: Box::new(
-            ExpressionKind::Binary {
-                op: BinaryOp::Maplet,
-                left: Box::new(ExpressionKind::Identifier("b".into()).into()),
-                right: Box::new(ExpressionKind::Identifier("c".into()).into()),
-            }
-            .into(),
-        ),
+fn logic(op: LogicalOp, left: Predicate, right: Predicate) -> Predicate {
+    PredicateKind::Logical {
+        op,
+        left: Box::new(left),
+        right: Box::new(right),
     }
-    .into();
-    let output = PrettyPrinter::new().print_expression(&expr);
-    assert_eq!(output, "a \u{21A6} (b \u{21A6} c)");
+    .into()
 }
 
-#[test]
-fn test_pretty_print_maplet_left_grouped_no_parens() {
-    // (a ↦ b) ↦ c: this is the natural left-associative grouping
-    // (`a ↦ b ↦ c = (a ↦ b) ↦ c` per spec p.18), so emit flat.
-    use rossi::ast::expression::BinaryOp;
-    let expr: Expression = ExpressionKind::Binary {
-        op: BinaryOp::Maplet,
-        left: Box::new(
-            ExpressionKind::Binary {
-                op: BinaryOp::Maplet,
-                left: Box::new(ExpressionKind::Identifier("a".into()).into()),
-                right: Box::new(ExpressionKind::Identifier("b".into()).into()),
-            }
-            .into(),
-        ),
-        right: Box::new(ExpressionKind::Identifier("c".into()).into()),
-    }
-    .into();
-    let output = PrettyPrinter::new().print_expression(&expr);
-    assert_eq!(output, "a \u{21A6} b \u{21A6} c");
+// (a + b) + c prints flat: left child, same precedence, left-associative.
+#[test_case(
+    bin(BinaryOp::Add, bin(BinaryOp::Add, id("a"), id("b")), id("c")),
+    "a + b + c";
+    "same_prec_left_assoc_no_parens"
+)]
+// a + (b + c) keeps parens: right child of a left-associative operator.
+#[test_case(
+    bin(BinaryOp::Add, id("a"), bin(BinaryOp::Add, id("b"), id("c"))),
+    "a + (b + c)";
+    "same_prec_right_child_parens"
+)]
+// a + b ∗ c prints flat: multiply is higher precedence. (∗ ASTERISK OPERATOR)
+#[test_case(
+    bin(BinaryOp::Add, id("a"), bin(BinaryOp::Multiply, id("b"), id("c"))),
+    "a + b \u{2217} c";
+    "higher_prec_child_no_parens"
+)]
+// (a + b) ∗ c keeps parens: add is lower precedence than multiply.
+#[test_case(
+    bin(BinaryOp::Multiply, bin(BinaryOp::Add, id("a"), id("b")), id("c")),
+    "(a + b) \u{2217} c";
+    "lower_prec_child_parens"
+)]
+// a − b + c prints flat: left child, same precedence, left-assoc. (− MINUS SIGN)
+#[test_case(
+    bin(BinaryOp::Add, bin(BinaryOp::Subtract, id("a"), id("b")), id("c")),
+    "a \u{2212} b + c";
+    "mixed_same_prec_left_child"
+)]
+// a + (b − c) keeps parens: right child, same precedence, left-assoc.
+#[test_case(
+    bin(BinaryOp::Add, id("a"), bin(BinaryOp::Subtract, id("b"), id("c"))),
+    "a + (b \u{2212} c)";
+    "mixed_same_prec_right_child"
+)]
+// a ↦ (b ↦ c): right child is itself a Maplet, so keep parens
+// (left-associative — same-level Maplet on the right is non-default grouping).
+#[test_case(
+    bin(BinaryOp::Maplet, id("a"), bin(BinaryOp::Maplet, id("b"), id("c"))),
+    "a \u{21A6} (b \u{21A6} c)";
+    "maplet_right_grouped_parens"
+)]
+// (a ↦ b) ↦ c: the natural left-associative grouping
+// (`a ↦ b ↦ c = (a ↦ b) ↦ c` per spec p.18), so emit flat.
+#[test_case(
+    bin(BinaryOp::Maplet, bin(BinaryOp::Maplet, id("a"), id("b")), id("c")),
+    "a \u{21A6} b \u{21A6} c";
+    "maplet_left_grouped_no_parens"
+)]
+// a ↦ (b ↔ c): arrows bind tighter than maplet (kernel_lang Table 3.1;
+// regression context: c3e3cae), so this is the natural grouping — emit flat.
+#[test_case(
+    bin(BinaryOp::Maplet, id("a"), bin(BinaryOp::Relation, id("b"), id("c"))),
+    "a \u{21A6} b \u{2194} c";
+    "arrow_inside_maplet_no_parens"
+)]
+// (a ↦ b) ↔ c: maplet binds looser than the arrow (kernel_lang Table 3.1;
+// regression context: c3e3cae) — dropping the parens would re-bind as
+// a ↦ (b ↔ c), a different AST.
+#[test_case(
+    bin(BinaryOp::Relation, bin(BinaryOp::Maplet, id("a"), id("b")), id("c")),
+    "(a \u{21A6} b) \u{2194} c";
+    "maplet_inside_arrow_parens"
+)]
+// (S ∪ T) ∖ U — Union and Difference are in different Camille compatibility
+// classes, so parens are required.
+#[test_case(
+    bin(BinaryOp::Difference, bin(BinaryOp::Union, id("S"), id("T")), id("U")),
+    "(S ∪ T) ∖ U";
+    "union_difference_incompatible"
+)]
+// S ∖ (T ∖ U) — Difference is Camille class 0, incompatible even with itself.
+#[test_case(
+    bin(
+        BinaryOp::Difference,
+        id("S"),
+        bin(BinaryOp::Difference, id("T"), id("U"))
+    ),
+    "S ∖ (T ∖ U)";
+    "difference_self_incompatible"
+)]
+// (S ∖ T) ∖ U — per Table 3.2 the ∖ row is completely empty, so parens are
+// always required, even for the left child.
+#[test_case(
+    bin(
+        BinaryOp::Difference,
+        bin(BinaryOp::Difference, id("S"), id("T")),
+        id("U")
+    ),
+    "(S ∖ T) ∖ U";
+    "difference_left_child_parens"
+)]
+// prj1∼, not (prj1)∼: a bare relational atom (an atomic builtin per a8bbd8d)
+// is a primary expression, so postfix inverse needs no parens. It would
+// round-trip either way, but the canonical form must match the minimal one.
+#[test_case(
+    un(
+        UnaryOp::Inverse,
+        ExpressionKind::AtomicBuiltin(AtomicBuiltinKind::Prj1).into()
+    ),
+    "prj1\u{223C}";
+    "inverse_of_atomic_builtin_no_parens"
+)]
+fn test_pretty_print_canonical_expression(expr: Expression, expected: &str) {
+    let printed = PrettyPrinter::new().print_expression(&expr);
+    assert_eq!(printed, expected);
+    assert_eq!(
+        parse_expression_str(&printed).expect("canonical form reparses"),
+        expr,
+        "reparsing the canonical form changed the AST"
+    );
 }
 
-#[test]
-fn test_pretty_print_arrow_inside_maplet_no_parens() {
-    // a ↦ (b ↔ c): arrows bind tighter than maplet (kernel_lang Table 3.1),
-    // so this is the natural grouping — emit flat.
-    use rossi::ast::expression::BinaryOp;
-    let expr: Expression = ExpressionKind::Binary {
-        op: BinaryOp::Maplet,
-        left: Box::new(ExpressionKind::Identifier("a".into()).into()),
-        right: Box::new(
-            ExpressionKind::Binary {
-                op: BinaryOp::Relation,
-                left: Box::new(ExpressionKind::Identifier("b".into()).into()),
-                right: Box::new(ExpressionKind::Identifier("c".into()).into()),
-            }
-            .into(),
-        ),
-    }
-    .into();
-    let output = PrettyPrinter::new().print_expression(&expr);
-    assert_eq!(output, "a \u{21A6} b \u{2194} c");
-}
-
-#[test]
-fn test_pretty_print_maplet_inside_arrow_needs_parens() {
-    // (a ↦ b) ↔ c: maplet binds looser than the arrow, so dropping the
-    // parens would re-bind as a ↦ (b ↔ c) — a different AST.
-    use rossi::ast::expression::BinaryOp;
-    let expr: Expression = ExpressionKind::Binary {
-        op: BinaryOp::Relation,
-        left: Box::new(
-            ExpressionKind::Binary {
-                op: BinaryOp::Maplet,
-                left: Box::new(ExpressionKind::Identifier("a".into()).into()),
-                right: Box::new(ExpressionKind::Identifier("b".into()).into()),
-            }
-            .into(),
-        ),
-        right: Box::new(ExpressionKind::Identifier("c".into()).into()),
-    }
-    .into();
-    let output = PrettyPrinter::new().print_expression(&expr);
-    assert_eq!(output, "(a \u{21A6} b) \u{2194} c");
-}
-
-#[test]
-fn test_pretty_print_maplet_arrow_roundtrip() {
-    // Both groupings survive a print → reparse cycle unchanged.
-    for src in ["a \u{21A6} b \u{2194} c", "(a \u{21A6} b) \u{2194} c"] {
-        let parsed = rossi::parse_expression_str(src).expect("parses");
-        let printed = PrettyPrinter::new().print_expression(&parsed);
-        let reparsed = rossi::parse_expression_str(&printed).expect("reparses");
-        assert_eq!(
-            parsed, reparsed,
-            "roundtrip changed AST for {src} (printed as {printed})"
-        );
-    }
+// (a > 0 ∧ b > 0) ∨ c > 0 — And inside Or keeps parens (different Camille
+// compatibility classes).
+#[test_case(
+    logic(LogicalOp::Or, logic(LogicalOp::And, gt0("a"), gt0("b")), gt0("c")),
+    "(a > 0 ∧ b > 0) ∨ c > 0";
+    "and_or_left_child"
+)]
+// a > 0 ∧ (b > 0 ∨ c > 0) — Or inside And keeps parens.
+#[test_case(
+    logic(LogicalOp::And, gt0("a"), logic(LogicalOp::Or, gt0("b"), gt0("c"))),
+    "a > 0 ∧ (b > 0 ∨ c > 0)";
+    "or_inside_and"
+)]
+// a > 0 ∧ b > 0 ∧ c > 0 — same class, left-assoc: left child prints flat,
+// only a right child would need parens.
+#[test_case(
+    logic(LogicalOp::And, logic(LogicalOp::And, gt0("a"), gt0("b")), gt0("c")),
+    "a > 0 ∧ b > 0 ∧ c > 0";
+    "and_chain_same_class"
+)]
+fn test_pretty_print_canonical_predicate(pred: Predicate, expected: &str) {
+    let printed = PrettyPrinter::new().print_predicate(&pred);
+    assert_eq!(printed, expected);
+    assert_eq!(
+        parse_predicate_str(&printed).expect("canonical form reparses"),
+        pred,
+        "reparsing the canonical form changed the AST"
+    );
 }
 
 #[test]
@@ -562,20 +567,6 @@ fn test_pretty_print_function_application_binary_function_keeps_parens() {
     .into();
     let output = PrettyPrinter::new().print_expression(&expr);
     assert_eq!(output, "(mapping \u{25C1} prj1)(x)");
-}
-
-#[test]
-fn test_pretty_print_inverse_of_atomic_builtin_no_parens() {
-    // A bare relational atom is a primary expression, so postfix inverse needs
-    // no parens: `prj1∼`, not `(prj1)∼` (it would round-trip either way, but
-    // the canonical form must match the minimal one).
-    use rossi::ast::expression::{AtomicBuiltinKind, UnaryOp};
-    let expr: Expression = ExpressionKind::Unary {
-        op: UnaryOp::Inverse,
-        operand: Box::new(ExpressionKind::AtomicBuiltin(AtomicBuiltinKind::Prj1).into()),
-    }
-    .into();
-    assert_eq!(PrettyPrinter::new().print_expression(&expr), "prj1\u{223C}");
 }
 
 #[test]
@@ -620,241 +611,9 @@ fn test_single_argument_application_ast_roundtrips() {
     }
 }
 
-#[test]
-fn test_pretty_print_mixed_same_prec_left_child() {
-    // (a - b) + c should print as "a - b + c" (left child, same prec, left-assoc)
-    use rossi::ast::expression::BinaryOp;
-    let expr: Expression = ExpressionKind::Binary {
-        op: BinaryOp::Add,
-        left: Box::new(
-            ExpressionKind::Binary {
-                op: BinaryOp::Subtract,
-                left: Box::new(ExpressionKind::Identifier("a".into()).into()),
-                right: Box::new(ExpressionKind::Identifier("b".into()).into()),
-            }
-            .into(),
-        ),
-        right: Box::new(ExpressionKind::Identifier("c".into()).into()),
-    }
-    .into();
-    let output = PrettyPrinter::new().print_expression(&expr);
-    assert_eq!(output, "a \u{2212} b + c"); // − MINUS SIGN
-}
-
-#[test]
-fn test_pretty_print_mixed_same_prec_right_child() {
-    // a + (b - c) must keep parens (right child, same prec, left-assoc)
-    use rossi::ast::expression::BinaryOp;
-    let expr: Expression = ExpressionKind::Binary {
-        op: BinaryOp::Add,
-        left: Box::new(ExpressionKind::Identifier("a".into()).into()),
-        right: Box::new(
-            ExpressionKind::Binary {
-                op: BinaryOp::Subtract,
-                left: Box::new(ExpressionKind::Identifier("b".into()).into()),
-                right: Box::new(ExpressionKind::Identifier("c".into()).into()),
-            }
-            .into(),
-        ),
-    }
-    .into();
-    let output = PrettyPrinter::new().print_expression(&expr);
-    assert_eq!(output, "a + (b \u{2212} c)"); // − MINUS SIGN
-}
-
 // ============================================================================
 // Camille compatibility class tests (parenthesization)
 // ============================================================================
-
-#[test]
-fn test_camille_and_or_left_child() {
-    // (a ∧ b) ∨ c — And inside Or must keep parens (different compat classes)
-    use rossi::ast::predicate::LogicalOp;
-    let pred: Predicate = PredicateKind::Logical {
-        op: LogicalOp::Or,
-        left: Box::new(
-            PredicateKind::Logical {
-                op: LogicalOp::And,
-                left: Box::new(
-                    PredicateKind::Comparison {
-                        op: rossi::ast::predicate::ComparisonOp::GreaterThan,
-                        left: ExpressionKind::Identifier("a".into()).into(),
-                        right: ExpressionKind::Integer(0).into(),
-                    }
-                    .into(),
-                ),
-                right: Box::new(
-                    PredicateKind::Comparison {
-                        op: rossi::ast::predicate::ComparisonOp::GreaterThan,
-                        left: ExpressionKind::Identifier("b".into()).into(),
-                        right: ExpressionKind::Integer(0).into(),
-                    }
-                    .into(),
-                ),
-            }
-            .into(),
-        ),
-        right: Box::new(
-            PredicateKind::Comparison {
-                op: rossi::ast::predicate::ComparisonOp::GreaterThan,
-                left: ExpressionKind::Identifier("c".into()).into(),
-                right: ExpressionKind::Integer(0).into(),
-            }
-            .into(),
-        ),
-    }
-    .into();
-    let output = PrettyPrinter::new().print_predicate(&pred);
-    assert_eq!(output, "(a > 0 ∧ b > 0) ∨ c > 0");
-}
-
-#[test]
-fn test_camille_or_inside_and() {
-    // a ∧ (b ∨ c) — Or inside And must keep parens
-    use rossi::ast::predicate::LogicalOp;
-    let pred: Predicate = PredicateKind::Logical {
-        op: LogicalOp::And,
-        left: Box::new(
-            PredicateKind::Comparison {
-                op: rossi::ast::predicate::ComparisonOp::GreaterThan,
-                left: ExpressionKind::Identifier("a".into()).into(),
-                right: ExpressionKind::Integer(0).into(),
-            }
-            .into(),
-        ),
-        right: Box::new(
-            PredicateKind::Logical {
-                op: LogicalOp::Or,
-                left: Box::new(
-                    PredicateKind::Comparison {
-                        op: rossi::ast::predicate::ComparisonOp::GreaterThan,
-                        left: ExpressionKind::Identifier("b".into()).into(),
-                        right: ExpressionKind::Integer(0).into(),
-                    }
-                    .into(),
-                ),
-                right: Box::new(
-                    PredicateKind::Comparison {
-                        op: rossi::ast::predicate::ComparisonOp::GreaterThan,
-                        left: ExpressionKind::Identifier("c".into()).into(),
-                        right: ExpressionKind::Integer(0).into(),
-                    }
-                    .into(),
-                ),
-            }
-            .into(),
-        ),
-    }
-    .into();
-    let output = PrettyPrinter::new().print_predicate(&pred);
-    assert_eq!(output, "a > 0 ∧ (b > 0 ∨ c > 0)");
-}
-
-#[test]
-fn test_camille_and_chain_same_class() {
-    // a ∧ b ∧ c — same class, left-assoc: left child no parens, right child gets parens
-    use rossi::ast::predicate::LogicalOp;
-    let pred: Predicate = PredicateKind::Logical {
-        op: LogicalOp::And,
-        left: Box::new(
-            PredicateKind::Logical {
-                op: LogicalOp::And,
-                left: Box::new(
-                    PredicateKind::Comparison {
-                        op: rossi::ast::predicate::ComparisonOp::GreaterThan,
-                        left: ExpressionKind::Identifier("a".into()).into(),
-                        right: ExpressionKind::Integer(0).into(),
-                    }
-                    .into(),
-                ),
-                right: Box::new(
-                    PredicateKind::Comparison {
-                        op: rossi::ast::predicate::ComparisonOp::GreaterThan,
-                        left: ExpressionKind::Identifier("b".into()).into(),
-                        right: ExpressionKind::Integer(0).into(),
-                    }
-                    .into(),
-                ),
-            }
-            .into(),
-        ),
-        right: Box::new(
-            PredicateKind::Comparison {
-                op: rossi::ast::predicate::ComparisonOp::GreaterThan,
-                left: ExpressionKind::Identifier("c".into()).into(),
-                right: ExpressionKind::Integer(0).into(),
-            }
-            .into(),
-        ),
-    }
-    .into();
-    let output = PrettyPrinter::new().print_predicate(&pred);
-    assert_eq!(output, "a > 0 ∧ b > 0 ∧ c > 0");
-}
-
-#[test]
-fn test_camille_union_difference_incompatible() {
-    // (S ∪ T) ∖ U — Union and Difference are in different compat classes
-    use rossi::ast::expression::BinaryOp;
-    let expr: Expression = ExpressionKind::Binary {
-        op: BinaryOp::Difference,
-        left: Box::new(
-            ExpressionKind::Binary {
-                op: BinaryOp::Union,
-                left: Box::new(ExpressionKind::Identifier("S".into()).into()),
-                right: Box::new(ExpressionKind::Identifier("T".into()).into()),
-            }
-            .into(),
-        ),
-        right: Box::new(ExpressionKind::Identifier("U".into()).into()),
-    }
-    .into();
-    let output = PrettyPrinter::new().print_expression(&expr);
-    assert_eq!(output, "(S ∪ T) ∖ U");
-}
-
-#[test]
-fn test_camille_difference_self_incompatible() {
-    // S ∖ (T ∖ U) — Difference is class 0, incompatible even with itself
-    use rossi::ast::expression::BinaryOp;
-    let expr: Expression = ExpressionKind::Binary {
-        op: BinaryOp::Difference,
-        left: Box::new(ExpressionKind::Identifier("S".into()).into()),
-        right: Box::new(
-            ExpressionKind::Binary {
-                op: BinaryOp::Difference,
-                left: Box::new(ExpressionKind::Identifier("T".into()).into()),
-                right: Box::new(ExpressionKind::Identifier("U".into()).into()),
-            }
-            .into(),
-        ),
-    }
-    .into();
-    let output = PrettyPrinter::new().print_expression(&expr);
-    assert_eq!(output, "S ∖ (T ∖ U)");
-}
-
-#[test]
-fn test_camille_difference_left_child_also_parens() {
-    // (S ∖ T) ∖ U — Difference is class 0 (incompatible with everything, including itself)
-    // Per Table 3.2: ∖ row is completely empty, so parens are always required
-    use rossi::ast::expression::BinaryOp;
-    let expr: Expression = ExpressionKind::Binary {
-        op: BinaryOp::Difference,
-        left: Box::new(
-            ExpressionKind::Binary {
-                op: BinaryOp::Difference,
-                left: Box::new(ExpressionKind::Identifier("S".into()).into()),
-                right: Box::new(ExpressionKind::Identifier("T".into()).into()),
-            }
-            .into(),
-        ),
-        right: Box::new(ExpressionKind::Identifier("U".into()).into()),
-    }
-    .into();
-    let output = PrettyPrinter::new().print_expression(&expr);
-    assert_eq!(output, "(S ∖ T) ∖ U");
-}
 
 #[test]
 fn test_camille_mixed_and_or_roundtrip() {
