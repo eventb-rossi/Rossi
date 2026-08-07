@@ -735,113 +735,24 @@ fn test_multiply_vs_cartesian_product() {
     );
 }
 
-#[test]
-fn test_nat1_ascii() {
-    use rossi::ExpressionKind;
-
-    let m = common::parse_machine(
-        r#"
-    MACHINE test
-    VARIABLES
-        x
-    INVARIANTS
-        @inv1 x ∈ NAT1
-    END
-    "#,
-    );
-    if let rossi::PredicateKind::Comparison { right, .. } = &m.invariants[0].predicate.kind {
-        assert_eq!(
-            *right,
-            ExpressionKind::Naturals1.into(),
-            "NAT1 should parse as Naturals1, not Identifier"
-        );
-    } else {
-        panic!("Expected Comparison predicate");
-    }
-}
-
-#[test]
-fn test_nat1_unicode() {
-    use rossi::ExpressionKind;
-
-    let source = common::invariant_machine("x", "x \u{2208} \u{2115}1");
+// ASCII and Unicode type-set tokens parse as the builtin type sets, not as
+// identifiers.
+#[test_case::test_case("NAT1", ExpressionKind::Naturals1 ; "nat1_ascii")]
+#[test_case::test_case("\u{2115}1", ExpressionKind::Naturals1 ; "nat1_unicode")]
+#[test_case::test_case("INT", ExpressionKind::Integers ; "int_ascii")]
+#[test_case::test_case("\u{2124}", ExpressionKind::Integers ; "int_unicode")]
+#[test_case::test_case("NAT", ExpressionKind::Naturals ; "nat_ascii")]
+fn type_set_token_parses_as_type_set(token: &str, expected: ExpressionKind) {
+    let source = common::invariant_machine("x", &format!("x ∈ {token}"));
     let m = common::parse_machine(&source);
-    if let rossi::PredicateKind::Comparison { right, .. } = &m.invariants[0].predicate.kind {
-        assert_eq!(
-            *right,
-            ExpressionKind::Naturals1.into(),
-            "\u{2115}1 should parse as Naturals1"
-        );
-    } else {
+    let rossi::PredicateKind::Comparison { right, .. } = &m.invariants[0].predicate.kind else {
         panic!("Expected Comparison predicate");
-    }
-}
-
-#[test]
-fn test_int_ascii() {
-    use rossi::ExpressionKind;
-
-    let m = common::parse_machine(
-        r#"
-    MACHINE test
-    VARIABLES
-        x
-    INVARIANTS
-        @inv1 x ∈ INT
-    END
-    "#,
+    };
+    assert_eq!(
+        *right,
+        expected.into(),
+        "{token} should parse as the builtin type set, not Identifier"
     );
-    if let rossi::PredicateKind::Comparison { right, .. } = &m.invariants[0].predicate.kind {
-        assert_eq!(
-            *right,
-            ExpressionKind::Integers.into(),
-            "INT should parse as Integers, not Identifier"
-        );
-    } else {
-        panic!("Expected Comparison predicate");
-    }
-}
-
-#[test]
-fn test_int_unicode() {
-    use rossi::ExpressionKind;
-
-    let source = common::invariant_machine("x", "x \u{2208} \u{2124}");
-    let m = common::parse_machine(&source);
-    if let rossi::PredicateKind::Comparison { right, .. } = &m.invariants[0].predicate.kind {
-        assert_eq!(
-            *right,
-            ExpressionKind::Integers.into(),
-            "\u{2124} should parse as Integers"
-        );
-    } else {
-        panic!("Expected Comparison predicate");
-    }
-}
-
-#[test]
-fn test_nat_still_works() {
-    use rossi::ExpressionKind;
-
-    let m = common::parse_machine(
-        r#"
-    MACHINE test
-    VARIABLES
-        x
-    INVARIANTS
-        @inv1 x ∈ NAT
-    END
-    "#,
-    );
-    if let rossi::PredicateKind::Comparison { right, .. } = &m.invariants[0].predicate.kind {
-        assert_eq!(
-            *right,
-            ExpressionKind::Naturals.into(),
-            "NAT should still parse as Naturals"
-        );
-    } else {
-        panic!("Expected Comparison predicate");
-    }
 }
 
 // ASCII type-set spellings are exact-case (uppercase NAT1/INT); the lowercase
