@@ -345,59 +345,27 @@ fn test_composition_circ_ascii() {
 // MEDIUM priority: Quantifiers with multiple variables
 // ============================================================================
 
-#[test]
-fn test_forall_multiple_variables() {
-    let source = r#"
-    CONTEXT test
-    AXIOMS
-        @axm1 ∀x, y · x > 0 ∧ y > 0 ⇒ x + y > 0
-    END
-    "#;
+#[test_case("∀x, y · x > 0 ∧ y > 0 ⇒ x + y > 0", Quantifier::ForAll ; "forall")]
+#[test_case("∃x, y · x > 0 ∧ y > 0", Quantifier::Exists ; "exists")]
+fn test_quantifier_multiple_variables(axiom: &str, expected: Quantifier) {
+    let source = format!("\n    CONTEXT test\n    AXIOMS\n        @axm1 {axiom}\n    END\n    ");
 
-    let ctx = common::parse_context(source);
+    let ctx = common::parse_context(&source);
     match &ctx.axioms[0].predicate.kind {
         PredicateKind::Quantified {
             quantifier,
             identifiers,
             predicate,
         } => {
-            assert_eq!(*quantifier, Quantifier::ForAll);
-            assert_eq!(identifiers.len(), 2);
-            assert_eq!(identifiers[0], "x");
-            assert_eq!(identifiers[1], "y");
+            assert_eq!(*quantifier, expected);
+            assert_eq!(identifiers, &["x", "y"]);
             assert!(
                 matches!(&predicate.kind, PredicateKind::Logical { .. }),
                 "Expected Logical predicate body, got {:?}",
                 predicate
             );
         }
-        other => panic!("Expected Quantified ForAll, got {:?}", other),
-    }
-}
-
-#[test]
-fn test_exists_multiple_variables() {
-    let source = r#"
-    CONTEXT test
-    AXIOMS
-        @axm1 ∃x, y · x > 0 ∧ y > 0
-    END
-    "#;
-
-    let ctx = common::parse_context(source);
-    match &ctx.axioms[0].predicate.kind {
-        PredicateKind::Quantified {
-            quantifier,
-            identifiers,
-            predicate,
-        } => {
-            assert_eq!(*quantifier, Quantifier::Exists);
-            assert_eq!(identifiers.len(), 2);
-            assert_eq!(identifiers[0], "x");
-            assert_eq!(identifiers[1], "y");
-            assert!(matches!(&predicate.kind, PredicateKind::Logical { .. }));
-        }
-        other => panic!("Expected Quantified Exists, got {:?}", other),
+        other => panic!("Expected Quantified {expected:?}, got {:?}", other),
     }
 }
 
