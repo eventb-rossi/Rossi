@@ -3,7 +3,10 @@
 //! These tests use models from https://github.com/17451k/eventb-models
 //! to verify that the parser can handle real-world Event-B specifications.
 
-use rossi::{Component, NamedComponent, parse_components, parse_zip_file, parse_zip_with_recovery};
+use rossi::{
+    Component, NamedComponent, ParseError, parse_components, parse_zip_file,
+    parse_zip_with_recovery,
+};
 
 fn component_kind_and_name(component: &Component) -> (&'static str, &str) {
     match component {
@@ -221,6 +224,69 @@ fn test_parse_zip_with_recovery_partial_failure() {
         "error should mention the failing file: {}",
         err_msg
     );
+}
+
+/// The `FileContext` wrapper preserves the inner error variant through
+/// `parse_zip_with_recovery`.
+#[test]
+fn file_context_preserves_inner_variant_through_recovery() {
+    // Build a two-entry in-memory zip: one good context, one with an
+    // extendsContext missing its target attribute. The recovery loop must
+    // record a `FileContext` whose inner variant is `MissingXmlAttribute`.
+    let good = br#"<?xml version="1.0" encoding="UTF-8"?>
+<org.eventb.core.contextFile version="3">
+    <org.eventb.core.context name="Good"/>
+</org.eventb.core.contextFile>"#;
+
+    let bad = br#"<?xml version="1.0" encoding="UTF-8"?>
+<org.eventb.core.contextFile version="3">
+    <org.eventb.core.context name="Bad"/>
+    <org.eventb.core.extendsContext name="internal"/>
+</org.eventb.core.contextFile>"#;
+
+    let mut buf = Vec::new();
+    {
+        let cursor = std::io::Cursor::new(&mut buf);
+        let mut zw = zip::ZipWriter::new(cursor);
+        let opts: zip::write::SimpleFileOptions = zip::write::SimpleFileOptions::default();
+        zw.start_file("Good.buc", opts).unwrap();
+        std::io::Write::write_all(&mut zw, good).unwrap();
+        zw.start_file("Bad.buc", opts).unwrap();
+        std::io::Write::write_all(&mut zw, bad).unwrap();
+        zw.finish().unwrap();
+    }
+
+    let result = parse_zip_with_recovery(&buf);
+    assert_eq!(
+        result.errors.len(),
+        1,
+        "expected 1 error, got {:?}",
+        result.errors
+    );
+    match &result.errors[0] {
+        ParseError::FileContext { filename, source } => {
+            assert_eq!(filename, "Bad.buc");
+            match source.as_ref() {
+                ParseError::MissingXmlAttribute { element, attribute } => {
+                    assert_eq!(element, "org.eventb.core.extendsContext");
+                    assert_eq!(attribute, "target");
+                }
+                other => panic!("expected inner MissingXmlAttribute, got {other:?}"),
+            }
+            // Display impl renders the legacy "Failed to parse {filename}: …"
+            // string so console output stays human-friendly.
+            let rendered = format!("{}", result.errors[0]);
+            assert!(
+                rendered.starts_with("Failed to parse Bad.buc: "),
+                "unexpected Display rendering: {rendered:?}"
+            );
+        }
+        other => panic!("expected FileContext, got {other:?}"),
+    }
+    // The good component still parses despite the bad one.
+    let comps = result.component.expect("good component should survive");
+    assert_eq!(comps.len(), 1);
+    assert_eq!(comps[0].filename, "Good.buc");
 }
 
 /// All files fail: empty components vec + errors for each

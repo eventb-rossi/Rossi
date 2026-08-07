@@ -252,3 +252,102 @@ fn test_parse_convergent_event_xml() {
         panic!("Expected Machine component");
     }
 }
+
+// ============================================================================
+// XML structure error variants — EB002 (`UnexpectedXmlRoot`) and EB003
+// (`MissingXmlAttribute`).
+// ============================================================================
+
+#[test]
+fn unexpected_xml_root_returns_eb002() {
+    let xml = r#"<?xml version="1.0" encoding="UTF-8"?>
+<some.unknown.root version="3"/>"#;
+
+    match parse_xml(xml) {
+        Err(ParseError::UnexpectedXmlRoot { found }) => {
+            assert_eq!(found, "some.unknown.root");
+        }
+        other => panic!("expected UnexpectedXmlRoot, got {other:?}"),
+    }
+}
+
+#[test]
+fn nested_supported_root_still_reports_first_root_as_eb002() {
+    let xml = r#"<?xml version="1.0" encoding="UTF-8"?>
+<wrapper>
+    <org.eventb.core.contextFile version="3">
+        <org.eventb.core.context name="C0"/>
+    </org.eventb.core.contextFile>
+</wrapper>"#;
+
+    match parse_xml(xml) {
+        Err(ParseError::UnexpectedXmlRoot { found }) => {
+            assert_eq!(found, "wrapper");
+        }
+        other => panic!("expected UnexpectedXmlRoot for wrapper, got {other:?}"),
+    }
+}
+
+#[test]
+fn empty_xml_root_field_when_no_start_event() {
+    // No Start event at all: the parser falls through with no first root,
+    // so `found` is the empty string.
+    let xml = r#"<?xml version="1.0" encoding="UTF-8"?>"#;
+    match parse_xml(xml) {
+        Err(ParseError::UnexpectedXmlRoot { found }) => {
+            assert_eq!(found, "");
+        }
+        other => panic!("expected UnexpectedXmlRoot, got {other:?}"),
+    }
+}
+
+#[test]
+fn missing_extends_target_returns_eb003() {
+    let xml = r#"<?xml version="1.0" encoding="UTF-8"?>
+<org.eventb.core.contextFile version="3">
+    <org.eventb.core.context name="C0"/>
+    <org.eventb.core.extendsContext name="internal"/>
+</org.eventb.core.contextFile>"#;
+
+    match parse_xml(xml) {
+        Err(ParseError::MissingXmlAttribute { element, attribute }) => {
+            assert_eq!(element, "org.eventb.core.extendsContext");
+            assert_eq!(attribute, "target");
+        }
+        other => panic!("expected MissingXmlAttribute, got {other:?}"),
+    }
+}
+
+#[test]
+fn missing_sees_target_returns_eb003() {
+    let xml = r#"<?xml version="1.0" encoding="UTF-8"?>
+<org.eventb.core.machineFile version="5">
+    <org.eventb.core.machine name="M0"/>
+    <org.eventb.core.seesContext name="internal"/>
+</org.eventb.core.machineFile>"#;
+
+    match parse_xml(xml) {
+        Err(ParseError::MissingXmlAttribute { element, attribute }) => {
+            assert_eq!(element, "org.eventb.core.seesContext");
+            assert_eq!(attribute, "target");
+        }
+        other => panic!("expected MissingXmlAttribute, got {other:?}"),
+    }
+}
+
+#[test]
+fn missing_refines_target_returns_eb003() {
+    let xml = r#"<?xml version="1.0" encoding="UTF-8"?>
+<org.eventb.core.machineFile version="5">
+    <org.eventb.core.machine name="M1"/>
+    <org.eventb.core.refinesMachine name="internal"/>
+</org.eventb.core.machineFile>"#;
+
+    match parse_xml(xml) {
+        Err(ParseError::MissingXmlAttribute { element, attribute }) => {
+            assert_eq!(element, "org.eventb.core.refinesMachine");
+            assert_eq!(attribute, "target");
+        }
+        other => panic!("expected MissingXmlAttribute, got {other:?}"),
+    }
+}
