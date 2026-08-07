@@ -43,46 +43,44 @@ fn disappeared(r: &rossi_build::BuildResult) -> Vec<&rossi_build::Diagnostic> {
 }
 
 #[test]
-fn assigning_disappeared_variable_is_an_error() {
-    // `bump` assigns `v`, which M2 dropped — an EB025 error on the action.
-    let r = build_refinement("EVENT bump\n    THEN\n        @a1 v := w + 1\n    END\n\n");
-    let found = disappeared(&r);
-    assert_eq!(found.len(), 1, "{:#?}", r.diagnostics);
-    assert_eq!(found[0].severity, Severity::Error);
-    assert_eq!(found[0].origin, "M2.bump.a1");
-    assert!(
-        found[0].message.contains("disappeared") && found[0].message.contains("'v'"),
-        "{}",
-        found[0].message
-    );
-}
-
-#[test]
-fn reading_disappeared_variable_in_rhs_is_an_error() {
-    // `peek` reads `v` in its action RHS — also illegal, since `v` no longer
-    // exists in the concrete state. EB025 error on the action.
-    let r = build_refinement("EVENT peek\n    THEN\n        @a2 w := v + 1\n    END\n\n");
-    let found = disappeared(&r);
-    assert_eq!(found.len(), 1, "{:#?}", r.diagnostics);
-    assert_eq!(found[0].severity, Severity::Error);
-    assert_eq!(found[0].origin, "M2.peek.a2");
-    assert!(
-        found[0].message.contains("references"),
-        "{}",
-        found[0].message
-    );
-}
-
-#[test]
-fn reading_disappeared_variable_in_guard_is_an_error() {
-    // `chk` reads `v` in a (non-theorem) guard — EB025 error on the guard.
-    let r = build_refinement(
-        "EVENT chk\n    WHERE\n        @g1 v > 0\n    THEN\n        @a2 w := w + 1\n    END\n\n",
-    );
-    let found = disappeared(&r);
-    assert_eq!(found.len(), 1, "{:#?}", r.diagnostics);
-    assert_eq!(found[0].severity, Severity::Error);
-    assert_eq!(found[0].origin, "M2.chk.g1");
+fn referencing_disappeared_variable_is_an_error() {
+    // EB025 fires wherever the dropped `v` is referenced: assigned by an
+    // action (LHS), read in an action's RHS, or read in a (non-theorem)
+    // guard — each a single error diagnostic on the offending clause.
+    let cases: [(&str, &str, &str, &[&str]); 3] = [
+        (
+            "assigned in action LHS",
+            "EVENT bump\n    THEN\n        @a1 v := w + 1\n    END\n\n",
+            "M2.bump.a1",
+            &["disappeared", "'v'"],
+        ),
+        (
+            "read in action RHS",
+            "EVENT peek\n    THEN\n        @a2 w := v + 1\n    END\n\n",
+            "M2.peek.a2",
+            &["references"],
+        ),
+        (
+            "read in guard",
+            "EVENT chk\n    WHERE\n        @g1 v > 0\n    THEN\n        @a2 w := w + 1\n    END\n\n",
+            "M2.chk.g1",
+            &[],
+        ),
+    ];
+    for (case, events, origin, fragments) in cases {
+        let r = build_refinement(events);
+        let found = disappeared(&r);
+        assert_eq!(found.len(), 1, "{case}: {:#?}", r.diagnostics);
+        assert_eq!(found[0].severity, Severity::Error, "{case}");
+        assert_eq!(found[0].origin, origin, "{case}");
+        for fragment in fragments {
+            assert!(
+                found[0].message.contains(fragment),
+                "{case}: expected {fragment:?} in message: {}",
+                found[0].message
+            );
+        }
+    }
 }
 
 #[test]
