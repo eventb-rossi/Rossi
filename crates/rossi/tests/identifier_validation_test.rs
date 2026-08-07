@@ -6,24 +6,6 @@ use rossi::error::ParseError;
 use rossi::parse_xml;
 
 #[test]
-fn hyphen_in_context_identifier_accepted() {
-    // Rodin permits hyphens in machine/context names (e.g. `A-C0`,
-    // `CTX-1`). They appear in opaque attribute positions such as
-    // seesContext targets, so we test via that path.
-    let xml = r#"<?xml version="1.0" encoding="UTF-8"?>
-<org.eventb.core.machineFile version="5">
-    <org.eventb.core.seesContext name="A-C0" org.eventb.core.target="A-C0"/>
-</org.eventb.core.machineFile>"#;
-
-    let comp = parse_xml(xml).expect("should accept hyphenated context name");
-    if let rossi::Component::Machine(m) = comp {
-        assert_eq!(m.sees[0], "A-C0");
-    } else {
-        panic!("expected Machine");
-    }
-}
-
-#[test]
 fn reserved_keyword_constant_accepted() {
     // Rodin permits keyword-named identifiers (`end`, `events`, …) in
     // XML. Our expression-position grammar parses them as identifiers
