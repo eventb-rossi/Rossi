@@ -59,29 +59,7 @@ fn make_reference_provider(documents: &[(Url, &str)]) -> ReferenceProvider {
 }
 
 #[test]
-fn test_cross_file_references_for_seen_context_constant() {
-    let ctx_uri = make_uri("C1.eventb");
-    let mch_uri = make_uri("M1.eventb");
-
-    let ctx_source = "CONTEXT C1\nCONSTANTS\n    Root\nAXIOMS\n    @RootType Root ∈ ℕ\nEND\n";
-    let mch_source =
-        "MACHINE M1\nSEES\n    C1\nVARIABLES\n    x\nINVARIANTS\n    @inv1 x = Root\nEND\n";
-
-    let reference_provider =
-        make_reference_provider(&[(ctx_uri.clone(), ctx_source), (mch_uri.clone(), mch_source)]);
-
-    let params = make_reference_params(mch_uri.clone(), 6, 14);
-    let refs = reference_provider
-        .find_references(&params, mch_source)
-        .unwrap();
-
-    assert!(refs.iter().any(|location| location.uri == ctx_uri));
-    assert!(refs.iter().any(|location| location.uri == mch_uri));
-    assert_eq!(refs.len(), 3);
-}
-
-#[test]
-fn test_cross_file_references_from_context_constant_declaration_include_seen_machines() {
+fn seen_context_constant_references_agree_from_both_ends() {
     let ctx_uri = make_uri("C1.eventb");
     let mch_uri = make_uri("M1.eventb");
 
@@ -91,14 +69,23 @@ fn test_cross_file_references_from_context_constant_declaration_include_seen_mac
     let reference_provider =
         make_reference_provider(&[(ctx_uri.clone(), ctx_source), (mch_uri.clone(), mch_source)]);
 
-    let params = make_reference_params(ctx_uri.clone(), 2, 4);
-    let refs = reference_provider
-        .find_references(&params, ctx_source)
+    // Querying from the machine use site reaches the context declaration.
+    let machine_params = make_reference_params(mch_uri.clone(), 5, 14);
+    let machine_refs = reference_provider
+        .find_references(&machine_params, mch_source)
         .unwrap();
+    assert!(machine_refs.iter().any(|location| location.uri == ctx_uri));
+    assert!(machine_refs.iter().any(|location| location.uri == mch_uri));
+    assert_eq!(machine_refs.len(), 3);
 
-    assert!(refs.iter().any(|location| location.uri == ctx_uri));
-    assert!(refs.iter().any(|location| location.uri == mch_uri));
-    assert_eq!(refs.len(), 3);
+    // Querying from the context declaration reaches the seen machine.
+    let context_params = make_reference_params(ctx_uri.clone(), 2, 4);
+    let context_refs = reference_provider
+        .find_references(&context_params, ctx_source)
+        .unwrap();
+    assert!(context_refs.iter().any(|location| location.uri == ctx_uri));
+    assert!(context_refs.iter().any(|location| location.uri == mch_uri));
+    assert_eq!(context_refs.len(), 3);
 }
 
 #[test]
