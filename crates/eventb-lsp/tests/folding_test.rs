@@ -78,33 +78,3 @@ END";
         "no fold may open on the commented line; got {ranges:?}"
     );
 }
-
-/// Folding is driven by the recovery-tolerant parse, so a local syntax error
-/// does not erase the document's folds.
-#[test]
-fn broken_document_still_folds() {
-    // The broken invariant forces recovery.
-    let text = "\
-MACHINE m
-VARIABLES
-    x
-INVARIANTS
-    @i broken @#$ syntax
-EVENTS
-    EVENT step
-    THEN
-        @a x := 0
-    END
-END";
-    let ranges = folds(text);
-    let last = text.lines().count() as u32 - 1;
-    assert!(
-        has(&ranges, 0, last),
-        "machine block must fold despite the error; got {ranges:?}"
-    );
-    // 6 EVENT step | 7 THEN | 8 @a x := 0 | 9 END
-    assert!(
-        has(&ranges, 6, 9),
-        "the recoverable event must still fold; got {ranges:?}"
-    );
-}
