@@ -804,32 +804,8 @@ fn test_nat1_int_roundtrip() {
 // ============================================================================
 // Word boundary tests — keyword prefixes must parse as identifiers
 // ============================================================================
-
-// A word that merely starts with (or contains) a reserved spelling — keyword,
-// operator word, or type-set token — is an ordinary identifier.
-#[test_case::test_case("domain" ; "domain_not_dom")]
-#[test_case::test_case("range" ; "range_not_ran")]
-#[test_case::test_case("truthy" ; "truthy_not_true")]
-#[test_case::test_case("falsehood" ; "falsehood_not_false")]
-#[test_case::test_case("model" ; "model_not_mod")]
-#[test_case::test_case("POWER" ; "power_not_pow")]
-#[test_case::test_case("BOOLEAN" ; "boolean_not_bool")]
-#[test_case::test_case("nothing" ; "nothing_not_negation")]
-#[test_case::test_case("circular" ; "circular_not_circ")]
-#[test_case::test_case("order" ; "order_not_or")]
-#[test_case::test_case("org" ; "org_not_or")]
-#[test_case::test_case("NATX" ; "natx_not_nat")]
-#[test_case::test_case("NAT1X" ; "nat1x_not_nat1")]
-#[test_case::test_case("INTVAL" ; "intval_not_int")]
-fn keyword_prefix_is_identifier(ident: &str) {
-    let source = common::axiom_context(ident, &format!("{ident} = 5"));
-    let lhs = common::parse_expr_axiom(&source);
-    assert_eq!(
-        lhs,
-        ExpressionKind::Identifier(ident.to_string()).into(),
-        "{ident:?} should parse as an identifier, not a keyword/operator"
-    );
-}
+// The keyword-prefix-is-identifier table lives in reserved_words_test.rs,
+// which owns the keyword/identifier boundary contract.
 
 #[test]
 fn test_keywords_still_work_after_boundary_guards() {
