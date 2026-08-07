@@ -1647,55 +1647,40 @@ fn validate_directory_with_no_semantic_is_rejected() {
 }
 
 #[test]
-fn import_rodin_buc_file_to_eventb() {
-    let tmp = tempdir_unique("rossi-cli-import-buc");
-    let out_dir = tmp.join("out");
-
-    let output = rossi_command()
-        .args([
-            "import",
+fn import_rodin_component_file_to_eventb() {
+    for (input, output_name, needle) in [
+        (
             "../rossi/examples/counter_ctx.buc",
-            "-o",
-            out_dir.to_str().unwrap(),
-        ])
-        .output()
-        .expect("Failed to execute command");
-
-    assert!(
-        output.status.success(),
-        "import .buc should exit 0; stderr={}",
-        String::from_utf8_lossy(&output.stderr)
-    );
-    let text = std::fs::read_to_string(out_dir.join("counter_ctx.eventb")).unwrap();
-    assert!(text.contains("CONTEXT counter_ctx"));
-
-    std::fs::remove_dir_all(&tmp).ok();
-}
-
-#[test]
-fn import_rodin_bum_file_to_eventb() {
-    let tmp = tempdir_unique("rossi-cli-import-bum");
-    let out_dir = tmp.join("out");
-
-    let output = rossi_command()
-        .args([
-            "import",
+            "counter_ctx.eventb",
+            "CONTEXT counter_ctx",
+        ),
+        (
             "../rossi/examples/counter.bum",
-            "-o",
-            out_dir.to_str().unwrap(),
-        ])
-        .output()
-        .expect("Failed to execute command");
+            "counter.eventb",
+            "MACHINE counter",
+        ),
+    ] {
+        let tmp = tempdir_unique("rossi-cli-import-component");
+        let out_dir = tmp.join("out");
 
-    assert!(
-        output.status.success(),
-        "import .bum should exit 0; stderr={}",
-        String::from_utf8_lossy(&output.stderr)
-    );
-    let text = std::fs::read_to_string(out_dir.join("counter.eventb")).unwrap();
-    assert!(text.contains("MACHINE counter"));
+        let output = rossi_command()
+            .args(["import", input, "-o", out_dir.to_str().unwrap()])
+            .output()
+            .expect("Failed to execute command");
 
-    std::fs::remove_dir_all(&tmp).ok();
+        assert!(
+            output.status.success(),
+            "import {input} should exit 0; stderr={}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        let text = std::fs::read_to_string(out_dir.join(output_name)).unwrap();
+        assert!(
+            text.contains(needle),
+            "expected `{needle}` in {output_name}"
+        );
+
+        std::fs::remove_dir_all(&tmp).ok();
+    }
 }
 
 #[test]
