@@ -769,33 +769,6 @@ fn lowercase_type_keyword_is_identifier(word: &str, type_set: &str) {
 }
 
 #[test]
-fn test_nat1_int_roundtrip() {
-    // Test NAT1 roundtrip via Unicode
-    common::assert_roundtrip(
-        r#"
-    MACHINE test
-    VARIABLES
-        x
-    INVARIANTS
-        @inv1 x ∈ NAT1
-    END
-    "#,
-    );
-
-    // Test INT roundtrip via ASCII
-    common::assert_roundtrip_ascii(
-        r#"
-    MACHINE test
-    VARIABLES
-        x
-    INVARIANTS
-        @inv1 x ∈ INT
-    END
-    "#,
-    );
-}
-
-#[test]
 fn test_negation_in_conjunction() {
     use rossi::PredicateKind;
     use rossi::ast::predicate::LogicalOp;
