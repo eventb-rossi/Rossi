@@ -81,32 +81,45 @@ fn test_tokens_never_land_inside_comments() {
     // Each fixture's comment mentions the entity before its real occurrence
     // (issue #24): no token of the row's type may sit on the comment line, and
     // each real occurrence must carry it.
-    // (case, text, token_type, comment_line, real_positions)
-    let cases: [(&str, &str, &str, u32, &[(u32, u32)]); 3] = [
-        (
-            "variable mentioned in a comment before its declaration",
-            "MACHINE m\nVARIABLES\n    // state: x is the counter\n    x\nINVARIANTS\n    @inv1 x >= 0\nEVENTS\n    EVENT INITIALISATION\n    THEN\n        x := 0\n    END\nEND\n",
-            "variable",
-            2,
-            &[(3, 4)],
-        ),
-        (
-            "label mentioned in a comment before the real @inv1",
-            "MACHINE m\nVARIABLES\n    x\nINVARIANTS\n    // inv1: x stays a natural\n    @inv1 x >= 0\nEVENTS\n    EVENT INITIALISATION\n    THEN\n        x := 0\n    END\nEND\n",
-            "macro", // labels use the MACRO slot
-            4,
-            &[(5, 5)],
-        ),
-        (
-            "AXIOMS and END spelled in a comment before the real keywords",
-            "CONTEXT c\n// the AXIOMS: section and its END: marker\nAXIOMS\n    @axm1 1 = 1\nEND\n",
-            "keyword",
-            1,
-            &[(2, 0), (4, 0)],
-        ),
+    struct Case {
+        case: &'static str,
+        text: &'static str,
+        token_type: &'static str,
+        comment_line: u32,
+        real_positions: &'static [(u32, u32)],
+    }
+    let cases = [
+        Case {
+            case: "variable mentioned in a comment before its declaration",
+            text: "MACHINE m\nVARIABLES\n    // state: x is the counter\n    x\nINVARIANTS\n    @inv1 x >= 0\nEVENTS\n    EVENT INITIALISATION\n    THEN\n        x := 0\n    END\nEND\n",
+            token_type: "variable",
+            comment_line: 2,
+            real_positions: &[(3, 4)],
+        },
+        Case {
+            case: "label mentioned in a comment before the real @inv1",
+            text: "MACHINE m\nVARIABLES\n    x\nINVARIANTS\n    // inv1: x stays a natural\n    @inv1 x >= 0\nEVENTS\n    EVENT INITIALISATION\n    THEN\n        x := 0\n    END\nEND\n",
+            token_type: "macro", // labels use the MACRO slot
+            comment_line: 4,
+            real_positions: &[(5, 5)],
+        },
+        Case {
+            case: "AXIOMS and END spelled in a comment before the real keywords",
+            text: "CONTEXT c\n// the AXIOMS: section and its END: marker\nAXIOMS\n    @axm1 1 = 1\nEND\n",
+            token_type: "keyword",
+            comment_line: 1,
+            real_positions: &[(2, 0), (4, 0)],
+        },
     ];
 
-    for (case, text, token_type, comment_line, real_positions) in cases {
+    for Case {
+        case,
+        text,
+        token_type,
+        comment_line,
+        real_positions,
+    } in cases
+    {
         let tokens = decode_tokens(text);
         let ty = token_type_index(token_type);
         let of_type: Vec<_> = tokens.iter().filter(|t| t.3 == ty).collect();
