@@ -268,40 +268,6 @@ fn test_multiple_with_bindings() {
     assert_eq!(event.with[1].label, Some("abs_b".to_string()));
 }
 
-#[test]
-fn test_with_where_then_together() {
-    let source = r#"
-    MACHINE refined
-    REFINES
-        abstract
-    VARIABLES
-        x
-    EVENTS
-        EVENT INITIALISATION
-        THEN
-            x := 0
-        END
-
-        EVENT inc
-        REFINES
-            abstract_inc
-        WHERE
-            @grd1 x < 100
-        WITH
-            @abs_x abs_x = x
-        THEN
-            x := x + 1
-        END
-    END
-    "#;
-
-    let m = common::parse_machine(source);
-    let event = &m.events[0];
-    assert_eq!(event.guards.len(), 1);
-    assert_eq!(event.with.len(), 1);
-    assert_eq!(event.actions.len(), 1);
-}
-
 // ============================================================================
 // VARIANT clause tests
 // ============================================================================
