@@ -802,69 +802,6 @@ fn test_nat1_int_roundtrip() {
 }
 
 // ============================================================================
-// Word boundary tests — keyword prefixes must parse as identifiers
-// ============================================================================
-// The keyword-prefix-is-identifier table lives in reserved_words_test.rs,
-// which owns the keyword/identifier boundary contract.
-
-#[test]
-fn test_keywords_still_work_after_boundary_guards() {
-    use rossi::ExpressionKind;
-    use rossi::ast::expression::UnaryOp;
-
-    // dom(f) should still work
-    let source = common::axiom_context("f, d", "d = dom(f)");
-    let rhs = common::parse_axiom_rhs(&source);
-    assert!(
-        matches!(
-            &rhs.kind,
-            ExpressionKind::Unary {
-                op: UnaryOp::Domain,
-                ..
-            }
-        ),
-        "dom(f) should parse as Domain unary"
-    );
-
-    // ran(f) should still work
-    let source = common::axiom_context("f, r", "r = ran(f)");
-    let rhs = common::parse_axiom_rhs(&source);
-    assert!(
-        matches!(
-            &rhs.kind,
-            ExpressionKind::Unary {
-                op: UnaryOp::Range,
-                ..
-            }
-        ),
-        "ran(f) should parse as Range unary"
-    );
-
-    // TRUE should still work as expression
-    let source = common::axiom_context("x", "x = TRUE");
-    let rhs = common::parse_axiom_rhs(&source);
-    assert_eq!(
-        rhs,
-        ExpressionKind::True.into(),
-        "TRUE should parse as True"
-    );
-
-    // POW(S) should still work
-    let source = common::axiom_context("S, P", "P = POW(S)");
-    let rhs = common::parse_axiom_rhs(&source);
-    assert!(
-        matches!(
-            &rhs.kind,
-            ExpressionKind::Unary {
-                op: UnaryOp::PowerSet,
-                ..
-            }
-        ),
-        "POW(S) should parse as PowerSet unary"
-    );
-}
-
-// ============================================================================
 // ASCII logical operator tests (& for AND, or for OR)
 // ============================================================================
 
@@ -1177,25 +1114,29 @@ fn test_bare_false_predicate() {
     );
 }
 
-#[test]
-fn test_true_eq_comparison() {
+// TRUE parses as an expression on either side of `=` — the RHS position
+// (immediately before END) is the token-boundary position issue #30 was about.
+#[test_case::test_case("TRUE = x", true ; "true_on_lhs")]
+#[test_case::test_case("x = TRUE", false ; "true_on_rhs")]
+fn test_true_eq_comparison(axiom_body: &str, true_on_left: bool) {
     use rossi::PredicateKind;
     use rossi::ast::predicate::ComparisonOp;
-    let source = common::axiom_context("x", "TRUE = x");
+    let source = common::axiom_context("x", axiom_body);
     let ctx = common::parse_context(&source);
     match &ctx.axioms[0].predicate.kind {
         PredicateKind::Comparison {
             op: ComparisonOp::Equal,
             left,
-            ..
+            right,
         } => {
+            let operand = if true_on_left { left } else { right };
             assert!(
-                matches!(left.kind, ExpressionKind::True),
-                "Expected Expression::True, got {:?}",
-                left
+                matches!(operand.kind, ExpressionKind::True),
+                "Expected Expression::True in {axiom_body:?}, got {:?}",
+                operand
             );
         }
-        other => panic!("Expected TRUE = comparison, got {:?}", other),
+        other => panic!("Expected TRUE equality comparison, got {:?}", other),
     }
 }
 
