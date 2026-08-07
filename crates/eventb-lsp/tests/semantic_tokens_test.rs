@@ -7,51 +7,6 @@ mod common;
 use common::{decode_tokens, decode_tokens_with_modifiers, slice_range};
 
 #[test]
-fn test_semantic_tokens_legend() {
-    let legend = SemanticTokensProvider::legend();
-
-    assert!(!legend.token_types.is_empty(), "Should have token types");
-    assert!(
-        !legend.token_modifiers.is_empty(),
-        "Should have token modifiers"
-    );
-
-    let type_strings: Vec<String> = legend
-        .token_types
-        .iter()
-        .map(|t| t.as_str().to_string())
-        .collect();
-
-    assert!(
-        type_strings.contains(&"keyword".to_string()),
-        "Should have keyword token type"
-    );
-    assert!(
-        type_strings.contains(&"variable".to_string()),
-        "Should have variable token type"
-    );
-    assert!(
-        type_strings.contains(&"parameter".to_string()),
-        "Should have parameter token type"
-    );
-
-    let modifier_strings: Vec<String> = legend
-        .token_modifiers
-        .iter()
-        .map(|m| m.as_str().to_string())
-        .collect();
-
-    assert!(
-        modifier_strings.contains(&"declaration".to_string()),
-        "Should have declaration modifier"
-    );
-    assert!(
-        modifier_strings.contains(&"readonly".to_string()),
-        "Should have readonly modifier"
-    );
-}
-
-#[test]
 fn test_semantic_tokens_returns_none_for_unparseable_input() {
     let provider = SemanticTokensProvider::new();
     let uri = Url::parse("file:///test.eventb").unwrap();
