@@ -477,47 +477,6 @@ fn test_nested_quantifiers() {
 }
 
 // ============================================================================
-// MEDIUM priority: @label form for guards and actions
-// ============================================================================
-
-#[test]
-fn test_at_label_guards_and_actions() {
-    let source = r#"
-    MACHINE test
-    VARIABLES
-        x
-    EVENTS
-        EVENT INITIALISATION
-        THEN
-            x := 0
-        END
-
-        EVENT inc
-        WHERE
-            @grd1 x < 100
-        THEN
-            @act1 x := x + 1
-        END
-    END
-    "#;
-
-    let m = common::parse_machine(source);
-    let event = &m.events[0];
-    assert_eq!(event.guards.len(), 1);
-    assert_eq!(
-        event.guards[0].label.as_deref(),
-        Some("grd1"),
-        "Guard should have @-label"
-    );
-    assert_eq!(event.actions.len(), 1);
-    assert_eq!(
-        event.actions[0].label.as_deref(),
-        Some("act1"),
-        "Action should have @-label"
-    );
-}
-
-// ============================================================================
 // MEDIUM priority: Lambda with ident-pattern
 // ============================================================================
 

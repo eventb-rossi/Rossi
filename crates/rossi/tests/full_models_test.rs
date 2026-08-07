@@ -131,6 +131,7 @@ fn test_event_with_parameters() {
     assert_eq!(event.parameters.len(), 1);
     assert_eq!(event.parameters[0].name, "val");
     assert_eq!(event.guards.len(), 1);
+    assert_eq!(event.guards[0].label.as_deref(), Some("grd1"));
 }
 
 #[test]
