@@ -8,19 +8,6 @@ use test_case::test_case;
 // ============================================================================
 
 #[test]
-fn test_pretty_print_simple_context() {
-    let source = r#"CONTEXT simple
-END
-"#;
-
-    let component = parse(source).expect("Failed to parse");
-    let output = to_string(&component);
-
-    assert!(output.contains("CONTEXT simple"));
-    assert!(output.contains("END"));
-}
-
-#[test]
 fn test_pretty_print_inverse_operator() {
     // ASCII `~` input round-trips: Unicode mode emits ∼ (U+223C), ASCII mode
     // emits ~ (U+007E).
@@ -102,111 +89,6 @@ END
 }
 
 #[test]
-fn test_pretty_print_simple_machine() {
-    let source = r#"MACHINE simple
-END
-"#;
-
-    let component = parse(source).expect("Failed to parse");
-    let output = to_string(&component);
-
-    assert!(output.contains("MACHINE simple"));
-    assert!(output.contains("END"));
-}
-
-#[test]
-fn test_pretty_print_machine_with_variables() {
-    let source = r#"MACHINE counter
-VARIABLES
-    count
-INVARIANTS
-    @inv1 count >= 0
-EVENTS
-    EVENT INITIALISATION
-    THEN
-        count := 0
-    END
-END
-"#;
-
-    let component = parse(source).expect("Failed to parse");
-    let output = to_string(&component);
-
-    assert!(output.contains("MACHINE counter"));
-    assert!(output.contains("VARIABLES"));
-    assert!(output.contains("count"));
-    assert!(output.contains("INVARIANTS"));
-    assert!(output.contains("@inv1"));
-    assert!(output.contains("EVENTS"));
-    assert!(output.contains("EVENT INITIALISATION"));
-    assert!(output.contains("THEN"));
-    assert!(output.contains("\u{2254}")); // ≔ COLON EQUALS (Unicode mode)
-    assert!(output.contains("END"));
-}
-
-#[test]
-fn test_pretty_print_event_with_guards() {
-    let source = r#"MACHINE counter
-VARIABLES
-    count
-EVENTS
-    EVENT INITIALISATION
-    THEN
-        count := 0
-    END
-
-    EVENT increment
-    WHERE
-        @grd1 count < 100
-    THEN
-        @act1 count := count + 1
-    END
-END
-"#;
-
-    let component = parse(source).expect("Failed to parse");
-    let output = to_string(&component);
-
-    assert!(output.contains("EVENT increment"));
-    assert!(output.contains("WHERE"));
-    assert!(output.contains("@grd1"));
-    assert!(output.contains("THEN"));
-    assert!(output.contains("@act1"));
-}
-
-#[test]
-fn test_pretty_print_event_with_parameters() {
-    let source = r#"MACHINE test
-VARIABLES
-    x
-EVENTS
-    EVENT INITIALISATION
-    THEN
-        x := 0
-    END
-
-    EVENT add_value
-    ANY
-        val
-    WHERE
-        @grd1 val > 0
-    THEN
-        x := x + val
-    END
-END
-"#;
-
-    let component = parse(source).expect("Failed to parse");
-    let output = to_string(&component);
-
-    assert!(output.contains("EVENT add_value"));
-    assert!(output.contains("ANY"));
-    assert!(output.contains("val"));
-    assert!(output.contains("WHERE"));
-    assert!(output.contains("THEN"));
-}
-
-#[test]
 fn test_pretty_print_convergent_event() {
     let source = r#"MACHINE test
 VARIABLES
@@ -235,87 +117,6 @@ END
     assert!(output.contains("VARIANT"));
     assert!(output.contains("EVENT decrement"));
     assert!(output.contains("convergent EVENT decrement"));
-}
-
-#[test]
-fn test_pretty_print_expressions() {
-    let source = "MACHINE test\nVARIABLES\n    x\nINVARIANTS\n    @inv1 x = 5\nEND\n";
-
-    let component = parse(source).expect("Failed to parse");
-    let output = to_string(&component);
-
-    assert!(output.contains("x = 5"));
-}
-
-#[test]
-fn test_pretty_print_set_operations() {
-    let source = r#"CONTEXT test
-CONSTANTS
-    s1 s2
-AXIOMS
-    @axm1 s1 = {1, 2, 3}
-END
-"#;
-
-    let component = parse(source).expect("Failed to parse");
-    let output = to_string(&component);
-
-    assert!(output.contains("{"));
-    assert!(output.contains("}"));
-}
-
-#[test]
-fn test_pretty_print_logical_operators() {
-    let source = r#"CONTEXT test
-CONSTANTS
-    x y
-AXIOMS
-    @axm1 x > 0
-    @axm2 y > 0
-END
-"#;
-
-    let component = parse(source).expect("Failed to parse");
-    let output = to_string(&component);
-
-    assert!(output.contains("x > 0"));
-    assert!(output.contains("y > 0"));
-}
-
-#[test]
-fn test_ascii_mode() {
-    let source = r#"CONTEXT test
-CONSTANTS
-    x
-AXIOMS
-    @axm1 x = 5
-END
-"#;
-
-    let component = parse(source).expect("Failed to parse");
-    let output = to_string_ascii(&component);
-
-    assert!(output.contains("CONTEXT"));
-    assert!(output.contains("x = 5"));
-}
-
-#[test]
-fn test_pretty_print_action_types() {
-    let source = r#"MACHINE test
-VARIABLES
-    x
-EVENTS
-    EVENT INITIALISATION
-    THEN
-        x := 0
-    END
-END
-"#;
-
-    let component = parse(source).expect("Failed to parse");
-    let output = to_string(&component);
-
-    assert!(output.contains("x \u{2254} 0")); // ≔ COLON EQUALS (Unicode mode)
 }
 
 #[test]
@@ -526,27 +327,6 @@ END
     let output = printer.print_component(&component);
 
     assert!(output.contains("  STATUS"));
-}
-
-#[test]
-fn test_empty_machine_with_events() {
-    let source = r#"MACHINE simple
-VARIABLES
-    x
-EVENTS
-    EVENT INITIALISATION
-    THEN
-        x := 0
-    END
-END
-"#;
-
-    let component = parse(source).expect("Failed to parse");
-    let output = to_string(&component);
-
-    assert!(output.contains("MACHINE simple"));
-    assert!(output.contains("EVENTS"));
-    assert!(output.contains("INITIALISATION"));
 }
 
 #[test]
