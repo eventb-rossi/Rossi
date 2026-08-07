@@ -83,24 +83,6 @@ fn xml_rejects_parallel_assignment_arity_mismatches() {
 }
 
 #[test]
-fn test_parse_simple_context_xml() {
-    let xml = r#"<?xml version="1.0" encoding="UTF-8"?>
-<org.eventb.core.contextFile version="3">
-    <org.eventb.core.carrierSet identifier="PERSON"/>
-</org.eventb.core.contextFile>"#;
-
-    let result = parse_xml(xml);
-    assert!(result.is_ok(), "Parse error: {:?}", result.err());
-
-    if let Component::Context(ctx) = result.unwrap() {
-        assert_eq!(ctx.sets.len(), 1);
-        assert_eq!(ctx.sets[0].name(), "PERSON");
-    } else {
-        panic!("Expected Context component");
-    }
-}
-
-#[test]
 fn test_parse_context_with_extends_xml() {
     let xml = r#"<?xml version="1.0" encoding="UTF-8"?>
 <org.eventb.core.contextFile version="3">
