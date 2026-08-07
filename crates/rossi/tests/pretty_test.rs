@@ -653,12 +653,15 @@ END
 }
 
 // ============================================================================
-// Roundtrip feature tests (parametrized)
+// Roundtrip example tests
 // ============================================================================
 
 // Kept as a readable pinned example of machine-level REFINES with event-level
 // REFINES/WITH; generative cover: machine_roundtrip_* in proptest_roundtrip.rs.
-#[test_case(r#"MACHINE test
+#[test]
+fn test_roundtrip_refines_with_clause() {
+    common::assert_roundtrip(
+        r#"MACHINE test
 REFINES
     abs
 VARIABLES
@@ -680,21 +683,20 @@ EVENTS
         x := x + 1
     END
 END
-"# ; "with_clause")]
-#[test_case("CONTEXT test\nAXIOMS\n    \u{2200}x\u{2982}\u{2124}\u{00B7}x > 0\nEND\n" ; "typed_forall")]
-fn test_roundtrip_feature(source: &str) {
-    common::assert_roundtrip(source);
+"#,
+    );
 }
 
-// ============================================================================
-// ASCII roundtrip tests (parametrized)
-// ============================================================================
+// Roundtrip cases pinned in both Unicode and ASCII printer modes (parametrized)
 
-// Oftype
+// Oftype (⦂)
 #[test_case("MACHINE test\nVARIABLES\n    x\nINVARIANTS\n    @inv1 x \u{2208} \u{2115} \u{2982} \u{2124}\nEND\n" ; "oftype")]
-// Typed identifiers in quantifiers
+// Unlabeled typed-forall axiom: arb_label deliberately never generates
+// unlabeled predicates, and ASCII mode is exactly the grammar ambiguity the
+// property avoids, so both modes stay pinned here.
 #[test_case("CONTEXT test\nAXIOMS\n    \u{2200}x\u{2982}\u{2124}\u{00B7}x > 0\nEND\n" ; "typed_forall")]
-fn test_roundtrip_ascii(source: &str) {
+fn test_roundtrip_both_modes(source: &str) {
+    common::assert_roundtrip(source);
     common::assert_roundtrip_ascii(source);
 }
 
