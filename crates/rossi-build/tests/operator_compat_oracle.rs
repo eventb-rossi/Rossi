@@ -16,6 +16,8 @@
 //! lets a maintainer re-confirm the matrix if the grammar or the operator set
 //! changes.
 
+mod common;
+
 use std::collections::BTreeMap;
 use std::process::Command;
 
@@ -26,21 +28,6 @@ use rossi::{parse_expression_str, parse_predicate_str};
 const SET_OPS: &[&str] = &[
     "∪", "∩", "∖", "×", "\u{E103}", ";", "∘", "◁", "⩤", "▷", "⩥", "⊗", "∥",
 ];
-
-/// The `eventb-checker` command: `EVENTB_CHECKER` if set, else `eventb-checker`
-/// from `PATH`. May be a wrapper (e.g. `java -jar …`) exposed as a single
-/// executable.
-fn oracle_bin() -> String {
-    std::env::var("EVENTB_CHECKER").unwrap_or_else(|_| "eventb-checker".to_string())
-}
-
-fn oracle_available(oracle: &str) -> bool {
-    Command::new(oracle)
-        .arg("--version")
-        .output()
-        .map(|o| o.status.success())
-        .unwrap_or(false)
-}
 
 /// One probed formula: a unique label, its `.eventb` axiom text, and the two
 /// closures that yield the bare and rossi-side strings to compare.
@@ -178,8 +165,8 @@ fn oracle_incompatible_labels(oracle: &str, cases: &[Case]) -> BTreeMap<String, 
 #[test]
 #[ignore = "needs the eventb-checker CLI; run with --ignored"]
 fn operator_compatibility_matches_oracle() {
-    let oracle = oracle_bin();
-    if !oracle_available(&oracle) {
+    let oracle = common::eventb_checker_bin();
+    if !common::oracle_available(&oracle) {
         eprintln!(
             "SKIP operator_compatibility_matches_oracle: `{oracle}` not runnable. \
              Set EVENTB_CHECKER to the eventb-checker CLI (or a `java -jar` wrapper)."

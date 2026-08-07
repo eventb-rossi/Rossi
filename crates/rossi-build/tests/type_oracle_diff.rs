@@ -28,6 +28,8 @@
 //! harness errors (parse/build/oracle failures) are surfaced as ERROR rows and
 //! fail the run, so a broken snippet or oracle can't masquerade as "all match".
 
+mod common;
+
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
 use std::process::Command;
@@ -53,8 +55,8 @@ struct Row {
 #[test]
 #[ignore = "needs the eventb-checker CLI; run with --ignored"]
 fn type_oracle_diff() {
-    let oracle = eventb_checker_bin();
-    if !oracle_available(&oracle) {
+    let oracle = common::eventb_checker_bin();
+    if !common::oracle_available(&oracle) {
         eprintln!(
             "SKIP type_oracle_diff: `{oracle}` not runnable. Install the eventb-checker CLI \
              or set EVENTB_CHECKER to its path."
@@ -120,7 +122,7 @@ fn type_oracle_diff() {
     }
 
     write_tsv(&rows);
-    let report = target_dir().join("type-oracle-diff.tsv");
+    let report = common::workspace_target().join("type-oracle-diff.tsv");
     print_summary(&rows, &report);
 
     let errors: Vec<&Row> = rows.iter().filter(|r| r.class == "ERROR").collect();
@@ -318,7 +320,7 @@ fn write_tsv(rows: &[Row]) {
             row.snippet, row.component, row.identifier, row.class, row.rossi, row.rodin
         );
     }
-    let path = target_dir().join("type-oracle-diff.tsv");
+    let path = common::workspace_target().join("type-oracle-diff.tsv");
     let _ = std::fs::create_dir_all(path.parent().unwrap());
     let _ = std::fs::write(&path, out);
 }
@@ -334,14 +336,6 @@ fn fixtures_dir() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/type_propagation")
 }
 
-fn target_dir() -> PathBuf {
-    // crates/rossi-build -> workspace root -> target
-    let mut path = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
-    path.pop();
-    path.pop();
-    path.join("target")
-}
-
 fn collect_eventb(dir: &Path) -> Vec<PathBuf> {
     let mut snippets: Vec<PathBuf> = std::fs::read_dir(dir)
         .into_iter()
@@ -352,19 +346,4 @@ fn collect_eventb(dir: &Path) -> Vec<PathBuf> {
         .collect();
     snippets.sort();
     snippets
-}
-
-/// The `eventb-checker` command to run: `EVENTB_CHECKER` if set, else the CLI
-/// resolved from `PATH`.
-fn eventb_checker_bin() -> String {
-    std::env::var("EVENTB_CHECKER").unwrap_or_else(|_| "eventb-checker".to_string())
-}
-
-/// Whether the oracle CLI is runnable (`<oracle> --version` succeeds).
-fn oracle_available(oracle: &str) -> bool {
-    Command::new(oracle)
-        .arg("--version")
-        .output()
-        .map(|o| o.status.success())
-        .unwrap_or(false)
 }

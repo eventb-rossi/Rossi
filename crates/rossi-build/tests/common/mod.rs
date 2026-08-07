@@ -263,6 +263,22 @@ pub fn locate_corpus() -> Option<PathBuf> {
     env_path("EVENTB_CORPUS_DIR").filter(|p| p.is_dir())
 }
 
+/// The `eventb-checker` command to run: `EVENTB_CHECKER` if set, else the CLI
+/// resolved from `PATH`. May be a wrapper (e.g. `java -jar …`) exposed as a
+/// single executable.
+pub fn eventb_checker_bin() -> String {
+    std::env::var("EVENTB_CHECKER").unwrap_or_else(|_| "eventb-checker".to_string())
+}
+
+/// Whether the oracle CLI is runnable (`<oracle> --version` succeeds).
+pub fn oracle_available(oracle: &str) -> bool {
+    std::process::Command::new(oracle)
+        .arg("--version")
+        .output()
+        .map(|o| o.status.success())
+        .unwrap_or(false)
+}
+
 /// One row of a corpus report: the `model` and its `expected`/`actual`
 /// outcomes, the resulting `verdict`, and any `notes`. Shared by every corpus
 /// harness; see [`write_report`] for the columnar layout.
