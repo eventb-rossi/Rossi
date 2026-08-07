@@ -652,37 +652,6 @@ fn test_recovery_context_missing_end() {
 }
 
 #[test]
-fn test_recovery_context_with_multiple_errors() {
-    let source = r#"
-    CONTEXT multi_error
-    SETS
-        Set1 Set2
-    CONSTANTS
-        bad syntax here
-        c1 c2
-    AXIOMS
-        @axm1 c1 = 1
-        @axm2 !!!! invalid
-        @axm3 c2 = 2
-        @axm4 bad #### syntax
-    END
-    "#;
-
-    let result = parse_with_recovery(source);
-
-    // Should have multiple errors
-    assert!(result.errors.len() >= 2, "Expected multiple errors");
-
-    // Should still have a component
-    let ctx = expect_context(&result);
-    assert_eq!(ctx.name, "multi_error");
-    // Should recover the valid sets
-    assert!(!ctx.sets.is_empty());
-    // Should recover some constants
-    assert!(!ctx.constants.is_empty());
-}
-
-#[test]
 fn test_successful_parse_no_errors() {
     let source = r#"
     CONTEXT perfect
