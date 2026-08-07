@@ -15,30 +15,11 @@
 //! The test fails if any file fails semantic comparison. Byte-exact is
 //! surfaced as a metric — not a gate.
 
+mod common;
+
 use std::io::{Read, Write};
-use std::path::PathBuf;
 
 use rossi_build::{Project, build, sc_view::ScView};
-
-fn corpus_dir() -> Option<PathBuf> {
-    env_path("EVENTB_CORPUS_DIR").filter(|p| p.is_dir())
-}
-
-fn env_path(var: &str) -> Option<PathBuf> {
-    let path = PathBuf::from(std::env::var(var).ok()?);
-    Some(if path.is_absolute() {
-        path
-    } else {
-        workspace_root().join(path)
-    })
-}
-
-fn workspace_root() -> PathBuf {
-    let mut path = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
-    path.pop();
-    path.pop();
-    path
-}
 
 /// One row of the TSV report.
 struct Row {
@@ -69,7 +50,7 @@ impl Outcome {
 #[test]
 #[ignore]
 fn corpus_semantic_equivalence() {
-    let Some(dir) = corpus_dir() else {
+    let Some(dir) = common::locate_corpus() else {
         eprintln!("EVENTB_CORPUS_DIR is not set or is not a directory — nothing to do");
         return;
     };
@@ -469,8 +450,7 @@ where
 }
 
 fn write_report(rows: &[Row]) {
-    let mut path = workspace_root();
-    path.push("target");
+    let mut path = common::workspace_target();
     let _ = std::fs::create_dir_all(&path);
     path.push("rossi-build-corpus.tsv");
 
