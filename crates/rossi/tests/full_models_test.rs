@@ -2,7 +2,7 @@
 
 mod common;
 
-use rossi::ast::expression::{AtomicBuiltinKind, BuiltinFunction};
+use rossi::ast::expression::AtomicBuiltinKind;
 use rossi::ast::predicate::BuiltinPredicate;
 use rossi::{Component, ExpressionKind, ParseError, PredicateKind, parse};
 
@@ -487,73 +487,6 @@ fn test_multiple_parallel_assignment() {
 }
 
 // ============================================================================
-// Feature 1.2: Extended set comprehension
-// ============================================================================
-
-#[test]
-fn test_extended_set_comprehension() {
-    let source = r#"
-    MACHINE test
-    VARIABLES
-        s
-    INVARIANTS
-        @inv1 s = {x · x ∈ ℕ | x * x}
-    END
-    "#;
-
-    let m = common::parse_machine(source);
-    let pred = &m.invariants[0].predicate;
-    if let rossi::PredicateKind::Comparison { right, .. } = &pred.kind {
-        match &right.kind {
-            ExpressionKind::SetComprehension {
-                identifiers,
-                expression,
-                ..
-            } => {
-                assert_eq!(identifiers, &["x"]);
-                assert!(
-                    expression.is_some(),
-                    "Extended form should have expression body"
-                );
-            }
-            other => panic!("Expected SetComprehension, got {:?}", other),
-        }
-    } else {
-        panic!("Expected Comparison predicate");
-    }
-}
-
-// ============================================================================
-// Feature 1.3: Relational image
-// ============================================================================
-
-#[test]
-fn test_relational_image() {
-    let source = r#"
-    MACHINE test
-    VARIABLES
-        r s
-    INVARIANTS
-        @inv1 r[s] = s
-    END
-    "#;
-
-    let m = common::parse_machine(source);
-    let pred = &m.invariants[0].predicate;
-    if let rossi::PredicateKind::Comparison { left, .. } = &pred.kind {
-        match &left.kind {
-            ExpressionKind::RelationalImage { relation, set } => {
-                assert!(matches!(&relation.kind, ExpressionKind::Identifier(n) if n == "r"));
-                assert!(matches!(&set.kind, ExpressionKind::Identifier(n) if n == "s"));
-            }
-            other => panic!("Expected RelationalImage, got {:?}", other),
-        }
-    } else {
-        panic!("Expected Comparison predicate");
-    }
-}
-
-// ============================================================================
 // Feature 2.1: Quantified union and intersection
 // ============================================================================
 
@@ -581,92 +514,6 @@ fn test_quantified_union_inter(body: &str, is_union: bool, typed: bool) {
 // ============================================================================
 // Feature 2.2: Typed bound variables (⦂) in quantifiers
 // ============================================================================
-
-#[test]
-fn test_typed_forall_single() {
-    use rossi::ast::predicate::Quantifier;
-
-    let source = r#"
-    CONTEXT test
-    AXIOMS
-        @axm1 ∀x⦂ℤ · x > 0
-    END
-    "#;
-
-    let ctx = common::parse_context(source);
-    match &ctx.axioms[0].predicate.kind {
-        rossi::PredicateKind::Quantified {
-            quantifier,
-            identifiers,
-            ..
-        } => {
-            assert_eq!(*quantifier, Quantifier::ForAll);
-            assert_eq!(identifiers.len(), 1);
-            assert_eq!(identifiers[0].name, "x");
-            assert!(identifiers[0].type_expr.is_some());
-            assert!(matches!(
-                identifiers[0].type_expr.as_deref().map(|e| &e.kind),
-                Some(ExpressionKind::Integers)
-            ));
-        }
-        other => panic!("Expected Quantified ForAll, got {:?}", other),
-    }
-}
-
-#[test]
-fn test_typed_exists() {
-    use rossi::ast::predicate::Quantifier;
-
-    let source = r#"
-    CONTEXT test
-    AXIOMS
-        @axm1 ∃x⦂ℤ · x = 0
-    END
-    "#;
-
-    let ctx = common::parse_context(source);
-    match &ctx.axioms[0].predicate.kind {
-        rossi::PredicateKind::Quantified {
-            quantifier,
-            identifiers,
-            ..
-        } => {
-            assert_eq!(*quantifier, Quantifier::Exists);
-            assert_eq!(identifiers[0].name, "x");
-            assert!(identifiers[0].type_expr.is_some());
-        }
-        other => panic!("Expected Quantified Exists, got {:?}", other),
-    }
-}
-
-#[test]
-fn test_typed_forall_mixed() {
-    use rossi::ast::predicate::Quantifier;
-
-    let source = r#"
-    CONTEXT test
-    AXIOMS
-        @axm1 ∀x⦂ℤ, y · x > y
-    END
-    "#;
-
-    let ctx = common::parse_context(source);
-    match &ctx.axioms[0].predicate.kind {
-        rossi::PredicateKind::Quantified {
-            quantifier,
-            identifiers,
-            ..
-        } => {
-            assert_eq!(*quantifier, Quantifier::ForAll);
-            assert_eq!(identifiers.len(), 2);
-            assert_eq!(identifiers[0].name, "x");
-            assert!(identifiers[0].type_expr.is_some());
-            assert_eq!(identifiers[1].name, "y");
-            assert!(identifiers[1].type_expr.is_none());
-        }
-        other => panic!("Expected Quantified ForAll, got {:?}", other),
-    }
-}
 
 #[test]
 fn test_typed_bound_vars_in_forall() {
@@ -717,49 +564,6 @@ fn test_empty_set_spellings() {
 // Built-in function tests
 // ============================================================================
 
-#[test]
-fn test_builtin_card() {
-    let ctx = common::parse_context("CONTEXT test\nAXIOMS\n    @axm1 card(S) = 5\nEND\n");
-    let pred = &ctx.axioms[0].predicate;
-    if let PredicateKind::Comparison { left, .. } = &pred.kind {
-        match &left.kind {
-            ExpressionKind::BuiltinApplication { function, argument } => {
-                assert_eq!(*function, BuiltinFunction::Card);
-                assert_eq!(
-                    **argument,
-                    ExpressionKind::Identifier("S".to_string()).into()
-                );
-            }
-            other => panic!("Expected BuiltinApplication(Card), got {:?}", other),
-        }
-    } else {
-        panic!("Expected Comparison predicate");
-    }
-}
-
-#[test]
-fn test_builtin_min_max() {
-    let ctx = common::parse_context(
-        "CONTEXT test\nAXIOMS\n    @axm1 min(S) = 0\n    @axm2 max(S) = 100\nEND\n",
-    );
-    if let PredicateKind::Comparison { left, .. } = &ctx.axioms[0].predicate.kind {
-        match &left.kind {
-            ExpressionKind::BuiltinApplication { function, .. } => {
-                assert_eq!(*function, BuiltinFunction::Min);
-            }
-            other => panic!("Expected BuiltinApplication(Min), got {:?}", other),
-        }
-    }
-    if let PredicateKind::Comparison { left, .. } = &ctx.axioms[1].predicate.kind {
-        match &left.kind {
-            ExpressionKind::BuiltinApplication { function, .. } => {
-                assert_eq!(*function, BuiltinFunction::Max);
-            }
-            other => panic!("Expected BuiltinApplication(Max), got {:?}", other),
-        }
-    }
-}
-
 /// The left-hand expression of a comparison predicate (panics otherwise).
 fn comparison_lhs(kind: &PredicateKind) -> &ExpressionKind {
     match kind {
@@ -803,92 +607,6 @@ fn test_bare_id_is_atomic_builtin() {
             *left,
             ExpressionKind::AtomicBuiltin(AtomicBuiltinKind::Id).into()
         );
-    } else {
-        panic!("Expected Comparison predicate");
-    }
-}
-
-// ============================================================================
-// Built-in predicate tests
-// ============================================================================
-
-#[test]
-fn test_builtin_finite() {
-    let ctx = common::parse_context("CONTEXT test\nAXIOMS\n    @axm1 finite(S)\nEND\n");
-    match &ctx.axioms[0].predicate.kind {
-        PredicateKind::BuiltinApplication {
-            predicate,
-            arguments,
-        } => {
-            assert_eq!(*predicate, BuiltinPredicate::Finite);
-            assert_eq!(arguments.len(), 1);
-            assert_eq!(
-                arguments[0],
-                ExpressionKind::Identifier("S".to_string()).into()
-            );
-        }
-        other => panic!("Expected BuiltinApplication(Finite), got {:?}", other),
-    }
-}
-
-#[test]
-fn test_builtin_partition() {
-    let ctx = common::parse_context("CONTEXT test\nAXIOMS\n    @axm1 partition(S, A, B)\nEND\n");
-    match &ctx.axioms[0].predicate.kind {
-        PredicateKind::BuiltinApplication {
-            predicate,
-            arguments,
-        } => {
-            assert_eq!(*predicate, BuiltinPredicate::Partition);
-            assert_eq!(arguments.len(), 3);
-        }
-        other => panic!("Expected BuiltinApplication(Partition), got {:?}", other),
-    }
-}
-
-#[test]
-fn test_user_defined_predicate() {
-    let ctx = common::parse_context("CONTEXT test\nAXIOMS\n    @axm1 myPred(x)\nEND\n");
-    match &ctx.axioms[0].predicate.kind {
-        PredicateKind::Application {
-            function,
-            arguments,
-        } => {
-            assert_eq!(function, "myPred");
-            assert_eq!(arguments.len(), 1);
-        }
-        other => panic!("Expected Application(myPred), got {:?}", other),
-    }
-}
-
-// ============================================================================
-// bool(P) expression tests
-// ============================================================================
-
-#[test]
-fn test_bool_expr() {
-    let ctx = common::parse_context("CONTEXT test\nAXIOMS\n    @axm1 bool(x > 0) = TRUE\nEND\n");
-    if let PredicateKind::Comparison { left, .. } = &ctx.axioms[0].predicate.kind {
-        match &left.kind {
-            ExpressionKind::Bool(pred) => {
-                assert!(
-                    matches!(&pred.kind, PredicateKind::Comparison { .. }),
-                    "Expected Comparison inside Bool, got {:?}",
-                    pred
-                );
-            }
-            other => panic!("Expected Bool expression, got {:?}", other),
-        }
-    } else {
-        panic!("Expected Comparison predicate");
-    }
-}
-
-#[test]
-fn test_bool_vs_bool_type() {
-    let ctx = common::parse_context("CONTEXT test\nAXIOMS\n    @axm1 x : BOOL\nEND\n");
-    if let PredicateKind::Comparison { right, .. } = &ctx.axioms[0].predicate.kind {
-        assert_eq!(*right, ExpressionKind::BoolType.into());
     } else {
         panic!("Expected Comparison predicate");
     }
@@ -1132,31 +850,6 @@ fn test_machine_accepts_theorems_after_variant() {
     assert_eq!(mch.invariants.len(), 2);
     assert!(mch.invariants.iter().any(|i| i.is_theorem));
     assert!(mch.variant.is_some());
-}
-
-#[test]
-fn test_theorems_section_roundtrips_to_inline() {
-    // The canonical printed form is inline `theorem @x` (Rodin parity), so a parsed
-    // THEOREMS section normalizes to inline and re-parses to the same flagged rows.
-    let source = r#"
-    CONTEXT test
-    AXIOMS
-        @axm1 1 = 1
-    THEOREMS
-        @thm1 2 = 2
-    END
-    "#;
-
-    let component = parse(source).expect("should parse");
-    let printed = rossi::to_string(&component);
-    assert!(!printed.contains("THEOREMS"), "output normalizes to inline");
-    assert!(printed.contains("theorem @thm1"));
-
-    let Component::Context(reparsed) = parse(&printed).expect("reparse") else {
-        panic!("expected a Context");
-    };
-    assert_eq!(reparsed.axioms.len(), 2);
-    assert!(reparsed.axioms.iter().any(|a| a.is_theorem));
 }
 
 #[test]
@@ -1469,54 +1162,6 @@ fn test_skip_action_in_event() {
     assert_eq!(event.actions.len(), 1);
     assert_eq!(event.actions[0].label, Some("act1".to_string()));
     assert_eq!(event.actions[0].action, rossi::ActionKind::Skip.into());
-}
-
-#[test]
-fn test_skip_action_roundtrip() {
-    let source = r#"MACHINE test
-EVENTS
-    EVENT foo
-    THEN
-        @act1 skip
-    END
-END
-"#;
-    let mut component = rossi::parse(source).expect("Failed to parse");
-    let output = rossi::to_string(&component);
-    assert!(
-        output.contains("skip"),
-        "Pretty-printed output should contain 'skip'"
-    );
-    // Parse again and compare (clear spans since source positions differ after pretty-print)
-    let mut component2 = rossi::parse(&output).expect("Failed to re-parse pretty output");
-    common::clear_spans(&mut component);
-    common::clear_spans(&mut component2);
-    assert_eq!(
-        component, component2,
-        "Roundtrip should produce identical AST"
-    );
-}
-
-#[test]
-fn test_extended_initialisation_no_actions_roundtrip() {
-    let source = indoc::indoc! {"
-        MACHINE m1
-        REFINES
-            m0
-        EVENTS
-            EVENT INITIALISATION extends INITIALISATION
-            END
-        END
-    "};
-    let mut component = rossi::parse(source).expect("Failed to parse");
-    let output = rossi::to_string(&component);
-    let mut component2 = rossi::parse(&output).expect("Failed to re-parse pretty output");
-    common::clear_spans(&mut component);
-    common::clear_spans(&mut component2);
-    assert_eq!(
-        component, component2,
-        "Extended init with no actions should roundtrip"
-    );
 }
 
 #[test]

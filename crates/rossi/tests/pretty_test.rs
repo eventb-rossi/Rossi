@@ -604,6 +604,79 @@ END
     let _component2 = parse(&output).unwrap();
 }
 
+#[test]
+fn test_theorems_section_roundtrips_to_inline() {
+    // The canonical printed form is inline `theorem @x` (Rodin parity), so a parsed
+    // THEOREMS section normalizes to inline and re-parses to the same flagged rows.
+    let source = r#"
+    CONTEXT test
+    AXIOMS
+        @axm1 1 = 1
+    THEOREMS
+        @thm1 2 = 2
+    END
+    "#;
+
+    let component = parse(source).expect("should parse");
+    let printed = rossi::to_string(&component);
+    assert!(!printed.contains("THEOREMS"), "output normalizes to inline");
+    assert!(printed.contains("theorem @thm1"));
+
+    let Component::Context(reparsed) = parse(&printed).expect("reparse") else {
+        panic!("expected a Context");
+    };
+    assert_eq!(reparsed.axioms.len(), 2);
+    assert!(reparsed.axioms.iter().any(|a| a.is_theorem));
+}
+
+#[test]
+fn test_skip_action_roundtrip() {
+    let source = r#"MACHINE test
+EVENTS
+    EVENT foo
+    THEN
+        @act1 skip
+    END
+END
+"#;
+    let mut component = rossi::parse(source).expect("Failed to parse");
+    let output = rossi::to_string(&component);
+    assert!(
+        output.contains("skip"),
+        "Pretty-printed output should contain 'skip'"
+    );
+    // Parse again and compare (clear spans since source positions differ after pretty-print)
+    let mut component2 = rossi::parse(&output).expect("Failed to re-parse pretty output");
+    common::clear_spans(&mut component);
+    common::clear_spans(&mut component2);
+    assert_eq!(
+        component, component2,
+        "Roundtrip should produce identical AST"
+    );
+}
+
+#[test]
+fn test_extended_initialisation_no_actions_roundtrip() {
+    let source = indoc::indoc! {"
+        MACHINE m1
+        REFINES
+            m0
+        EVENTS
+            EVENT INITIALISATION extends INITIALISATION
+            END
+        END
+    "};
+    let mut component = rossi::parse(source).expect("Failed to parse");
+    let output = rossi::to_string(&component);
+    let mut component2 = rossi::parse(&output).expect("Failed to re-parse pretty output");
+    common::clear_spans(&mut component);
+    common::clear_spans(&mut component2);
+    assert_eq!(
+        component, component2,
+        "Extended init with no actions should roundtrip"
+    );
+}
+
 // ============================================================================
 // Roundtrip example tests
 // ============================================================================
