@@ -2,6 +2,7 @@
 
 mod common;
 
+use rossi::ast::predicate::LogicalOp;
 use rossi::{ActionKind, ExpressionKind, parse, parse_action_str, parse_expression_str};
 
 #[test]
@@ -98,27 +99,20 @@ fn test_chained_binary_operations() {
     }
 }
 
-#[test]
-fn test_binary_predicate_conjunction() {
+// All spellings of the binary logical operators: Unicode ∧ plus the ASCII
+// forms & (AND) and `or` (OR).
+#[test_case::test_case("x > 0 ∧ y > 0", LogicalOp::And ; "conjunction_unicode")]
+#[test_case::test_case("x > 0 & y > 0", LogicalOp::And ; "conjunction_ascii_ampersand")]
+#[test_case::test_case("x > 0 or y > 0", LogicalOp::Or ; "disjunction_ascii_or")]
+fn test_logical_operator_spellings(invariant_body: &str, expected: LogicalOp) {
     use rossi::PredicateKind;
-    use rossi::ast::predicate::LogicalOp;
 
-    let m = common::parse_machine(
-        r#"
-    MACHINE test
-    VARIABLES
-        x y
-    INVARIANTS
-        @inv1 x > 0 ∧ y > 0
-    END
-    "#,
-    );
-    assert_eq!(m.invariants.len(), 1);
+    let source = common::invariant_machine("x y", invariant_body);
+    let m = common::parse_machine(&source);
     let pred = &m.invariants[0].predicate;
-
     match &pred.kind {
         PredicateKind::Logical { op, left, right } => {
-            assert_eq!(*op, LogicalOp::And);
+            assert_eq!(*op, expected);
             assert!(matches!(&left.kind, PredicateKind::Comparison { .. }));
             assert!(matches!(&right.kind, PredicateKind::Comparison { .. }));
         }
@@ -799,74 +793,6 @@ fn test_nat1_int_roundtrip() {
     END
     "#,
     );
-}
-
-// ============================================================================
-// ASCII logical operator tests (& for AND, or for OR)
-// ============================================================================
-
-#[test]
-fn test_conjunction_ascii_ampersand() {
-    use rossi::PredicateKind;
-    use rossi::ast::predicate::LogicalOp;
-
-    let m = common::parse_machine(
-        r#"
-    MACHINE test
-    VARIABLES
-        x y
-    INVARIANTS
-        @inv1 x > 0 & y > 0
-    END
-    "#,
-    );
-    let pred = &m.invariants[0].predicate;
-    match &pred.kind {
-        PredicateKind::Logical { op, left, right } => {
-            assert_eq!(*op, LogicalOp::And);
-            assert!(matches!(
-                left.as_ref().kind,
-                PredicateKind::Comparison { .. }
-            ));
-            assert!(matches!(
-                right.as_ref().kind,
-                PredicateKind::Comparison { .. }
-            ));
-        }
-        other => panic!("Expected Logical AND, got {:?}", other),
-    }
-}
-
-#[test]
-fn test_disjunction_ascii_or() {
-    use rossi::PredicateKind;
-    use rossi::ast::predicate::LogicalOp;
-
-    let m = common::parse_machine(
-        r#"
-    MACHINE test
-    VARIABLES
-        x y
-    INVARIANTS
-        @inv1 x > 0 or y > 0
-    END
-    "#,
-    );
-    let pred = &m.invariants[0].predicate;
-    match &pred.kind {
-        PredicateKind::Logical { op, left, right } => {
-            assert_eq!(*op, LogicalOp::Or);
-            assert!(matches!(
-                left.as_ref().kind,
-                PredicateKind::Comparison { .. }
-            ));
-            assert!(matches!(
-                right.as_ref().kind,
-                PredicateKind::Comparison { .. }
-            ));
-        }
-        other => panic!("Expected Logical OR, got {:?}", other),
-    }
 }
 
 #[test]
