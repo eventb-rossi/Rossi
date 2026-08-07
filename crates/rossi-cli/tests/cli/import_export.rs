@@ -1,0 +1,427 @@
+//! `rossi import` / `rossi export`: Rodin round-trips and project layout.
+
+use std::io::Read;
+
+use crate::helpers::{
+    ASCII_CONTEXT, dir_has_ext, extract_zip_to, project_descriptor, rossi_command,
+    run_cli_with_stdin, tempdir_unique, write_zip,
+};
+
+#[test]
+fn import_rodin_component_file_to_eventb() {
+    for (input, output_name, needle) in [
+        (
+            "../rossi/examples/counter_ctx.buc",
+            "counter_ctx.eventb",
+            "CONTEXT counter_ctx",
+        ),
+        (
+            "../rossi/examples/counter.bum",
+            "counter.eventb",
+            "MACHINE counter",
+        ),
+    ] {
+        let tmp = tempdir_unique("rossi-cli-import-component");
+        let out_dir = tmp.join("out");
+
+        let output = rossi_command()
+            .args(["import", input, "-o", out_dir.to_str().unwrap()])
+            .output()
+            .expect("Failed to execute command");
+
+        assert!(
+            output.status.success(),
+            "import {input} should exit 0; stderr={}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        let text = std::fs::read_to_string(out_dir.join(output_name)).unwrap();
+        assert!(
+            text.contains(needle),
+            "expected `{needle}` in {output_name}"
+        );
+
+        std::fs::remove_dir_all(&tmp).ok();
+    }
+}
+
+#[test]
+fn import_rodin_directory_to_eventb_files() {
+    let tmp = tempdir_unique("rossi-cli-import-rodin-dir");
+    let rodin_dir = tmp.join("rodin");
+    let out_dir = tmp.join("out");
+    std::fs::create_dir_all(&rodin_dir).unwrap();
+    std::fs::copy(
+        "../rossi/examples/counter_ctx.buc",
+        rodin_dir.join("counter_ctx.buc"),
+    )
+    .unwrap();
+    std::fs::copy(
+        "../rossi/examples/counter.bum",
+        rodin_dir.join("counter.bum"),
+    )
+    .unwrap();
+
+    let output = rossi_command()
+        .args([
+            "import",
+            rodin_dir.to_str().unwrap(),
+            "-o",
+            out_dir.to_str().unwrap(),
+        ])
+        .output()
+        .expect("Failed to execute command");
+
+    assert!(
+        output.status.success(),
+        "import Rodin dir should exit 0; stderr={}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert!(out_dir.join("counter_ctx.eventb").exists());
+    assert!(out_dir.join("counter.eventb").exists());
+
+    std::fs::remove_dir_all(&tmp).ok();
+}
+
+#[test]
+fn import_multi_project_archive_writes_per_project_subdirs() {
+    // A machine reused under two sibling projects with the SAME component
+    // basename ("M.bum") — the case the old flat import collapsed into one
+    // overwritten output file.
+    let tmp = tempdir_unique("rossi-cli-import-multi");
+    let zip_path = tmp.join("decomp.zip");
+    let out_dir = tmp.join("out");
+
+    let machine_xml = std::fs::read("../rossi/examples/counter.bum").unwrap();
+    let proj_a = project_descriptor("A");
+    let proj_b = project_descriptor("B");
+    write_zip(
+        &zip_path,
+        &[
+            ("A/.project", &proj_a),
+            ("A/M.bum", &machine_xml),
+            ("B/.project", &proj_b),
+            ("B/M.bum", &machine_xml),
+        ],
+    );
+
+    let output = rossi_command()
+        .args([
+            "import",
+            zip_path.to_str().unwrap(),
+            "-o",
+            out_dir.to_str().unwrap(),
+        ])
+        .output()
+        .expect("Failed to execute command");
+    assert!(
+        output.status.success(),
+        "multi-project import should exit 0; stderr={}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+
+    // Each project's component lands under its own subdirectory (the component
+    // is renamed to its file stem `M`); neither overwrites the other, and
+    // nothing is written flat at the output root.
+    assert!(out_dir.join("A").join("M.eventb").exists());
+    assert!(out_dir.join("B").join("M.eventb").exists());
+    assert!(!out_dir.join("M.eventb").exists());
+
+    std::fs::remove_dir_all(&tmp).ok();
+}
+
+#[test]
+fn import_keys_subdirs_on_prefix_not_colliding_name() {
+    // Two sibling projects whose `.project` descriptors resolve to the SAME
+    // name but sit under distinct archive directories. Keying output on the
+    // unique prefix (not the resolved name) keeps them apart instead of one
+    // overwriting the other.
+    let tmp = tempdir_unique("rossi-cli-import-namecollide");
+    let zip_path = tmp.join("decomp.zip");
+    let out_dir = tmp.join("out");
+    let machine_xml = std::fs::read("../rossi/examples/counter.bum").unwrap();
+    // Both descriptors claim the same project name "Dup".
+    let dup = project_descriptor("Dup");
+    write_zip(
+        &zip_path,
+        &[
+            ("A/.project", &dup),
+            ("A/M.bum", &machine_xml),
+            ("B/.project", &dup),
+            ("B/N.bum", &machine_xml),
+        ],
+    );
+
+    let output = rossi_command()
+        .args([
+            "import",
+            zip_path.to_str().unwrap(),
+            "-o",
+            out_dir.to_str().unwrap(),
+        ])
+        .output()
+        .expect("Failed to execute command");
+    assert!(
+        output.status.success(),
+        "stderr={}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+
+    // Subdirs are the archive prefixes A/ and B/, not the colliding name "Dup".
+    assert!(out_dir.join("A").join("M.eventb").exists());
+    assert!(out_dir.join("B").join("N.eventb").exists());
+    assert!(!out_dir.join("Dup").exists());
+
+    std::fs::remove_dir_all(&tmp).ok();
+}
+
+#[test]
+fn import_contains_path_traversal_project_name() {
+    // A hostile archive whose project directory is `..` must not write outside
+    // the chosen output directory; the segment is sanitized to a safe name.
+    // Two distinct prefixes so multi-project (subdir) mode triggers; one tries
+    // to escape via `../`.
+    let tmp = tempdir_unique("rossi-cli-import-traversal");
+    let zip_path = tmp.join("evil.zip");
+    let out_dir = tmp.join("out");
+    let machine_xml = std::fs::read("../rossi/examples/counter.bum").unwrap();
+    write_zip(
+        &zip_path,
+        &[
+            ("../escape/M.bum", &machine_xml),
+            ("safe/N.bum", &machine_xml),
+        ],
+    );
+
+    let output = rossi_command()
+        .args([
+            "import",
+            zip_path.to_str().unwrap(),
+            "-o",
+            out_dir.to_str().unwrap(),
+        ])
+        .output()
+        .expect("Failed to execute command");
+    assert!(
+        output.status.success(),
+        "stderr={}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+
+    // The `../` project is neutralized to the safe fallback segment `project/`
+    // inside out/, and nothing escapes to the output's parent.
+    assert!(out_dir.join("safe").join("N.eventb").exists());
+    assert!(out_dir.join("project").join("M.eventb").exists());
+    assert!(
+        !tmp.join("escape").exists(),
+        "import escaped the output directory"
+    );
+
+    std::fs::remove_dir_all(&tmp).ok();
+}
+
+#[test]
+fn export_eventb_to_rodin_zip_includes_project_descriptor() {
+    let tmp = tempdir_unique("rossi-cli-export-project-zip");
+    let out_zip = tmp.join("counter project.zip");
+
+    let output = rossi_command()
+        .args([
+            "export",
+            "../rossi/examples/counter.eventb",
+            "-o",
+            out_zip.to_str().unwrap(),
+        ])
+        .output()
+        .expect("Failed to execute command");
+
+    assert!(
+        output.status.success(),
+        "export .eventb should exit 0; stderr={}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+
+    let file = std::fs::File::open(&out_zip).unwrap();
+    let mut archive = zip::ZipArchive::new(file).unwrap();
+    let project_xml = {
+        let mut project = archive.by_name(".project").unwrap();
+        let mut project_xml = String::new();
+        project.read_to_string(&mut project_xml).unwrap();
+        project_xml
+    };
+    // Descriptor *content* (nature, builder, XML escaping) is covered by the
+    // rossi lib tests; here we only check the CLI wiring: a .project named
+    // after the output stem, plus the component, both landed in the zip.
+    assert!(project_xml.contains("<name>counter project</name>"));
+    archive.by_name("counter_ctx.buc").unwrap();
+
+    std::fs::remove_dir_all(&tmp).ok();
+}
+
+#[test]
+fn export_eventb_to_rodin_directory_includes_project_descriptor() {
+    let tmp = tempdir_unique("rossi-cli-export-project-dir");
+    let out_dir = tmp.join("counter project");
+
+    let output = rossi_command()
+        .args([
+            "export",
+            "../rossi/examples/counter.eventb",
+            "-o",
+            out_dir.to_str().unwrap(),
+        ])
+        .output()
+        .expect("Failed to execute command");
+
+    assert!(
+        output.status.success(),
+        "export .eventb to directory should exit 0; stderr={}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+
+    // Descriptor *content* is covered by the rossi lib tests; here we only check
+    // the CLI wiring: a .project named after the output stem, plus the
+    // component, both landed in the directory.
+    let project_xml = std::fs::read_to_string(out_dir.join(".project")).unwrap();
+    assert!(project_xml.contains("<name>counter project</name>"));
+    assert!(out_dir.join("counter_ctx.buc").exists());
+
+    std::fs::remove_dir_all(&tmp).ok();
+}
+
+#[test]
+fn export_directory_of_subprojects_to_multi_project_zip() {
+    // A directory whose Event-B text lives only under immediate subdirectories
+    // exports as one Rodin project per subdirectory (the inverse of a
+    // multi-project import). Each project gets its own `<name>/` prefix and
+    // `.project`, so sibling components sharing a basename never collide.
+    let tmp = tempdir_unique("rossi-cli-export-multi");
+    let src = tmp.join("src");
+    for (proj, comp, body) in [
+        ("ProjA", "shared.eventb", "CONTEXT shared\nEND\n"),
+        ("ProjB", "shared.eventb", "MACHINE shared\nEND\n"),
+    ] {
+        let dir = src.join(proj);
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join(comp), body).unwrap();
+    }
+    let out_zip = tmp.join("out.zip");
+
+    let output = rossi_command()
+        .args([
+            "export",
+            src.to_str().unwrap(),
+            "-o",
+            out_zip.to_str().unwrap(),
+        ])
+        .output()
+        .expect("Failed to execute command");
+    assert!(
+        output.status.success(),
+        "multi-project export should exit 0; stderr={}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+
+    let mut archive = zip::ZipArchive::new(std::fs::File::open(&out_zip).unwrap()).unwrap();
+    let names: Vec<String> = (0..archive.len())
+        .map(|i| archive.by_index(i).unwrap().name().to_string())
+        .collect();
+    // The colliding `shared` component is kept apart under each project prefix.
+    for expected in [
+        "ProjA/.project",
+        "ProjA/shared.buc",
+        "ProjB/.project",
+        "ProjB/shared.bum",
+    ] {
+        assert!(
+            names.iter().any(|n| n == expected),
+            "expected {expected} in {names:?}"
+        );
+    }
+    let mut descriptor = String::new();
+    archive
+        .by_name("ProjA/.project")
+        .unwrap()
+        .read_to_string(&mut descriptor)
+        .unwrap();
+    assert!(descriptor.contains("<name>ProjA</name>"));
+
+    std::fs::remove_dir_all(&tmp).ok();
+}
+
+#[test]
+fn export_stray_top_level_txt_still_splits_subprojects() {
+    // A benign generic .txt (README/notes) directly under the source directory
+    // must NOT collapse the per-subdirectory project split — only a definite
+    // `.eventb` source does.
+    let tmp = tempdir_unique("rossi-cli-export-strawtxt");
+    let src = tmp.join("src");
+    std::fs::create_dir_all(&src).unwrap();
+    std::fs::write(src.join("README.txt"), "just notes, not Event-B\n").unwrap();
+    for (proj, body) in [("ProjA", "CONTEXT a\nEND\n"), ("ProjB", "MACHINE b\nEND\n")] {
+        let dir = src.join(proj);
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join("c.eventb"), body).unwrap();
+    }
+    let out_zip = tmp.join("out.zip");
+
+    let output = rossi_command()
+        .args([
+            "export",
+            src.to_str().unwrap(),
+            "-o",
+            out_zip.to_str().unwrap(),
+        ])
+        .output()
+        .expect("Failed to execute command");
+    assert!(
+        output.status.success(),
+        "stderr={}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+
+    let mut archive = zip::ZipArchive::new(std::fs::File::open(&out_zip).unwrap()).unwrap();
+    let names: Vec<String> = (0..archive.len())
+        .map(|i| archive.by_index(i).unwrap().name().to_string())
+        .collect();
+    // Both subdirectories became their own project despite the stray README.txt.
+    assert!(
+        names.iter().any(|n| n == "ProjA/.project"),
+        "names={names:?}"
+    );
+    assert!(
+        names.iter().any(|n| n == "ProjB/.project"),
+        "names={names:?}"
+    );
+
+    std::fs::remove_dir_all(&tmp).ok();
+}
+
+fn dir_has_rodin_file(dir: &std::path::Path) -> bool {
+    dir_has_ext(dir, &["buc", "bum"])
+}
+
+#[test]
+fn export_stdin_to_zip() {
+    let tmp = tempdir_unique("rossi-cli-export-stdin");
+    let out_zip = tmp.join("out.zip");
+
+    let output = run_cli_with_stdin(
+        &["export", "-", "-o", out_zip.to_str().unwrap()],
+        ASCII_CONTEXT,
+    );
+    assert!(
+        output.status.success(),
+        "export - should exit 0; stderr={}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+
+    let extracted = tmp.join("extracted");
+    std::fs::create_dir_all(&extracted).unwrap();
+    extract_zip_to(&out_zip, &extracted);
+    assert!(
+        dir_has_rodin_file(&extracted),
+        "expected a .buc/.bum entry in the exported zip"
+    );
+
+    std::fs::remove_dir_all(&tmp).ok();
+}
