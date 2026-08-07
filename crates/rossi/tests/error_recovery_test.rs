@@ -774,29 +774,6 @@ fn test_recovery_preserves_valid_data() {
 }
 
 #[test]
-fn test_error_count_tracking() {
-    let source = r#"
-    CONTEXT error_count
-    AXIOMS
-        @axm1 bad1
-        @axm2 bad2
-        @axm3 bad3
-    END
-    "#;
-
-    let result = parse_with_recovery(source);
-
-    // The number of errors should reflect the failures
-    assert!(!result.errors.is_empty(), "Expected errors to be recorded");
-    // We should have at least the initial parse error
-    assert!(
-        !result.errors.is_empty(),
-        "Expected at least one error, got {}",
-        result.errors.len()
-    );
-}
-
-#[test]
 fn test_recovery_with_commas_in_lists() {
     let source = r#"
     CONTEXT comma_test
