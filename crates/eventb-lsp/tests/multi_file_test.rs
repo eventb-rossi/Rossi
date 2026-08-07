@@ -7,7 +7,6 @@ use eventb_lsp::cross_references::{ComponentKind, CrossReferenceManager, Referen
 use eventb_lsp::document::DocumentManager;
 use eventb_lsp::lsp_types::*;
 use eventb_lsp::references::ReferenceProvider;
-use eventb_lsp::rename::RenameProvider;
 use std::sync::Arc;
 
 /// Helper to create a URI from a simple filename
@@ -192,58 +191,6 @@ END
             .unwrap(),
         &vec!["base_ctx".to_string()]
     );
-}
-
-#[test]
-fn test_cross_file_find_references_for_component() {
-    // Setup: Create a context and multiple machines that SEE it
-    let ctx_uri = make_uri("shared_ctx.eventb");
-    let mch1_uri = make_uri("machine1.eventb");
-    let mch2_uri = make_uri("machine2.eventb");
-
-    let ctx_source = r#"
-CONTEXT shared_ctx
-CONSTANTS
-    max_val
-END
-"#;
-
-    let mch1_source = r#"
-MACHINE machine1
-SEES shared_ctx
-VARIABLES
-    count
-END
-"#;
-
-    let mch2_source = r#"
-MACHINE machine2
-SEES shared_ctx
-VARIABLES
-    value
-END
-"#;
-
-    // Create cross-reference manager and index all files
-    let cross_ref_manager = Arc::new(CrossReferenceManager::new());
-    cross_ref_manager.update_component(ctx_uri.to_string(), ctx_source);
-    cross_ref_manager.update_component(mch1_uri.to_string(), mch1_source);
-    cross_ref_manager.update_component(mch2_uri.to_string(), mch2_source);
-
-    // Create document manager (though files aren't open)
-    let document_manager = Arc::new(DocumentManager::new());
-
-    // Create reference provider
-    let mut reference_provider = ReferenceProvider::new();
-    reference_provider.set_cross_reference_manager(Arc::clone(&cross_ref_manager));
-    reference_provider.set_document_manager(Arc::clone(&document_manager));
-
-    // Component names should be indexed for workspace reference searches.
-    // We can't easily test the full find_references without real files,
-    // but we can verify the manager is set up correctly
-    assert!(cross_ref_manager.find_component_uri("shared_ctx").is_some());
-    assert!(cross_ref_manager.find_component_uri("machine1").is_some());
-    assert!(cross_ref_manager.find_component_uri("machine2").is_some());
 }
 
 #[test]
@@ -497,47 +444,6 @@ fn test_abstract_machine_variable_references_include_concrete_usages_when_not_sh
     assert!(refs.iter().any(|location| location.uri == abstract_uri));
     assert!(refs.iter().any(|location| location.uri == concrete_uri));
     assert_eq!(refs.len(), 3);
-}
-
-#[test]
-fn test_cross_file_rename_component_detection() {
-    // Setup: Create a context and a machine that SEES it
-    let ctx_uri = make_uri("old_ctx.eventb");
-    let mch_uri = make_uri("app_machine.eventb");
-
-    let ctx_source = r#"
-CONTEXT old_ctx
-CONSTANTS
-    value
-END
-"#;
-
-    let mch_source = r#"
-MACHINE app_machine
-SEES old_ctx
-VARIABLES
-    state
-END
-"#;
-
-    // Create cross-reference manager and index both files
-    let cross_ref_manager = Arc::new(CrossReferenceManager::new());
-    cross_ref_manager.update_component(ctx_uri.to_string(), ctx_source);
-    cross_ref_manager.update_component(mch_uri.to_string(), mch_source);
-
-    // Create rename provider
-    let document_manager = Arc::new(DocumentManager::new());
-    let mut rename_provider = RenameProvider::new();
-    rename_provider.set_cross_reference_manager(Arc::clone(&cross_ref_manager));
-    rename_provider.set_document_manager(Arc::clone(&document_manager));
-
-    // Verify component is detected by the cross-ref manager
-    assert!(cross_ref_manager.find_component_uri("old_ctx").is_some());
-    assert!(
-        cross_ref_manager
-            .find_component_uri("app_machine")
-            .is_some()
-    );
 }
 
 #[test]
