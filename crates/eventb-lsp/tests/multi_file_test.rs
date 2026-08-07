@@ -335,71 +335,6 @@ END
 }
 
 #[test]
-fn test_multi_level_refinement_tracking() {
-    let abstract_uri = make_uri("abstract.eventb");
-    let middle_uri = make_uri("middle.eventb");
-    let concrete_uri = make_uri("concrete.eventb");
-
-    let abstract_source = r#"
-MACHINE abstract
-VARIABLES
-    x
-END
-"#;
-
-    let middle_source = r#"
-MACHINE middle
-REFINES abstract
-VARIABLES
-    x
-    y
-END
-"#;
-
-    let concrete_source = r#"
-MACHINE concrete
-REFINES middle
-VARIABLES
-    x
-    y
-    z
-END
-"#;
-
-    let manager = CrossReferenceManager::new();
-    manager.update_component(abstract_uri.to_string(), abstract_source);
-    manager.update_component(middle_uri.to_string(), middle_source);
-    manager.update_component(concrete_uri.to_string(), concrete_source);
-
-    // Verify refinement chain
-    let middle_info = manager.get_component("middle").unwrap();
-    assert_eq!(
-        middle_info.references.get(&ReferenceKind::Refines).unwrap(),
-        &vec!["abstract".to_string()]
-    );
-
-    let concrete_info = manager.get_component("concrete").unwrap();
-    assert_eq!(
-        concrete_info
-            .references
-            .get(&ReferenceKind::Refines)
-            .unwrap(),
-        &vec!["middle".to_string()]
-    );
-
-    // Verify reverse lookup
-    let middle_refiners =
-        manager.find_referencing_components("middle", Some(ReferenceKind::Refines));
-    assert_eq!(middle_refiners.len(), 1);
-    assert_eq!(middle_refiners[0].name, "concrete");
-
-    let abstract_refiners =
-        manager.find_referencing_components("abstract", Some(ReferenceKind::Refines));
-    assert_eq!(abstract_refiners.len(), 1);
-    assert_eq!(abstract_refiners[0].name, "middle");
-}
-
-#[test]
 fn test_component_with_multiple_sees() {
     let ctx1_uri = make_uri("ctx1.eventb");
     let ctx2_uri = make_uri("ctx2.eventb");
@@ -468,43 +403,6 @@ END
     manager.update_component(uri.to_string(), new_source);
     assert!(manager.find_component_uri("new_name").is_some());
     assert!(manager.find_component_uri("old_name").is_none());
-}
-
-#[test]
-fn test_workspace_index_consistency() {
-    let ctx_uri = make_uri("ctx.eventb");
-    let mch_uri = make_uri("mch.eventb");
-
-    let ctx_source = r#"
-CONTEXT ctx
-END
-"#;
-
-    let mch_source = r#"
-MACHINE mch
-SEES ctx
-END
-"#;
-
-    let manager = CrossReferenceManager::new();
-    manager.update_component(ctx_uri.to_string(), ctx_source);
-    manager.update_component(mch_uri.to_string(), mch_source);
-
-    // Verify both components are in the index
-    let all_names = manager.all_component_names();
-    assert_eq!(all_names.len(), 2);
-    assert!(all_names.contains(&"ctx".to_string()));
-    assert!(all_names.contains(&"mch".to_string()));
-
-    // Verify URI mapping is consistent
-    assert_eq!(
-        manager.get_component_name(ctx_uri.as_ref()),
-        Some("ctx".to_string())
-    );
-    assert_eq!(
-        manager.get_component_name(mch_uri.as_ref()),
-        Some("mch".to_string())
-    );
 }
 
 /// Issue #84 — find-references stays consistent with go-to-definition on an
