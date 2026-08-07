@@ -98,26 +98,6 @@ fn test_cli_nonexistent_file() {
 }
 
 #[test]
-fn test_cli_json_output() {
-    let output = rossi_command()
-        .args([
-            "validate",
-            "--format",
-            "json",
-            "../rossi/examples/counter.eventb",
-        ])
-        .output()
-        .expect("Failed to execute command");
-
-    assert!(output.status.success());
-    let stdout = String::from_utf8_lossy(&output.stdout);
-    assert!(stdout.contains("\"file\": \"../rossi/examples/counter.eventb\""));
-    assert!(stdout.contains("\"success\": true"));
-    assert!(stdout.contains("\"component_type\": \"Context\""));
-    assert!(stdout.contains("\"component_name\": \"counter_ctx\""));
-}
-
-#[test]
 fn test_cli_quiet_mode_success() {
     let output = rossi_command()
         .args(["validate", "--quiet", "../rossi/examples/counter.eventb"])
@@ -174,29 +154,6 @@ fn test_cli_no_files_provided() {
     let stderr = String::from_utf8_lossy(&output.stderr);
     // Should show error about missing FILE argument
     assert!(stderr.contains("FILE") || stderr.contains("required"));
-}
-
-#[test]
-fn test_cli_zip_file_json_output() {
-    let output = rossi_command()
-        .args([
-            "validate",
-            "--format",
-            "json",
-            "../rossi/examples/binary-search.zip",
-        ])
-        .output()
-        .expect("Failed to execute command");
-
-    assert!(output.status.success());
-    let stdout = String::from_utf8_lossy(&output.stdout);
-    assert!(stdout.contains("\"file\": \"../rossi/examples/binary-search.zip\""));
-    assert!(stdout.contains("\"inner_filename\": \"C0.buc\""));
-    assert!(stdout.contains("\"success\": true"));
-    assert!(stdout.contains("\"component_type\": \"Context\""));
-    assert!(stdout.contains("\"component_name\": \"C0\""));
-    assert!(stdout.contains("\"inner_filename\": \"M0.bum\""));
-    assert!(stdout.contains("\"component_name\": \"M0\""));
 }
 
 #[test]
@@ -778,24 +735,30 @@ fn validate_json_reports_input_kind_and_joined_path() {
     let dir = lint_fixture_dir("rossi-cli-json-input-kind");
     let (zip_tmp, zip_path) = lint_fixture_zip("rossi-cli-json-input-kind-zip");
 
-    for (input, expected_kind, member, expected_path) in [
+    for (input, expected_kind, member, expected_path, component_type, component_name) in [
         (
             dir.to_str().unwrap(),
             "directory",
             Some("Lint.bum"),
             format!("{}/Lint.bum", dir.display()),
+            "Machine",
+            "Lint",
         ),
         (
             zip_path.to_str().unwrap(),
             "archive",
             Some("Lint.bum"),
             format!("{}!/Lint.bum", zip_path.display()),
+            "Machine",
+            "Lint",
         ),
         (
             "../rossi/examples/counter.eventb",
             "file",
             None,
             "../rossi/examples/counter.eventb".to_string(),
+            "Context",
+            "counter_ctx",
         ),
     ] {
         let output = rossi_command()
@@ -815,6 +778,18 @@ fn validate_json_reports_input_kind_and_joined_path() {
                 .unwrap_or_else(|| panic!("missing {member} row in {rows:?}"))
         });
         assert_eq!(row["path"], expected_path, "row: {row}");
+        assert_eq!(row["component_type"], component_type, "row: {row}");
+        assert_eq!(row["component_name"], component_name, "row: {row}");
+        if expected_kind == "archive" {
+            // Each archive member carries its own component identity — the
+            // seen context must not inherit the machine's.
+            let ctx_row = rows
+                .iter()
+                .find(|row| row["inner_filename"] == "Ctx.buc")
+                .unwrap_or_else(|| panic!("missing Ctx.buc row in {rows:?}"));
+            assert_eq!(ctx_row["component_type"], "Context", "row: {ctx_row}");
+            assert_eq!(ctx_row["component_name"], "Ctx", "row: {ctx_row}");
+        }
     }
 
     std::fs::remove_dir_all(&dir).ok();
