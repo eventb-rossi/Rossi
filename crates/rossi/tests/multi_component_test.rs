@@ -4,10 +4,12 @@ use rossi::{
     parse_with_recovery,
 };
 
+/// One dispatch row: (case, source, expected (kind, name) per component).
+type DispatchCase<'a> = (&'a str, &'a str, &'a [(&'a str, &'a str)]);
+
 #[test]
 fn test_parse_components_dispatch() {
-    // Each row: (case, source, expected (kind, name) per component).
-    let cases: &[(&str, &str, &[(&str, &str)])] = &[
+    let cases: &[DispatchCase] = &[
         (
             "single context",
             indoc! {"
