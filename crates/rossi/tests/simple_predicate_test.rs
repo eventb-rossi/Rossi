@@ -1039,10 +1039,7 @@ fn test_postfix_function_update_lowers_to_overwrite() {
     let postfix = parse_expression_str("f{x ↦ y}").expect("postfix update parses");
     let explicit = parse_expression_str("f <+ {x ↦ y}").expect("explicit overwrite parses");
     assert_eq!(postfix, explicit);
-}
 
-#[test]
-fn test_postfix_function_update_multi_element() {
     let postfix = parse_expression_str("f{x ↦ y, a ↦ b}").expect("multi-element postfix parses");
     let explicit =
         parse_expression_str("f <+ {x ↦ y, a ↦ b}").expect("multi-element explicit parses");
