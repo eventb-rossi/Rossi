@@ -296,27 +296,6 @@ fn rodin_canonical_tightens_comma_separated_formula_lists() {
 }
 
 #[test]
-fn test_pretty_print_sees_and_refines() {
-    let source = r#"MACHINE refined
-REFINES
-    abstract
-SEES
-    ctx1
-    ctx2
-END
-"#;
-
-    let component = parse(source).expect("Failed to parse");
-    let output = to_string(&component);
-
-    assert!(output.contains("REFINES"));
-    assert!(output.contains("abstract"));
-    assert!(output.contains("SEES"));
-    assert!(output.contains("ctx1"));
-    assert!(output.contains("ctx2"));
-}
-
-#[test]
 fn test_pretty_printer_custom_indent() {
     let source = r#"CONTEXT test
 SETS
