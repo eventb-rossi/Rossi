@@ -45,71 +45,34 @@ fn reserved_keyword_constant_accepted() {
 }
 
 #[test]
-fn digit_leading_identifier_rejected() {
-    // Leading digit still rejected — would confuse the text-grammar
-    // lexer if the name ever flowed into a parsed predicate.
-    let xml = r#"<?xml version="1.0" encoding="UTF-8"?>
-<org.eventb.core.contextFile version="3">
-    <org.eventb.core.extendsContext name="bad" org.eventb.core.target="1bad"/>
-</org.eventb.core.contextFile>"#;
-
-    let err = parse_xml(xml).expect_err("should reject digit-leading identifier");
-    match err {
-        ParseError::UnsupportedIdentifier { name, reason, .. } => {
-            assert_eq!(name, "1bad");
-            assert!(
-                reason.contains("must start with ASCII letter or '_'"),
-                "reason: {reason}"
-            );
-        }
-        other => panic!("expected UnsupportedIdentifier, got {other:?}"),
-    }
-}
-
-#[test]
-fn leading_hyphen_identifier_rejected() {
-    // A name like `-foo` is rejected: hyphen is only allowed after the
-    // first character.
-    let xml = r#"<?xml version="1.0" encoding="UTF-8"?>
-<org.eventb.core.contextFile version="3">
-    <org.eventb.core.extendsContext name="bad" org.eventb.core.target="-bad"/>
-</org.eventb.core.contextFile>"#;
-
-    let err = parse_xml(xml).expect_err("should reject leading hyphen");
-    match err {
-        ParseError::UnsupportedIdentifier { name, reason, .. } => {
-            assert_eq!(name, "-bad");
-            assert!(
-                reason.contains("must start with ASCII letter or '_'"),
-                "reason: {reason}"
-            );
-        }
-        other => panic!("expected UnsupportedIdentifier, got {other:?}"),
-    }
-}
-
-#[test]
-fn trailing_or_doubled_hyphen_rejected() {
-    // The text grammar's `component_name` rule requires every `-` to open a
-    // non-empty segment, so import rejects what pretty-printing could not
-    // re-parse (issue #28).
-    for bad in ["bad-", "ba--d"] {
+fn malformed_component_name_target_rejected() {
+    // The text grammar's `component_name` rule requires an ASCII letter or
+    // `_` start and every `-` to open a non-empty segment, so import rejects
+    // what pretty-printing could not re-parse (issue #28). The per-character
+    // classification is unit-tested in `names`; this pins the wiring for the
+    // opaque-target path.
+    for (bad, reason_substring) in [
+        ("1bad", "must start with ASCII letter or '_'"),
+        ("-bad", "must start with ASCII letter or '_'"),
+        ("bad-", "'-' must be followed by"),
+        ("ba--d", "'-' must be followed by"),
+    ] {
         let xml = format!(
             r#"<?xml version="1.0" encoding="UTF-8"?>
 <org.eventb.core.contextFile version="3">
     <org.eventb.core.extendsContext name="bad" org.eventb.core.target="{bad}"/>
 </org.eventb.core.contextFile>"#
         );
-        let err = parse_xml(&xml).expect_err("should reject malformed hyphen placement");
+        let err = parse_xml(&xml).expect_err(&format!("should reject `{bad}` as extends target"));
         match err {
             ParseError::UnsupportedIdentifier { name, reason, .. } => {
                 assert_eq!(name, bad);
                 assert!(
-                    reason.contains("'-' must be followed by"),
-                    "reason: {reason}"
+                    reason.contains(reason_substring),
+                    "`{bad}` reason: {reason}"
                 );
             }
-            other => panic!("expected UnsupportedIdentifier, got {other:?}"),
+            other => panic!("expected UnsupportedIdentifier for `{bad}`, got {other:?}"),
         }
     }
 }
