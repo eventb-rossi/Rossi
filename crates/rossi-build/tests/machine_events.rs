@@ -143,57 +143,66 @@ fn machine_file_is_accurate_when_all_events_type_check() {
     assert!(bcm.accurate, "diagnostics: {:?}", r.diagnostics);
 }
 
-#[test]
-fn parameter_conflicting_with_machine_variable_is_diagnosed_and_dropped() {
+/// Shared core of the parameter-conflict regressions: build a one-machine
+/// project from `machine_xml`, assert the conflict diagnostic at
+/// `Mch.Clash.x`, and assert the parameter was dropped from the checked
+/// event. Returns the build result and parsed view for case-specific
+/// follow-up assertions.
+fn assert_param_conflict(machine_xml: &str, case: &str) -> (rossi_build::BuildResult, ScView) {
     let project = Project::new(
         "conflict",
-        vec![ProjectComponent::from_xml("Mch.bum", PARAMETER_CONFLICT_MACHINE_BUM).unwrap()],
+        vec![ProjectComponent::from_xml("Mch.bum", machine_xml).unwrap()],
     );
     let result = build(&project);
     assert!(
         result.diagnostics.iter().any(|diagnostic| {
             diagnostic.origin == "Mch.Clash.x"
-                && diagnostic.rule_id == Some(rossi_build::RuleId::TypeError)
                 && diagnostic
                     .message
                     .contains("parameter `x` conflicts with a visible identifier")
         }),
-        "expected parameter conflict diagnostic: {:?}",
+        "{case}: expected parameter conflict diagnostic: {:?}",
         result.diagnostics
     );
-
     let bcm = result.file("Mch.bcm").expect("Mch.bcm");
     let view = ScView::from_xml(&bcm.contents).unwrap();
     let event = view.events.get("Clash").expect("Clash event");
-    assert!(!event.parameters.contains_key("x"));
-    assert!(event.guards.is_empty(), "conflicting guard must be dropped");
     assert!(
-        !event.accurate,
-        "the guard must be checked against the machine variable and dropped"
+        !event.parameters.contains_key("x"),
+        "{case}: parameter `x` must be dropped"
     );
+    (result, view)
 }
 
 #[test]
-fn parameter_conflicts_with_untyped_machine_variable() {
-    let project = Project::new(
-        "conflict",
-        vec![
-            ProjectComponent::from_xml("Mch.bum", UNTYPED_PARAMETER_CONFLICT_MACHINE_BUM).unwrap(),
-        ],
-    );
-    let result = build(&project);
-    assert!(
-        result.diagnostics.iter().any(|diagnostic| {
-            diagnostic.origin == "Mch.Clash.x"
-                && diagnostic
-                    .message
-                    .contains("parameter `x` conflicts with a visible identifier")
-        }),
-        "expected parameter conflict diagnostic: {:?}",
-        result.diagnostics
-    );
-    let bcm = result.file("Mch.bcm").expect("Mch.bcm");
-    let view = ScView::from_xml(&bcm.contents).unwrap();
-    let event = view.events.get("Clash").expect("Clash event");
-    assert!(!event.parameters.contains_key("x"));
+fn parameter_conflicting_with_machine_variable_is_diagnosed_and_dropped() {
+    for (case, machine_xml, typed) in [
+        ("typed variable", PARAMETER_CONFLICT_MACHINE_BUM, true),
+        (
+            "untyped variable",
+            UNTYPED_PARAMETER_CONFLICT_MACHINE_BUM,
+            false,
+        ),
+    ] {
+        let (result, view) = assert_param_conflict(machine_xml, case);
+        if typed {
+            // With `x ⊆ ℤ` typing the machine variable, the clash is
+            // additionally a TypeError, the conflicting guard is dropped,
+            // and the event is marked inaccurate.
+            assert!(
+                result.diagnostics.iter().any(|diagnostic| {
+                    diagnostic.origin == "Mch.Clash.x"
+                        && diagnostic.rule_id == Some(rossi_build::RuleId::TypeError)
+                }),
+                "{case}: expected TypeError diagnostic: {:?}",
+                result.diagnostics
+            );
+            let event = view.events.get("Clash").expect("Clash event");
+            assert!(event.guards.is_empty(), "conflicting guard must be dropped");
+            assert!(
+                !event.accurate,
+                "the guard must be checked against the machine variable and dropped"
+            );
+        }
+    }
 }
