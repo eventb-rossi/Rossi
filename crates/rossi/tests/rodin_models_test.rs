@@ -3,6 +3,8 @@
 //! These tests use models from https://github.com/17451k/eventb-models
 //! to verify that the parser can handle real-world Event-B specifications.
 
+mod common;
+
 use rossi::{
     Component, NamedComponent, ParseError, parse_components, parse_zip_file,
     parse_zip_with_recovery,
@@ -189,9 +191,7 @@ fn test_parse_zip_with_recovery_valid_archive() {
 /// and renders the legacy "Failed to parse …" Display string.
 #[test]
 fn test_parse_zip_with_recovery_partial_failure() {
-    use std::io::Write;
-
-    let valid_buc = br#"<?xml version="1.0" encoding="UTF-8" standalone="no"?>
+    let valid_buc: &[u8] = br#"<?xml version="1.0" encoding="UTF-8" standalone="no"?>
 <org.eventb.core.contextFile org.eventb.core.configuration="org.eventb.core.fwd" version="3">
     <org.eventb.core.carrierSet name="'" org.eventb.core.identifier="STATUS"/>
 </org.eventb.core.contextFile>"#;
@@ -229,17 +229,7 @@ fn test_parse_zip_with_recovery_partial_failure() {
     ];
 
     for (bad_name, bad_content, check_inner) in cases {
-        let mut buf = Vec::new();
-        {
-            let mut writer = zip::ZipWriter::new(std::io::Cursor::new(&mut buf));
-            let options = zip::write::SimpleFileOptions::default()
-                .compression_method(zip::CompressionMethod::Stored);
-            writer.start_file("Good.buc", options).unwrap();
-            writer.write_all(valid_buc).unwrap();
-            writer.start_file(bad_name, options).unwrap();
-            writer.write_all(bad_content).unwrap();
-            writer.finish().unwrap();
-        }
+        let buf = common::zip_with_entries(&[("Good.buc", valid_buc), (bad_name, bad_content)]);
 
         let result = parse_zip_with_recovery(&buf);
 
@@ -273,8 +263,6 @@ fn test_parse_zip_with_recovery_partial_failure() {
 /// All files fail: empty components vec + errors for each
 #[test]
 fn test_parse_zip_with_recovery_all_fail() {
-    use std::io::Write;
-
     // Context with an unparseable axiom predicate
     let invalid_buc = r#"<?xml version="1.0" encoding="UTF-8" standalone="no"?>
 <org.eventb.core.contextFile org.eventb.core.configuration="org.eventb.core.fwd" version="3">
@@ -287,17 +275,10 @@ fn test_parse_zip_with_recovery_all_fail() {
     <org.eventb.core.invariant name="'" label="inv1" predicate="@@@ bad"/>
 </org.eventb.core.machineFile>"#;
 
-    let mut buf = Vec::new();
-    {
-        let mut writer = zip::ZipWriter::new(std::io::Cursor::new(&mut buf));
-        let options = zip::write::SimpleFileOptions::default()
-            .compression_method(zip::CompressionMethod::Stored);
-        writer.start_file("A.buc", options).unwrap();
-        writer.write_all(invalid_buc.as_bytes()).unwrap();
-        writer.start_file("B.bum", options).unwrap();
-        writer.write_all(invalid_bum.as_bytes()).unwrap();
-        writer.finish().unwrap();
-    }
+    let buf = common::zip_with_entries(&[
+        ("A.buc", invalid_buc.as_bytes()),
+        ("B.bum", invalid_bum.as_bytes()),
+    ]);
 
     let result = parse_zip_with_recovery(&buf);
 
@@ -328,8 +309,6 @@ fn test_parse_zip_with_recovery_invalid_archive() {
 /// Regression: strict parse_zip still fails on first bad file
 #[test]
 fn test_parse_zip_strict_still_fails() {
-    use std::io::Write;
-
     // Context with an unparseable axiom — triggers error in strict mode
     let invalid_buc = r#"<?xml version="1.0" encoding="UTF-8" standalone="no"?>
 <org.eventb.core.contextFile org.eventb.core.configuration="org.eventb.core.fwd" version="3">
@@ -340,17 +319,10 @@ fn test_parse_zip_strict_still_fails() {
 <org.eventb.core.machineFile org.eventb.core.configuration="org.eventb.core.fwd" version="3">
 </org.eventb.core.machineFile>"#;
 
-    let mut buf = Vec::new();
-    {
-        let mut writer = zip::ZipWriter::new(std::io::Cursor::new(&mut buf));
-        let options = zip::write::SimpleFileOptions::default()
-            .compression_method(zip::CompressionMethod::Stored);
-        writer.start_file("Bad.buc", options).unwrap();
-        writer.write_all(invalid_buc.as_bytes()).unwrap();
-        writer.start_file("Good.bum", options).unwrap();
-        writer.write_all(valid_bum.as_bytes()).unwrap();
-        writer.finish().unwrap();
-    }
+    let buf = common::zip_with_entries(&[
+        ("Bad.buc", invalid_buc.as_bytes()),
+        ("Good.bum", valid_bum.as_bytes()),
+    ]);
 
     let result = rossi::parse_zip(&buf);
     assert!(result.is_err(), "strict parse_zip should fail on bad file");

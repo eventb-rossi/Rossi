@@ -6,6 +6,22 @@ use rossi::{
     Component, Context, Expression, Machine, PredicateKind, parse, to_string, to_string_ascii,
 };
 
+/// Build an in-memory zip archive from `(entry name, content)` pairs.
+pub fn zip_with_entries(entries: &[(&str, &[u8])]) -> Vec<u8> {
+    let mut bytes = Vec::new();
+    {
+        let mut writer = zip::ZipWriter::new(std::io::Cursor::new(&mut bytes));
+        let options = zip::write::SimpleFileOptions::default()
+            .compression_method(zip::CompressionMethod::Stored);
+        for (name, content) in entries {
+            writer.start_file(*name, options).unwrap();
+            std::io::Write::write_all(&mut writer, content).unwrap();
+        }
+        writer.finish().unwrap();
+    }
+    bytes
+}
+
 /// Clear all spans from a Component for AST comparison (spans differ after roundtrip).
 pub fn clear_spans(component: &mut Component) {
     match component {
