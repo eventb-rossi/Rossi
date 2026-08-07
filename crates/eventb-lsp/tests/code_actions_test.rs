@@ -218,128 +218,57 @@ fn test_operator_detection_offers_conversion_actions() {
 }
 
 #[test]
-fn test_add_missing_clause_machine() {
+fn test_clause_and_sort_actions_offered() {
     let provider = CodeActionProvider::new();
-    let text = "MACHINE test\nVARIABLES x\nEND";
-    let params = create_test_params(
-        "file:///test.eventb",
-        Range {
-            start: Position::new(0, 0),
-            end: Position::new(0, 0),
-        },
-    );
+    // (case, text, title_groups): each group is a set of substrings that must
+    // all appear in the title of a SINGLE offered action; different groups may
+    // be satisfied by different actions.
+    let cases: [(&str, &str, &[&[&str]]); 4] = [
+        (
+            "machine missing INVARIANTS",
+            "MACHINE test\nVARIABLES x\nEND",
+            &[&["INVARIANTS"]],
+        ),
+        (
+            "context missing AXIOMS and CONSTANTS",
+            "CONTEXT test\nSETS S\nEND",
+            &[&["AXIOMS"], &["CONSTANTS"]],
+        ),
+        (
+            "unsorted variables",
+            "MACHINE test\nVARIABLES\n    z\n    a\n    m\nINVARIANTS\nEND",
+            &[&["Sort", "variables"]],
+        ),
+        (
+            "unsorted constants",
+            "CONTEXT test\nCONSTANTS\n    c_z\n    c_a\n    c_m\nAXIOMS\nEND",
+            &[&["Sort", "constants"]],
+        ),
+    ];
 
-    let actions = provider.provide_code_actions(&params, text);
+    for (case, text, title_groups) in cases {
+        let params = create_test_params(
+            "file:///test.eventb",
+            Range {
+                start: Position::new(0, 0),
+                end: Position::new(0, 0),
+            },
+        );
+        let actions = provider
+            .provide_code_actions(&params, text)
+            .unwrap_or_default();
 
-    assert!(actions.is_some());
-    let actions = actions.unwrap();
-
-    // Should have action to add INVARIANTS
-    let has_invariants = actions.iter().any(|action| {
-        if let CodeActionOrCommand::CodeAction(action) = action {
-            action.title.contains("INVARIANTS")
-        } else {
-            false
+        for group in title_groups {
+            assert!(
+                actions.iter().any(|action| matches!(
+                    action,
+                    CodeActionOrCommand::CodeAction(action)
+                        if group.iter().all(|fragment| action.title.contains(fragment))
+                )),
+                "{case}: expected one action whose title contains all of {group:?}"
+            );
         }
-    });
-
-    assert!(has_invariants, "Should suggest adding INVARIANTS clause");
-}
-
-#[test]
-fn test_add_missing_clause_context() {
-    let provider = CodeActionProvider::new();
-    let text = "CONTEXT test\nSETS S\nEND";
-    let params = create_test_params(
-        "file:///test.eventb",
-        Range {
-            start: Position::new(0, 0),
-            end: Position::new(0, 0),
-        },
-    );
-
-    let actions = provider.provide_code_actions(&params, text);
-
-    assert!(actions.is_some());
-    let actions = actions.unwrap();
-
-    // Should have actions to add AXIOMS and CONSTANTS
-    let has_axioms = actions.iter().any(|action| {
-        if let CodeActionOrCommand::CodeAction(action) = action {
-            action.title.contains("AXIOMS")
-        } else {
-            false
-        }
-    });
-
-    let has_constants = actions.iter().any(|action| {
-        if let CodeActionOrCommand::CodeAction(action) = action {
-            action.title.contains("CONSTANTS")
-        } else {
-            false
-        }
-    });
-
-    assert!(has_axioms, "Should suggest adding AXIOMS clause");
-    assert!(has_constants, "Should suggest adding CONSTANTS clause");
-}
-
-#[test]
-fn test_sort_variables() {
-    let provider = CodeActionProvider::new();
-    let text = "MACHINE test\nVARIABLES\n    z\n    a\n    m\nINVARIANTS\nEND";
-    let params = create_test_params(
-        "file:///test.eventb",
-        Range {
-            start: Position::new(0, 0),
-            end: Position::new(0, 0),
-        },
-    );
-
-    let actions = provider.provide_code_actions(&params, text);
-
-    assert!(actions.is_some());
-    let actions = actions.unwrap();
-
-    // Should have action to sort variables
-    let has_sort = actions.iter().any(|action| {
-        if let CodeActionOrCommand::CodeAction(action) = action {
-            action.title.contains("Sort") && action.title.contains("variables")
-        } else {
-            false
-        }
-    });
-
-    assert!(has_sort, "Should suggest sorting variables");
-}
-
-#[test]
-fn test_sort_constants() {
-    let provider = CodeActionProvider::new();
-    let text = "CONTEXT test\nCONSTANTS\n    c_z\n    c_a\n    c_m\nAXIOMS\nEND";
-    let params = create_test_params(
-        "file:///test.eventb",
-        Range {
-            start: Position::new(0, 0),
-            end: Position::new(0, 0),
-        },
-    );
-
-    let actions = provider.provide_code_actions(&params, text);
-
-    assert!(actions.is_some());
-    let actions = actions.unwrap();
-
-    // Should have action to sort constants
-    let has_sort = actions.iter().any(|action| {
-        if let CodeActionOrCommand::CodeAction(action) = action {
-            action.title.contains("Sort") && action.title.contains("constants")
-        } else {
-            false
-        }
-    });
-
-    assert!(has_sort, "Should suggest sorting constants");
+    }
 }
 
 #[test]
