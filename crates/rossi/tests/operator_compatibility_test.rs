@@ -167,16 +167,6 @@ fn connectives_below_implication_keep_their_precedence() {
 // ---------------------------------------------------------------------------
 
 #[test]
-fn bare_exists_as_conjunct_is_rejected() {
-    pred_incompatible("x > 0 ∧ ∃ w · w > 0", "∧", "∃");
-}
-
-#[test]
-fn bare_forall_as_disjunct_is_rejected() {
-    pred_incompatible("x > 0 ∨ ∀ w · w > 0", "∨", "∀");
-}
-
-#[test]
 fn parenthesised_quantifier_operand_parses() {
     pred_ok("x > 0 ∧ (∃ w · w > 0)");
     pred_ok("x > 0 ∨ (∀ w · w > 0)");
@@ -214,6 +204,7 @@ fn quantifier_conjunct_bounded_by_a_bracket_parses() {
 fn quantifier_conjunct_not_bounded_by_a_bracket_is_rejected() {
     // Top level, a ∀ body, and ∣-bounded such-that clauses are not bracketed.
     pred_incompatible("x > 0 ∧ ∃ w · w > 0", "∧", "∃");
+    pred_incompatible("x > 0 ∨ ∀ w · w > 0", "∨", "∀"); // disjunction, ∀ operand
     pred_incompatible("∀ x · x > 0 ∧ ∃ w · w > 0", "∧", "∃");
     expr_incompatible("{x · x > 0 ∧ ∃ w · w > 0 ∣ x}", "∧", "∃"); // explicit comprehension
     expr_incompatible("(λ x · x > 0 ∧ ∃ w · w > 0 ∣ x)", "∧", "∃"); // lambda such-that
