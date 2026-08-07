@@ -47,6 +47,8 @@ fn predicate_strategy() -> impl Strategy<Value = String> {
         Just("x ∈ S ∩ T".to_string()),
         Just("r ⊆ S × T".to_string()),
         Just("f ∈ S → T".to_string()),
+        Just("f ∈ (0 ‥ n − 1) → ℤ".to_string()),
+        Just("∀x, y · x ∈ dom(f) ∧ y ∈ dom(f) ∧ x ≤ y ⇒ f(x) ≤ f(y)".to_string()),
     ]
 }
 
