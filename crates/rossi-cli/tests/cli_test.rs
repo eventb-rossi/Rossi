@@ -428,10 +428,10 @@ fn lint_fixture_zip(prefix: &str) -> (PathBuf, PathBuf) {
 }
 
 #[test]
-fn validate_zip_lint_warning_exits_zero() {
+fn validate_lints_toggle_on_zip() {
     // The fixture machine leaves `dead` unreferenced, so EB011 fires.
     // Warnings must not flip the exit code.
-    let (tmp, zip_path) = lint_fixture_zip("rossi-cli-lint-warn-zip");
+    let (tmp, zip_path) = lint_fixture_zip("rossi-cli-lints-toggle");
     let output = rossi_command()
         .args(["validate", zip_path.to_str().unwrap()])
         .output()
@@ -444,14 +444,8 @@ fn validate_zip_lint_warning_exits_zero() {
         "expected EB011 in stdout: {stdout}"
     );
 
-    std::fs::remove_dir_all(&tmp).ok();
-}
-
-#[test]
-fn validate_no_lints_drops_lint_rows() {
     // Same model, but --no-lints disables the advisory passes. No EB011
     // rows should remain.
-    let (tmp, zip_path) = lint_fixture_zip("rossi-cli-no-lints");
     let output = rossi_command()
         .args(["validate", "--no-lints", zip_path.to_str().unwrap()])
         .output()
