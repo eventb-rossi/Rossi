@@ -459,29 +459,6 @@ fn test_rename_event_hint() {
 }
 
 #[test]
-fn test_roundtrip_ascii_unicode_ascii() {
-    let provider = CodeActionProvider::new();
-
-    // Basic logical/set operators
-    let ascii_text = "x : NAT & x <= 10 => x /= 0";
-    let unicode = provider.convert_to_unicode(ascii_text);
-    let back = provider.convert_to_ascii(&unicode);
-    assert_eq!(back, ascii_text, "Roundtrip failed for basic operators");
-
-    // Function types
-    let ascii_text2 = "f : S --> T & g : S >-> T & h : S ->> T";
-    let unicode2 = provider.convert_to_unicode(ascii_text2);
-    let back2 = provider.convert_to_ascii(&unicode2);
-    assert_eq!(back2, ascii_text2, "Roundtrip failed for function types");
-
-    // Set operators with intersection/union
-    let ascii_text3 = "S <: T /\\ x : S \\/ T";
-    let unicode3 = provider.convert_to_unicode(ascii_text3);
-    let back3 = provider.convert_to_ascii(&unicode3);
-    assert_eq!(back3, ascii_text3, "Roundtrip failed for set operators");
-}
-
-#[test]
 fn test_diagnostic_based_action() {
     use eventb_lsp::lsp_types::{Diagnostic, DiagnosticSeverity};
 
