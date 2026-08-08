@@ -85,6 +85,10 @@ impl FormulaFactory {
         span: Option<Span>,
         caches: CacheBuilder,
     ) -> Expression {
+        // A node built from type-checked parts is type-checked by
+        // construction: synthesize the type unless the caller provided
+        // one (leaves and ascribed generic operators).
+        let ty = ty.or_else(|| expression::synthesize_type(&kind));
         let (free_idents, dangling) = caches.finish();
         Expression(Arc::new(ExprData {
             hash: expression::kind_hash(&kind),
@@ -211,12 +215,23 @@ impl FormulaFactory {
     }
 
     /// A nullary operator, e.g. `ℤ`, `∅`, `TRUE`, `succ`.
+    ///
+    /// Closed operators are typed by construction; the generic ones
+    /// (`∅`, `id`, `prj1`, `prj2`) stay untyped unless a type is given.
+    /// An explicit type must fit the operator.
+    #[track_caller]
     pub fn atomic_expression(
         &self,
         op: AtomicOp,
         span: Option<Span>,
         ty: Option<Type>,
     ) -> Expression {
+        if let Some(ty) = &ty {
+            assert!(
+                expression::verify_atomic_type(op, ty),
+                "explicit type does not fit the operator"
+            );
+        }
         self.make_expr(ExpressionKind::Atomic(op), ty, span, CacheBuilder::new())
     }
 

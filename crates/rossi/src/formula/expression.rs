@@ -417,3 +417,214 @@ fn verify_implicit(n_decls: usize, expr: &Expression) -> bool {
             .last()
             .is_some_and(|last| *last as usize == n_decls - 1)
 }
+
+/// The fixed type of a nullary operator, if it has one. The generic
+/// operators (`∅`, `id`, `prj1`, `prj2`) have no fixed type: they are
+/// typed by ascription or by the type-checker.
+pub(super) fn atomic_fixed_type(op: AtomicOp) -> Option<Type> {
+    match op {
+        AtomicOp::Integer | AtomicOp::Natural | AtomicOp::Natural1 => Some(Type::pow(Type::Int)),
+        AtomicOp::Bool => Some(Type::pow(Type::Bool)),
+        AtomicOp::True | AtomicOp::False => Some(Type::Bool),
+        AtomicOp::KPred | AtomicOp::KSucc => Some(Type::relation(Type::Int, Type::Int)),
+        AtomicOp::EmptySet | AtomicOp::KPrj1Gen | AtomicOp::KPrj2Gen | AtomicOp::KIdGen => None,
+    }
+}
+
+/// Whether `ty` is a legal type for the nullary operator `op`: the
+/// fixed type for closed operators, or the operator's shape for the
+/// generic ones.
+pub(super) fn verify_atomic_type(op: AtomicOp, ty: &Type) -> bool {
+    if let Some(fixed) = atomic_fixed_type(op) {
+        return *ty == fixed;
+    }
+    match op {
+        // ∅ ⦂ ℙ(α)
+        AtomicOp::EmptySet => matches!(ty, Type::Pow(_)),
+        // id ⦂ ℙ(α × α)
+        AtomicOp::KIdGen => match (ty.source(), ty.target()) {
+            (Some(source), Some(target)) => source == target,
+            _ => false,
+        },
+        // prj1 ⦂ ℙ((α × β) × α),  prj2 ⦂ ℙ((α × β) × β)
+        AtomicOp::KPrj1Gen | AtomicOp::KPrj2Gen => {
+            let (Some(Type::Prod(alpha, beta)), Some(target)) = (ty.source(), ty.target()) else {
+                return false;
+            };
+            if op == AtomicOp::KPrj1Gen {
+                target == alpha.as_ref()
+            } else {
+                target == beta.as_ref()
+            }
+        }
+        _ => unreachable!("closed operators are handled by their fixed type"),
+    }
+}
+
+/// Bottom-up type synthesis: the type of a node whose children are all
+/// type-checked and shape-compatible, `None` otherwise. Never fails
+/// loudly — an untypeable construction is simply left unchecked, and
+/// the type-checker reports the problem with a location.
+pub(super) fn synthesize_type(kind: &ExpressionKind) -> Option<Type> {
+    match kind {
+        // Leaves are typed by the caller (or have a fixed type).
+        ExpressionKind::FreeIdentifier(_) | ExpressionKind::BoundIdentifier(_) => None,
+        ExpressionKind::IntegerLiteral(_) => Some(Type::Int),
+        ExpressionKind::Atomic(op) => atomic_fixed_type(*op),
+        ExpressionKind::SetExtension(members) => {
+            let first = members.first()?.ty()?;
+            members
+                .iter()
+                .skip(1)
+                .all(|m| m.ty() == Some(first))
+                .then(|| Type::pow(first.clone()))
+        }
+        ExpressionKind::Bool(pred) => pred.is_type_checked().then_some(Type::Bool),
+        ExpressionKind::Binary { op, left, right } => {
+            synthesize_binary(*op, left.ty()?, right.ty()?)
+        }
+        ExpressionKind::Associative { op, children } => synthesize_associative(*op, children),
+        ExpressionKind::Unary { op, child } => synthesize_unary(*op, child.ty()?),
+        ExpressionKind::Quantified { op, expr, .. } => {
+            let expr_ty = expr.ty()?;
+            match op {
+                QuantExprOp::QUnion | QuantExprOp::QInter => {
+                    expr_ty.base_type().is_some().then(|| expr_ty.clone())
+                }
+                QuantExprOp::CSet => Some(Type::pow(expr_ty.clone())),
+            }
+        }
+        // The ascription is a constraint on its expression; once the
+        // expression is typed, the node shares its type. Whether the
+        // spelled type agrees is the type-checker's question.
+        ExpressionKind::Ascription { expr, .. } => expr.ty().cloned(),
+        // Extended expressions are typed by their extension's rules,
+        // once the extension mechanism lands.
+        ExpressionKind::Extended { .. } => None,
+    }
+}
+
+fn synthesize_binary(op: BinaryExprOp, left: &Type, right: &Type) -> Option<Type> {
+    use BinaryExprOp as Op;
+    match op {
+        Op::Mapsto => Some(Type::prod(left.clone(), right.clone())),
+        // A ↔ B and the function/relation arrows: ℙ(α), ℙ(β) → ℙ(ℙ(α×β))
+        Op::Rel
+        | Op::TRel
+        | Op::SRel
+        | Op::STRel
+        | Op::PFun
+        | Op::TFun
+        | Op::PInj
+        | Op::TInj
+        | Op::PSur
+        | Op::TSur
+        | Op::TBij => {
+            let alpha = left.base_type()?;
+            let beta = right.base_type()?;
+            Some(Type::pow(Type::relation(alpha.clone(), beta.clone())))
+        }
+        Op::SetMinus => (left.base_type().is_some() && left == right).then(|| left.clone()),
+        Op::CProd => {
+            let alpha = left.base_type()?;
+            let beta = right.base_type()?;
+            Some(Type::relation(alpha.clone(), beta.clone()))
+        }
+        // ℙ(α×β) ⊗ ℙ(α×γ) → ℙ(α×(β×γ))
+        Op::DProd => {
+            let (a1, beta) = (left.source()?, left.target()?);
+            let (a2, gamma) = (right.source()?, right.target()?);
+            (a1 == a2).then(|| Type::relation(a1.clone(), Type::prod(beta.clone(), gamma.clone())))
+        }
+        // ℙ(α×β) ∥ ℙ(γ×δ) → ℙ((α×γ)×(β×δ))
+        Op::PProd => {
+            let (alpha, beta) = (left.source()?, left.target()?);
+            let (gamma, delta) = (right.source()?, right.target()?);
+            Some(Type::relation(
+                Type::prod(alpha.clone(), gamma.clone()),
+                Type::prod(beta.clone(), delta.clone()),
+            ))
+        }
+        Op::DomRes | Op::DomSub => {
+            let alpha = left.base_type()?;
+            (right.source()? == alpha).then(|| right.clone())
+        }
+        Op::RanRes | Op::RanSub => {
+            let beta = right.base_type()?;
+            (left.target()? == beta).then(|| left.clone())
+        }
+        Op::UpTo => (*left == Type::Int && *right == Type::Int).then(|| Type::pow(Type::Int)),
+        Op::Minus | Op::Div | Op::Mod | Op::Expn => {
+            (*left == Type::Int && *right == Type::Int).then_some(Type::Int)
+        }
+        Op::FunImage => {
+            let beta = left.target()?;
+            (left.source()? == right).then(|| beta.clone())
+        }
+        Op::RelImage => {
+            let alpha = right.base_type()?;
+            let beta = left.target()?;
+            (left.source()? == alpha).then(|| Type::pow(beta.clone()))
+        }
+    }
+}
+
+fn synthesize_associative(op: AssocExprOp, children: &[Expression]) -> Option<Type> {
+    use AssocExprOp as Op;
+    let first = children.first()?.ty()?;
+    let all_same = || children.iter().skip(1).all(|c| c.ty() == Some(first));
+    match op {
+        Op::BUnion | Op::BInter => {
+            (first.base_type().is_some() && all_same()).then(|| first.clone())
+        }
+        Op::Ovr => (first.source().is_some() && all_same()).then(|| first.clone()),
+        // p ; q ; r — targets chain into sources left to right.
+        Op::FComp => {
+            for pair in children.windows(2) {
+                if pair[0].ty()?.target()? != pair[1].ty()?.source()? {
+                    return None;
+                }
+            }
+            Some(Type::relation(
+                first.source()?.clone(),
+                children.last()?.ty()?.target()?.clone(),
+            ))
+        }
+        // p ∘ q ∘ r — the rightmost applies first.
+        Op::BComp => {
+            for pair in children.windows(2) {
+                if pair[1].ty()?.target()? != pair[0].ty()?.source()? {
+                    return None;
+                }
+            }
+            Some(Type::relation(
+                children.last()?.ty()?.source()?.clone(),
+                first.target()?.clone(),
+            ))
+        }
+        Op::Plus | Op::Mul => (*first == Type::Int && all_same()).then_some(Type::Int),
+    }
+}
+
+fn synthesize_unary(op: UnaryExprOp, child: &Type) -> Option<Type> {
+    use UnaryExprOp as Op;
+    match op {
+        Op::KCard => child.base_type().is_some().then_some(Type::Int),
+        Op::Pow | Op::Pow1 => child
+            .base_type()
+            .is_some()
+            .then(|| Type::pow(child.clone())),
+        Op::KUnion | Op::KInter => {
+            let inner = child.base_type()?;
+            inner.base_type().is_some().then(|| inner.clone())
+        }
+        Op::KDom => Some(Type::pow(child.source()?.clone())),
+        Op::KRan => Some(Type::pow(child.target()?.clone())),
+        Op::KMin | Op::KMax => (*child == Type::pow(Type::Int)).then_some(Type::Int),
+        Op::Converse => Some(Type::relation(
+            child.target()?.clone(),
+            child.source()?.clone(),
+        )),
+        Op::UnMinus => (*child == Type::Int).then_some(Type::Int),
+    }
+}
