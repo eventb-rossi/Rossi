@@ -76,6 +76,7 @@ fn run_inner(cli: &ImportArgs) -> CmdResult<()> {
         // Emitted text stays portable: never the private-use glyphs.
         private_use_glyphs: false,
         formula_spacing: FormulaSpacing::Readable,
+        typed_decls: false,
     };
 
     // Multiple projects (a multi-project archive, or several inputs) are kept

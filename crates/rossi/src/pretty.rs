@@ -43,7 +43,7 @@
 
 use crate::ast::context::SetDeclaration;
 use crate::ast::expression::{BinaryOp, IdentPattern, UnaryOp};
-use crate::ast::predicate::{ComparisonOp, LogicalOp};
+use crate::ast::predicate::{ComparisonOp, LogicalOp, Quantifier};
 use crate::ast::*;
 use crate::comments;
 use crate::op_info;
@@ -106,6 +106,10 @@ pub struct PrettyPrinter {
     pub private_use_glyphs: bool,
     /// Whitespace convention for formulas.
     pub formula_spacing: FormulaSpacing,
+    /// When printing formula-model declarations, spell their solved
+    /// types (`x⦂ℤ`) instead of only their source annotations — what
+    /// canonical static-checker text uses.
+    pub typed_decls: bool,
 }
 
 impl Default for PrettyPrinter {
@@ -115,6 +119,7 @@ impl Default for PrettyPrinter {
             indent: "    ".to_string(),
             private_use_glyphs: false,
             formula_spacing: FormulaSpacing::Readable,
+            typed_decls: false,
         }
     }
 }
@@ -129,10 +134,15 @@ impl PrettyPrinter {
     pub fn ascii() -> Self {
         Self {
             use_unicode: false,
-            private_use_glyphs: false,
-            indent: "    ".to_string(),
-            formula_spacing: FormulaSpacing::Readable,
+            ..Self::default()
         }
+    }
+
+    /// Spell solved declaration types when printing formula-model
+    /// declarations.
+    pub fn with_typed_decls(mut self, typed_decls: bool) -> Self {
+        self.typed_decls = typed_decls;
+        self
     }
 
     /// Create a printer for Rodin's compact static-checker formula form.
@@ -1154,6 +1164,787 @@ impl PrettyPrinter {
                     vars,
                     op,
                     Self::guard_action_part(self.print_predicate_with_context(predicate, context))
+                )
+            }
+        }
+    }
+}
+
+// ===== formula-model printing =====
+//
+// Formulas print through the shared operator tables (spelling,
+// precedence, spacing), so text and structural printing stay in one
+// configuration. Bound identifiers are
+// resolved to names through a stack of enclosing declaration names;
+// a declaration keeps its hint unless a name visible in its body would
+// be captured, in which case it is freshened.
+
+use crate::formula::fresh::{FreshNameSolver, resolve_idents};
+use crate::formula::tag::{
+    AssocExprOp, AssocPredOp, AtomicOp, BinaryExprOp, BinaryPredOp, LiteralPredOp, QuantExprOp,
+    QuantPredOp, RelationalOp, UnaryExprOp,
+};
+use crate::formula::{self, ExpressionKind as FExprKind, Form, PredicateKind as FPredKind};
+
+/// The legacy operator equivalent of a binary formula operator, for the
+/// shared precedence/spacing tables. Function application and
+/// relational image print structurally and never go through this.
+fn legacy_binary(op: BinaryExprOp) -> BinaryOp {
+    match op {
+        BinaryExprOp::Mapsto => BinaryOp::Maplet,
+        BinaryExprOp::Rel => BinaryOp::Relation,
+        BinaryExprOp::TRel => BinaryOp::TotalRelation,
+        BinaryExprOp::SRel => BinaryOp::SurjectiveRelation,
+        BinaryExprOp::STRel => BinaryOp::TotalSurjectiveRelation,
+        BinaryExprOp::PFun => BinaryOp::PartialFunction,
+        BinaryExprOp::TFun => BinaryOp::TotalFunction,
+        BinaryExprOp::PInj => BinaryOp::PartialInjection,
+        BinaryExprOp::TInj => BinaryOp::TotalInjection,
+        BinaryExprOp::PSur => BinaryOp::PartialSurjection,
+        BinaryExprOp::TSur => BinaryOp::TotalSurjection,
+        BinaryExprOp::TBij => BinaryOp::Bijection,
+        BinaryExprOp::SetMinus => BinaryOp::Difference,
+        BinaryExprOp::CProd => BinaryOp::CartesianProduct,
+        BinaryExprOp::DProd => BinaryOp::DirectProduct,
+        BinaryExprOp::PProd => BinaryOp::ParallelProduct,
+        BinaryExprOp::DomRes => BinaryOp::DomainRestriction,
+        BinaryExprOp::DomSub => BinaryOp::DomainSubtraction,
+        BinaryExprOp::RanRes => BinaryOp::RangeRestriction,
+        BinaryExprOp::RanSub => BinaryOp::RangeSubtraction,
+        BinaryExprOp::UpTo => BinaryOp::Range,
+        BinaryExprOp::Minus => BinaryOp::Subtract,
+        BinaryExprOp::Div => BinaryOp::Divide,
+        BinaryExprOp::Mod => BinaryOp::Modulo,
+        BinaryExprOp::Expn => BinaryOp::Exponent,
+        BinaryExprOp::FunImage | BinaryExprOp::RelImage => {
+            unreachable!("applications and images print structurally")
+        }
+    }
+}
+
+fn legacy_assoc(op: AssocExprOp) -> BinaryOp {
+    match op {
+        AssocExprOp::BUnion => BinaryOp::Union,
+        AssocExprOp::BInter => BinaryOp::Intersection,
+        AssocExprOp::BComp => BinaryOp::Composition,
+        AssocExprOp::FComp => BinaryOp::Semicolon,
+        AssocExprOp::Ovr => BinaryOp::Overwrite,
+        AssocExprOp::Plus => BinaryOp::Add,
+        AssocExprOp::Mul => BinaryOp::Multiply,
+    }
+}
+
+fn legacy_comparison(op: RelationalOp) -> ComparisonOp {
+    match op {
+        RelationalOp::Equal => ComparisonOp::Equal,
+        RelationalOp::NotEqual => ComparisonOp::NotEqual,
+        RelationalOp::Lt => ComparisonOp::LessThan,
+        RelationalOp::Le => ComparisonOp::LessEqual,
+        RelationalOp::Gt => ComparisonOp::GreaterThan,
+        RelationalOp::Ge => ComparisonOp::GreaterEqual,
+        RelationalOp::In => ComparisonOp::In,
+        RelationalOp::NotIn => ComparisonOp::NotIn,
+        // The model names the strict operator `Subset` (⊂); the legacy
+        // enum uses `Subset` for ⊆.
+        RelationalOp::Subset => ComparisonOp::SubsetStrict,
+        RelationalOp::NotSubset => ComparisonOp::NotSubsetStrict,
+        RelationalOp::SubsetEq => ComparisonOp::Subset,
+        RelationalOp::NotSubsetEq => ComparisonOp::NotSubset,
+    }
+}
+
+fn legacy_logical(op: AssocPredOp) -> LogicalOp {
+    match op {
+        AssocPredOp::LAnd => LogicalOp::And,
+        AssocPredOp::LOr => LogicalOp::Or,
+    }
+}
+
+fn legacy_binary_pred(op: BinaryPredOp) -> LogicalOp {
+    match op {
+        BinaryPredOp::LImp => LogicalOp::Implies,
+        BinaryPredOp::LEqv => LogicalOp::Equivalent,
+    }
+}
+
+/// The legacy binary operator a node behaves as in precedence and
+/// parenthesization decisions, if any.
+fn effective_binary(kind: &FExprKind) -> Option<BinaryOp> {
+    match kind {
+        FExprKind::Binary {
+            op: BinaryExprOp::FunImage | BinaryExprOp::RelImage,
+            ..
+        } => None,
+        FExprKind::Binary { op, .. } => Some(legacy_binary(*op)),
+        FExprKind::Associative { op, .. } => Some(legacy_assoc(*op)),
+        FExprKind::Ascription { .. } => Some(BinaryOp::OfType),
+        _ => None,
+    }
+}
+
+/// Whether a formula-model expression must be parenthesized where only
+/// a pair-expression (or lower) is grammatical: lambda and the
+/// quantified unions/intersections sit above that level.
+fn fm_above_pair(kind: &FExprKind) -> bool {
+    match kind {
+        FExprKind::Quantified { op, form, .. } => match op {
+            QuantExprOp::QUnion | QuantExprOp::QInter => true,
+            QuantExprOp::CSet => *form == Form::Lambda,
+        },
+        _ => false,
+    }
+}
+
+impl PrettyPrinter {
+    /// Convert a formula-model expression to text.
+    pub fn print_formula_expression(&self, expr: &formula::Expression) -> String {
+        let mut names = Vec::new();
+        self.fm_expr(expr, FormulaContext::Expression, &mut names)
+    }
+
+    /// Convert a formula-model predicate to text.
+    pub fn print_formula_predicate(&self, pred: &formula::Predicate) -> String {
+        let mut names = Vec::new();
+        self.fm_pred(pred, FormulaContext::Predicate, &mut names)
+    }
+
+    /// The display name of a bound occurrence; an index without an
+    /// enclosing declaration renders as a visible placeholder.
+    fn fm_bound_name(names: &[String], index: u32) -> String {
+        match names.len().checked_sub(1 + index as usize) {
+            Some(i) => names[i].clone(),
+            None => format!("[[{index}]]"),
+        }
+    }
+
+    /// Resolves the printing names of a binding construct's
+    /// declarations: the names visible in its subtree (its free
+    /// identifiers plus the enclosing declarations it references) must
+    /// not be captured.
+    fn fm_resolve_decls(
+        &self,
+        decls: &[formula::BoundIdentDecl],
+        free: &[String],
+        dangling: &[u32],
+        names: &[String],
+    ) -> Vec<String> {
+        let mut solver = FreshNameSolver::new(free.iter().cloned());
+        for index in dangling {
+            if let Some(i) = names.len().checked_sub(1 + *index as usize) {
+                solver.add(names[i].clone());
+            }
+        }
+        resolve_idents(decls, &mut solver)
+    }
+
+    /// Prints a declaration list under its resolved names, with `⦂`
+    /// annotations from the solved types (in typed mode) or the source
+    /// spelling. Annotations are scoped to the enclosing context.
+    fn fm_decls(
+        &self,
+        decls: &[formula::BoundIdentDecl],
+        resolved: &[String],
+        context: FormulaContext,
+        names: &mut Vec<String>,
+    ) -> String {
+        decls
+            .iter()
+            .zip(resolved)
+            .map(|(decl, name)| self.fm_decl(decl, name, context, names))
+            .collect::<Vec<_>>()
+            .join(self.comma_separator())
+    }
+
+    /// Renders one declaration as `name` or `name ⦂ annotation` — the
+    /// one home of the annotated-declaration spelling (declaration
+    /// lists and lambda pattern leaves).
+    fn fm_decl(
+        &self,
+        decl: &formula::BoundIdentDecl,
+        name: &str,
+        context: FormulaContext,
+        names: &mut Vec<String>,
+    ) -> String {
+        match self.fm_decl_annotation(decl, context, names) {
+            Some(annotation) => format!("{}{}{}", name, self.oftype_annotation(), annotation),
+            None => name.to_string(),
+        }
+    }
+
+    fn fm_decl_annotation(
+        &self,
+        decl: &formula::BoundIdentDecl,
+        context: FormulaContext,
+        names: &mut Vec<String>,
+    ) -> Option<String> {
+        if self.typed_decls {
+            if let Some(ty) = decl.ty() {
+                let spelled = ty.to_expression(decl.factory());
+                return Some(self.fm_expr(&spelled, context, &mut Vec::new()));
+            }
+        }
+        decl.annotation()
+            .map(|annotation| self.fm_expr(annotation, context, names))
+    }
+
+    fn fm_expr(
+        &self,
+        expr: &formula::Expression,
+        context: FormulaContext,
+        names: &mut Vec<String>,
+    ) -> String {
+        match expr.kind() {
+            FExprKind::FreeIdentifier(name) => name.clone(),
+            FExprKind::BoundIdentifier(index) => Self::fm_bound_name(names, *index),
+            FExprKind::IntegerLiteral(value) => value.to_string(),
+            FExprKind::Atomic(op) => match op {
+                AtomicOp::Integer => self.op(OperatorId::Integers).to_string(),
+                AtomicOp::Natural => self.op(OperatorId::Naturals).to_string(),
+                AtomicOp::Natural1 => self.op(OperatorId::Naturals1).to_string(),
+                AtomicOp::Bool => "BOOL".to_string(),
+                AtomicOp::True => "TRUE".to_string(),
+                AtomicOp::False => "FALSE".to_string(),
+                AtomicOp::EmptySet => self.op(OperatorId::EmptySet).to_string(),
+                AtomicOp::KPred => "pred".to_string(),
+                AtomicOp::KSucc => "succ".to_string(),
+                AtomicOp::KPrj1Gen => "prj1".to_string(),
+                AtomicOp::KPrj2Gen => "prj2".to_string(),
+                AtomicOp::KIdGen => "id".to_string(),
+            },
+            FExprKind::SetExtension(members) => {
+                let elems: Vec<String> = members
+                    .iter()
+                    .map(|m| self.fm_expr(m, context, names))
+                    .collect();
+                format!("{{{}}}", elems.join(self.comma_separator()))
+            }
+            FExprKind::Bool(pred) => {
+                format!("bool({})", self.fm_pred(pred, context, names))
+            }
+            FExprKind::Binary {
+                op: op @ (BinaryExprOp::FunImage | BinaryExprOp::RelImage),
+                left,
+                right,
+            } => {
+                let mut applied = self.fm_expr(left, context, names);
+                if Self::fm_parens_for_image(left.kind()) {
+                    applied = format!("({applied})");
+                }
+                let argument = self.fm_expr(right, context, names);
+                if *op == BinaryExprOp::FunImage {
+                    format!("{applied}({argument})")
+                } else {
+                    format!("{applied}[{argument}]")
+                }
+            }
+            FExprKind::Binary { op, left, right } => {
+                let old = legacy_binary(*op);
+                self.fm_binary(old, left, right, context, names)
+            }
+            FExprKind::Ascription { expr, type_expr } => {
+                self.fm_binary(BinaryOp::OfType, expr, type_expr, context, names)
+            }
+            FExprKind::Associative { op, children } => {
+                let old = legacy_assoc(*op);
+                let op_str = self.op(operators::binary_op_id(old));
+                let separator = self.binary_separator(old, context);
+                let joint = format!("{separator}{op_str}{separator}");
+                children
+                    .iter()
+                    .enumerate()
+                    .map(|(i, child)| self.fm_child_expr(child, old, i > 0, context, names))
+                    .collect::<Vec<_>>()
+                    .join(&joint)
+            }
+            FExprKind::Unary { op, child } => match op {
+                UnaryExprOp::KCard => self.fm_builtin("card", child, context, names),
+                UnaryExprOp::KMin => self.fm_builtin("min", child, context, names),
+                UnaryExprOp::KMax => self.fm_builtin("max", child, context, names),
+                UnaryExprOp::KUnion => self.fm_builtin("union", child, context, names),
+                UnaryExprOp::KInter => self.fm_builtin("inter", child, context, names),
+                UnaryExprOp::Converse => {
+                    let needs_parens = !matches!(
+                        child.kind(),
+                        FExprKind::FreeIdentifier(_)
+                            | FExprKind::BoundIdentifier(_)
+                            | FExprKind::Atomic(_)
+                            | FExprKind::IntegerLiteral(_)
+                            | FExprKind::Binary {
+                                op: BinaryExprOp::FunImage | BinaryExprOp::RelImage,
+                                ..
+                            }
+                            | FExprKind::Unary {
+                                op: UnaryExprOp::KCard
+                                    | UnaryExprOp::KMin
+                                    | UnaryExprOp::KMax
+                                    | UnaryExprOp::KUnion
+                                    | UnaryExprOp::KInter
+                                    | UnaryExprOp::Converse,
+                                ..
+                            }
+                    );
+                    let operand = self.fm_expr(child, context, names);
+                    let op_str = self.op(operators::unary_op_id(UnaryOp::Inverse));
+                    if needs_parens {
+                        format!("({operand}){op_str}")
+                    } else {
+                        format!("{operand}{op_str}")
+                    }
+                }
+                UnaryExprOp::Pow => self.fm_prefix_unary(UnaryOp::PowerSet, child, context, names),
+                UnaryExprOp::Pow1 => {
+                    self.fm_prefix_unary(UnaryOp::PowerSet1, child, context, names)
+                }
+                UnaryExprOp::KDom => self.fm_prefix_unary(UnaryOp::Domain, child, context, names),
+                UnaryExprOp::KRan => self.fm_prefix_unary(UnaryOp::Range, child, context, names),
+                UnaryExprOp::UnMinus => self.fm_prefix_unary(UnaryOp::Minus, child, context, names),
+            },
+            FExprKind::Quantified {
+                op,
+                decls,
+                pred,
+                expr: value,
+                form,
+            } => {
+                let resolved = self.fm_resolve_decls(
+                    decls,
+                    expr.free_identifiers(),
+                    expr.dangling_bound_indices(),
+                    names,
+                );
+                let mid = self.op(OperatorId::Dot);
+                let bar = self.op(OperatorId::Bar);
+                match op {
+                    QuantExprOp::CSet => match form {
+                        Form::Lambda => {
+                            let FExprKind::Binary {
+                                op: BinaryExprOp::Mapsto,
+                                left: pattern,
+                                right: body,
+                            } = value.kind()
+                            else {
+                                unreachable!("lambda form implies a maplet expression")
+                            };
+                            let lambda = self.op(OperatorId::Lambda);
+                            let pattern_str =
+                                self.fm_lambda_pattern(pattern, decls, &resolved, context, names);
+                            names.extend(resolved.iter().cloned());
+                            let pred_str = self.fm_pred(pred, context, names);
+                            let body_str = self.fm_expr(body, context, names);
+                            names.truncate(names.len() - decls.len());
+                            format!("{lambda} {pattern_str}{mid}{pred_str}{bar}{body_str}")
+                        }
+                        Form::Implicit => {
+                            names.extend(resolved.iter().cloned());
+                            let value_str = self.fm_expr(value, context, names);
+                            let pred_str = self.fm_pred(pred, context, names);
+                            names.truncate(names.len() - decls.len());
+                            format!("{{{value_str}{bar}{pred_str}}}")
+                        }
+                        Form::IdentList => {
+                            let ids = self.fm_decls(decls, &resolved, context, names);
+                            names.extend(resolved.iter().cloned());
+                            let pred_str = self.fm_pred(pred, context, names);
+                            names.truncate(names.len() - decls.len());
+                            format!("{{{ids}{bar}{pred_str}}}")
+                        }
+                        Form::Explicit => {
+                            let ids = self.fm_decls(decls, &resolved, context, names);
+                            names.extend(resolved.iter().cloned());
+                            let pred_str = self.fm_pred(pred, context, names);
+                            let value_str = self.fm_expr(value, context, names);
+                            names.truncate(names.len() - decls.len());
+                            format!("{{{ids}{mid}{pred_str}{bar}{value_str}}}")
+                        }
+                    },
+                    QuantExprOp::QUnion | QuantExprOp::QInter => {
+                        // Only the explicit spelling exists in the
+                        // grammar for these.
+                        let keyword = self.op(match op {
+                            QuantExprOp::QUnion => OperatorId::QuantifiedUnion,
+                            QuantExprOp::QInter => OperatorId::QuantifiedIntersection,
+                            QuantExprOp::CSet => unreachable!(),
+                        });
+                        let ids = self.fm_decls(decls, &resolved, context, names);
+                        names.extend(resolved.iter().cloned());
+                        let pred_str = self.fm_pred(pred, context, names);
+                        let value_str = self.fm_expr(value, context, names);
+                        names.truncate(names.len() - decls.len());
+                        format!("{keyword} {ids}{mid}{pred_str}{bar}{value_str}")
+                    }
+                }
+            }
+            FExprKind::Extended { tag, exprs, preds } => {
+                self.fm_extended(expr.factory(), *tag, exprs, preds, context, names)
+            }
+        }
+    }
+
+    fn fm_builtin(
+        &self,
+        name: &str,
+        child: &formula::Expression,
+        context: FormulaContext,
+        names: &mut Vec<String>,
+    ) -> String {
+        format!("{}({})", name, self.fm_expr(child, context, names))
+    }
+
+    fn fm_prefix_unary(
+        &self,
+        op: UnaryOp,
+        child: &formula::Expression,
+        context: FormulaContext,
+        names: &mut Vec<String>,
+    ) -> String {
+        format!(
+            "{}({})",
+            self.op(operators::unary_op_id(op)),
+            self.fm_expr(child, context, names)
+        )
+    }
+
+    fn fm_binary(
+        &self,
+        old: BinaryOp,
+        left: &formula::Expression,
+        right: &formula::Expression,
+        context: FormulaContext,
+        names: &mut Vec<String>,
+    ) -> String {
+        let op_str = self.op(operators::binary_op_id(old));
+        let separator = self.binary_separator(old, context);
+        let left_str = self.fm_child_expr(left, old, false, context, names);
+        let right_str = self.fm_child_expr(right, old, true, context, names);
+        format!("{left_str}{separator}{op_str}{separator}{right_str}")
+    }
+
+    /// Mirror of the legacy child-parenthesization rules.
+    fn fm_child_expr(
+        &self,
+        child: &formula::Expression,
+        parent_op: BinaryOp,
+        is_right: bool,
+        context: FormulaContext,
+        names: &mut Vec<String>,
+    ) -> String {
+        if fm_above_pair(child.kind()) {
+            return format!("({})", self.fm_expr(child, context, names));
+        }
+        if let Some(child_op) = effective_binary(child.kind()) {
+            let child_prec = op_info::binary_precedence(child_op);
+            let parent_prec = op_info::binary_precedence(parent_op);
+            let needs_parens = if child_prec < parent_prec {
+                true
+            } else if child_prec > parent_prec {
+                false
+            } else {
+                !op_info::binary_ops_compatible(child_op, parent_op)
+                    || op_info::is_non_associative(parent_op)
+                    || is_right
+            };
+            if needs_parens {
+                return format!("({})", self.fm_expr(child, context, names));
+            }
+        }
+        self.fm_expr(child, context, names)
+    }
+
+    /// Mirror of the relational-image / application head rule: binary
+    /// and prefix-unary operands bind looser than `f(x)` / `r[S]`.
+    fn fm_parens_for_image(kind: &FExprKind) -> bool {
+        match kind {
+            FExprKind::Unary {
+                op: UnaryExprOp::Converse,
+                ..
+            } => false,
+            FExprKind::Unary {
+                op:
+                    UnaryExprOp::KCard
+                    | UnaryExprOp::KMin
+                    | UnaryExprOp::KMax
+                    | UnaryExprOp::KUnion
+                    | UnaryExprOp::KInter,
+                ..
+            } => false,
+            FExprKind::Binary {
+                op: BinaryExprOp::FunImage | BinaryExprOp::RelImage,
+                ..
+            } => false,
+            FExprKind::Binary { .. }
+            | FExprKind::Associative { .. }
+            | FExprKind::Ascription { .. }
+            | FExprKind::Unary { .. } => true,
+            // The binder forms follow the pair-level rule.
+            kind @ FExprKind::Quantified { .. } => fm_above_pair(kind),
+            _ => false,
+        }
+    }
+
+    /// Print an expression where only a pair-expression is grammatical.
+    fn fm_pair(
+        &self,
+        expr: &formula::Expression,
+        context: FormulaContext,
+        names: &mut Vec<String>,
+    ) -> String {
+        if fm_above_pair(expr.kind()) {
+            format!("({})", self.fm_expr(expr, context, names))
+        } else {
+            self.fm_expr(expr, context, names)
+        }
+    }
+
+    /// Renders a lambda pattern from its maplet tree: leaves are the
+    /// construct's own declarations.
+    fn fm_lambda_pattern(
+        &self,
+        pattern: &formula::Expression,
+        decls: &[formula::BoundIdentDecl],
+        resolved: &[String],
+        context: FormulaContext,
+        names: &mut Vec<String>,
+    ) -> String {
+        match pattern.kind() {
+            FExprKind::BoundIdentifier(index) => {
+                let position = decls.len() - 1 - *index as usize;
+                self.fm_decl(&decls[position], &resolved[position], context, names)
+            }
+            FExprKind::Binary {
+                op: BinaryExprOp::Mapsto,
+                left,
+                right,
+            } => {
+                let maplet = self.op(OperatorId::Maplet);
+                let left_str = self.fm_lambda_pattern(left, decls, resolved, context, names);
+                let right_str = match right.kind() {
+                    FExprKind::Binary {
+                        op: BinaryExprOp::Mapsto,
+                        ..
+                    } => format!(
+                        "({})",
+                        self.fm_lambda_pattern(right, decls, resolved, context, names)
+                    ),
+                    _ => self.fm_lambda_pattern(right, decls, resolved, context, names),
+                };
+                format!("{left_str} {maplet} {right_str}")
+            }
+            _ => unreachable!("lambda patterns are maplet trees over declarations"),
+        }
+    }
+
+    fn fm_pred(
+        &self,
+        pred: &formula::Predicate,
+        context: FormulaContext,
+        names: &mut Vec<String>,
+    ) -> String {
+        match pred.kind() {
+            FPredKind::Literal(op) => match op {
+                LiteralPredOp::BTrue => self.sym("⊤", "true").to_string(),
+                LiteralPredOp::BFalse => self.sym("⊥", "false").to_string(),
+            },
+            FPredKind::PredicateVariable(name) => name.clone(),
+            FPredKind::Relational { op, left, right } => {
+                let old = legacy_comparison(*op);
+                let op_str = self.op(operators::comparison_op_id(old));
+                let separator = self.tight_operator_separator(operators::comparison_op_id(old));
+                let left_str = self.fm_pair(left, context, names);
+                let right_str = self.fm_pair(right, context, names);
+                format!("{left_str}{separator}{op_str}{separator}{right_str}")
+            }
+            FPredKind::Not(child) => {
+                let not = self.op(OperatorId::Not);
+                format!("{}({})", not, self.fm_pred(child, context, names))
+            }
+            FPredKind::Binary { op, left, right } => {
+                let old = legacy_binary_pred(*op);
+                let op_str = self.op(operators::logical_op_id(old));
+                let separator = self.tight_operator_separator(operators::logical_op_id(old));
+                let left_str = self.fm_pred_child(left, old, false, context, names);
+                let right_str = self.fm_pred_child(right, old, true, context, names);
+                format!("{left_str}{separator}{op_str}{separator}{right_str}")
+            }
+            FPredKind::Associative { op, children } => {
+                let old = legacy_logical(*op);
+                let op_str = self.op(operators::logical_op_id(old));
+                let separator = self.tight_operator_separator(operators::logical_op_id(old));
+                let joint = format!("{separator}{op_str}{separator}");
+                children
+                    .iter()
+                    .enumerate()
+                    .map(|(i, child)| self.fm_pred_child(child, old, i > 0, context, names))
+                    .collect::<Vec<_>>()
+                    .join(&joint)
+            }
+            FPredKind::Quantified {
+                op,
+                decls,
+                pred: body,
+            } => {
+                let resolved = self.fm_resolve_decls(
+                    decls,
+                    pred.free_identifiers(),
+                    pred.dangling_bound_indices(),
+                    names,
+                );
+                let quantifier = self.op(match op {
+                    QuantPredOp::Forall => operators::quantifier_id(Quantifier::ForAll),
+                    QuantPredOp::Exists => operators::quantifier_id(Quantifier::Exists),
+                });
+                let mid = self.op(OperatorId::Dot);
+                let ids = self.fm_decls(decls, &resolved, context, names);
+                names.extend(resolved.iter().cloned());
+                let body_str = self.fm_pred(body, context, names);
+                names.truncate(names.len() - decls.len());
+                format!("{quantifier}{ids}{mid}{body_str}")
+            }
+            FPredKind::Simple(child) => {
+                format!("finite({})", self.fm_expr(child, context, names))
+            }
+            FPredKind::Multiple(children) => {
+                let args: Vec<String> = children
+                    .iter()
+                    .map(|c| self.fm_expr(c, context, names))
+                    .collect();
+                format!("partition({})", args.join(self.comma_separator()))
+            }
+            FPredKind::Application { function, args, .. } => {
+                let rendered: Vec<String> = args
+                    .iter()
+                    .map(|a| self.fm_expr(a, context, names))
+                    .collect();
+                format!("{}({})", function, rendered.join(self.comma_separator()))
+            }
+            FPredKind::Extended { tag, exprs, preds } => {
+                self.fm_extended(pred.factory(), *tag, exprs, preds, context, names)
+            }
+        }
+    }
+
+    /// Mirror of the legacy logical-connective parenthesization rules.
+    fn fm_pred_child(
+        &self,
+        child: &formula::Predicate,
+        parent_op: LogicalOp,
+        is_right: bool,
+        context: FormulaContext,
+        names: &mut Vec<String>,
+    ) -> String {
+        let child_op = match child.kind() {
+            FPredKind::Quantified { .. } => {
+                return format!("({})", self.fm_pred(child, context, names));
+            }
+            FPredKind::Associative { op, .. } => Some(legacy_logical(*op)),
+            FPredKind::Binary { op, .. } => Some(legacy_binary_pred(*op)),
+            _ => None,
+        };
+        let needs_parens = match child_op {
+            Some(child_op) => {
+                let child_prec = op_info::logical_precedence(child_op);
+                let parent_prec = op_info::logical_precedence(parent_op);
+                if child_prec < parent_prec {
+                    true
+                } else if child_prec > parent_prec {
+                    false
+                } else {
+                    let child_class = op_info::logical_compat_class(child_op);
+                    let parent_class = op_info::logical_compat_class(parent_op);
+                    if child_class == 0 || parent_class == 0 || child_class != parent_class {
+                        true
+                    } else {
+                        is_right
+                    }
+                }
+            }
+            None => false,
+        };
+        if needs_parens {
+            format!("({})", self.fm_pred(child, context, names))
+        } else {
+            self.fm_pred(child, context, names)
+        }
+    }
+
+    fn fm_extended(
+        &self,
+        factory: &formula::FormulaFactory,
+        tag: crate::formula::tag::Tag,
+        exprs: &[formula::Expression],
+        preds: &[formula::Predicate],
+        context: FormulaContext,
+        names: &mut Vec<String>,
+    ) -> String {
+        let symbol = factory
+            .extension(tag)
+            .map(|ext| ext.common().symbol().to_string())
+            .unwrap_or_else(|| format!("[[ext:{tag}]]"));
+        let mut args: Vec<String> = exprs
+            .iter()
+            .map(|e| self.fm_expr(e, context, names))
+            .collect();
+        args.extend(preds.iter().map(|p| self.fm_pred(p, context, names)));
+        if args.is_empty() {
+            symbol
+        } else {
+            format!("{}({})", symbol, args.join(self.comma_separator()))
+        }
+    }
+
+    /// Convert a formula-model assignment to text.
+    pub fn print_formula_assignment(&self, assign: &formula::Assignment) -> String {
+        use formula::AssignmentKind as K;
+        let context = FormulaContext::Action;
+        let mut names = Vec::new();
+        let targets = |idents: &[formula::Expression]| -> String {
+            idents
+                .iter()
+                .map(|ident| match ident.kind() {
+                    FExprKind::FreeIdentifier(name) => name.clone(),
+                    _ => unreachable!("assignment targets are free identifiers"),
+                })
+                .collect::<Vec<_>>()
+                .join(self.comma_separator())
+        };
+        match assign.kind() {
+            K::BecomesEqualTo { idents, values } => {
+                let rendered: Vec<String> = values
+                    .iter()
+                    .map(|value| Self::guard_action_part(self.fm_expr(value, context, &mut names)))
+                    .collect();
+                format!(
+                    "{} {} {}",
+                    targets(idents),
+                    self.op(OperatorId::Assignment),
+                    rendered.join(self.comma_separator())
+                )
+            }
+            K::BecomesMemberOf { idents, set } => {
+                format!(
+                    "{} {} {}",
+                    targets(idents),
+                    self.op(OperatorId::BecomesIn),
+                    Self::guard_action_part(self.fm_expr(set, context, &mut names))
+                )
+            }
+            K::BecomesSuchThat {
+                idents,
+                primed,
+                pred,
+            } => {
+                let resolved = self.fm_resolve_decls(
+                    primed,
+                    assign.free_identifiers(),
+                    assign.dangling_bound_indices(),
+                    &names,
+                );
+                names.extend(resolved);
+                let condition = Self::guard_action_part(self.fm_pred(pred, context, &mut names));
+                format!(
+                    "{} {} {}",
+                    targets(idents),
+                    self.op(OperatorId::BecomesSuchThat),
+                    condition
                 )
             }
         }

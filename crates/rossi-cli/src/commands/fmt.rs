@@ -103,6 +103,7 @@ fn run_inner(cli: &FmtArgs) -> CmdResult<ExitCode> {
         // Emitted text stays portable: never the private-use glyphs.
         private_use_glyphs: false,
         formula_spacing: FormulaSpacing::Readable,
+        typed_decls: false,
     };
 
     // `-` reads one Event-B text stream from stdin (the lone input). It has no

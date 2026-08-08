@@ -6,6 +6,7 @@ mod datatypes;
 mod equality;
 mod extensions;
 mod positions;
+mod printing;
 mod properties;
 mod rewriting;
 mod synthesis;

@@ -17,6 +17,7 @@ pub fn format(text: &str, config: &FormatConfig) -> Result<Vec<TextEdit>, String
         // Editor output stays portable: never emit the private-use glyphs.
         private_use_glyphs: false,
         formula_spacing: FormulaSpacing::Readable,
+        typed_decls: false,
     };
     let formatted = format_str(text, &printer).map_err(|e| format!("Parse error: {}", e))?;
 
