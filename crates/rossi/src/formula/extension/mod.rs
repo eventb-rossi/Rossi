@@ -11,6 +11,8 @@
 //!
 //! [`FIRST_EXTENSION_TAG`]: super::tag::FIRST_EXTENSION_TAG
 
+pub mod datatype;
+
 use std::sync::Arc;
 
 use super::expression::Expression;
