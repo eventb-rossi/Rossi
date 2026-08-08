@@ -11,7 +11,7 @@ use rossi::pretty::PrettyPrinter;
 use rossi::{Action, ActionKind, Expression, ExpressionKind, Predicate};
 
 use crate::type_env::TypeEnv;
-use crate::types::Type;
+use rossi::formula::Type;
 
 /// Canonicalise a predicate to Rodin's tight form.
 pub fn canonical_predicate(p: &Predicate) -> String {
@@ -110,7 +110,7 @@ fn typed_empty_set(ty: &Type) -> Expression {
     // Rodin only annotates empty sets on set-typed LHS (ℙ(T)).
     // An assignment `n ≔ 0` to an ℤ-typed variable is never an empty set,
     // so we guard here.
-    if !matches!(ty, Type::PowerSet(_)) {
+    if !matches!(ty, Type::Pow(_)) {
         return ExpressionKind::EmptySet.into();
     }
     ExpressionKind::Binary {
@@ -126,20 +126,23 @@ fn typed_empty_set(ty: &Type) -> Expression {
 pub(crate) fn type_to_expression(ty: &Type) -> Expression {
     use ExpressionKind as E;
     match ty {
-        Type::Integer => E::Integers.into(),
-        Type::Boolean => E::BoolType.into(),
-        Type::GivenSet(name) => E::Identifier(name.clone()).into(),
-        Type::PowerSet(inner) => E::Unary {
+        Type::Int => E::Integers.into(),
+        Type::Bool => E::BoolType.into(),
+        Type::Given(name) => E::Identifier(name.clone()).into(),
+        Type::Pow(inner) => E::Unary {
             op: rossi::ast::expression::UnaryOp::PowerSet,
             operand: Box::new(type_to_expression(inner)),
         }
         .into(),
-        Type::Product(l, r) => E::Binary {
+        Type::Prod(l, r) => E::Binary {
             op: BinaryOp::CartesianProduct,
             left: Box::new(type_to_expression(l)),
             right: Box::new(type_to_expression(r)),
         }
         .into(),
+        Type::Parametric { symbol, .. } => {
+            unreachable!("no type constructors in the core language: {symbol}")
+        }
     }
 }
 
@@ -176,7 +179,7 @@ mod tests {
     fn empty_set_assignment_gets_powerset_ascription() {
         use rossi::parse_action_str;
         let mut env = TypeEnv::new();
-        env.insert("x", Type::pow(Type::GivenSet("USERS".into())));
+        env.insert("x", Type::pow(Type::Given("USERS".into())));
         let a = parse_action_str("x ≔ ∅").unwrap();
         assert_eq!(canonical_action_with_env(&a, &env), "x ≔ ∅ ⦂ ℙ(USERS)");
     }
@@ -185,8 +188,8 @@ mod tests {
     fn parallel_assignment_annotates_every_pair() {
         use rossi::parse_action_str;
         let mut env = TypeEnv::new();
-        env.insert("x", Type::pow(Type::GivenSet("USERS".into())));
-        env.insert("y", Type::pow(Type::GivenSet("ITEMS".into())));
+        env.insert("x", Type::pow(Type::Given("USERS".into())));
+        env.insert("y", Type::pow(Type::Given("ITEMS".into())));
         let action = parse_action_str("x, y ≔ ∅, ∅").unwrap();
         assert_eq!(
             canonical_action_with_env(&action, &env),
@@ -198,7 +201,7 @@ mod tests {
     fn integer_assignment_unchanged() {
         use rossi::parse_action_str;
         let mut env = TypeEnv::new();
-        env.insert("n", Type::Integer);
+        env.insert("n", Type::Int);
         let a = parse_action_str("n ≔ 0").unwrap();
         // `0` isn't an empty set — no ascription.
         assert_eq!(canonical_action_with_env(&a, &env), "n ≔ 0");

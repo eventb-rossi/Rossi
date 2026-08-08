@@ -24,9 +24,9 @@ use crate::sc::machine_record::{
 };
 use crate::sc::typing::resolve_identifier_types;
 use crate::type_env::TypeEnv;
-use crate::types::Type;
 use crate::xml_out::in_tag;
 use crate::{Diagnostic, Severity};
+use rossi::formula::Type;
 
 /// Unified view over INIT and ordinary events. Keeps [`build_event_decl`]
 /// free of `match` noise. Copy-cheap since both variants are just
@@ -1238,7 +1238,7 @@ fn build_parameter_decl(
     p: &NamedElement,
     env: &TypeEnv,
 ) -> ParameterDecl {
-    let ty = env.get(&p.name).cloned().unwrap_or(Type::Integer);
+    let ty = env.get(&p.name).cloned().unwrap_or(Type::Int);
     let source = build_event_child_source(
         ids,
         file_root,

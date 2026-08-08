@@ -14,9 +14,9 @@ use crate::handles::HandleUri;
 use crate::project::{Project, ProjectComponent};
 use crate::rodin_ids::{Kind, RodinIds};
 use crate::type_env::TypeEnv;
-use crate::types::Type;
 use crate::xml_out::{Element, attr, in_tag, tag};
 use crate::{Diagnostic, ScFile, Severity};
+use rossi::formula::Type;
 
 use super::CheckedContext;
 use super::context_record::{
@@ -295,7 +295,7 @@ fn build_constant_decl(
     c: &NamedElement,
     env: &TypeEnv,
 ) -> ConstantDecl {
-    let ty = env.get(&c.name).cloned().unwrap_or(Type::Integer);
+    let ty = env.get(&c.name).cloned().unwrap_or(Type::Int);
     ConstantDecl {
         name: c.name.clone(),
         ty,

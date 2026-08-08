@@ -36,7 +36,6 @@ pub mod rules;
 pub mod sc_model;
 pub mod sc_view;
 pub mod type_env;
-pub mod types;
 pub mod xml_out;
 
 mod ast_util;
@@ -45,8 +44,8 @@ mod sc;
 pub use error::Error;
 pub use handles::HandleUri;
 pub use project::{Project, ProjectComponent};
+pub use rossi::formula::Type;
 pub use rules::RuleId;
-pub use types::Type;
 
 /// Static-check a whole project and emit one `.bcc` / `.bcm` per component.
 ///

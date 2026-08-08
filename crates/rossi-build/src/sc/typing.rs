@@ -19,7 +19,6 @@ use rossi::formula::{self, TypeEnvironmentBuilder};
 use rossi::{Action, Expression, Predicate};
 
 use crate::type_env::TypeEnv;
-use crate::types::Type;
 
 /// Types the `declared` names against `predicates`, inserting solved
 /// types into `env`; returns the names that remained untyped, in
@@ -49,7 +48,7 @@ pub(crate) fn resolve_identifier_types<'a>(
             }
             for (name, ty) in result.inferred.iter() {
                 if !env.contains(name) {
-                    env.insert(name, from_model(ty));
+                    env.insert(name, ty.clone());
                     progressed = true;
                 }
             }
@@ -115,45 +114,20 @@ pub(crate) fn action_well_typed(env: &TypeEnv, action: &Action) -> bool {
 pub(crate) fn seal(env: &TypeEnv) -> formula::SealedTypeEnvironment {
     let mut builder = TypeEnvironmentBuilder::new();
     for (name, ty) in env.iter() {
-        builder.insert(name, to_model(ty));
+        builder.insert(name, ty.clone());
     }
     builder.make_snapshot()
-}
-
-/// The pipeline's type for a model type. Parametric types cannot occur:
-/// the core-language factory has no type constructors.
-pub(crate) fn from_model(ty: &formula::Type) -> Type {
-    match ty {
-        formula::Type::Bool => Type::Boolean,
-        formula::Type::Int => Type::Integer,
-        formula::Type::Given(name) => Type::GivenSet(name.clone()),
-        formula::Type::Pow(inner) => Type::pow(from_model(inner)),
-        formula::Type::Prod(left, right) => Type::prod(from_model(left), from_model(right)),
-        formula::Type::Parametric { symbol, .. } => {
-            unreachable!("no type constructors in the core language: {symbol}")
-        }
-    }
-}
-
-/// The model type for a pipeline type.
-pub(crate) fn to_model(ty: &Type) -> formula::Type {
-    match ty {
-        Type::Boolean => formula::Type::Bool,
-        Type::Integer => formula::Type::Int,
-        Type::GivenSet(name) => formula::Type::given(name.clone()),
-        Type::PowerSet(inner) => formula::Type::pow(to_model(inner)),
-        Type::Product(left, right) => formula::Type::prod(to_model(left), to_model(right)),
-    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
     use rossi::ast::expression::{BinaryOp, UnaryOp};
+    use rossi::formula::Type;
     use rossi::{parse_action_str, parse_expression_str, parse_predicate_str};
 
     fn carrier_elem(name: &str) -> Type {
-        Type::GivenSet(name.to_string())
+        Type::Given(name.to_string())
     }
 
     fn auction_env() -> TypeEnv {
@@ -285,8 +259,8 @@ mod tests {
     #[test]
     fn rejects_nested_structural_operand_failures() {
         let mut env = TypeEnv::new();
-        env.insert("S", Type::pow(Type::Integer));
-        env.insert("r", Type::relation(Type::Integer, Type::Integer));
+        env.insert("S", Type::pow(Type::Int));
+        env.insert("r", Type::relation(Type::Int, Type::Int));
 
         for source in ["S ∪ dom(TRUE)", "dom(TRUE) ◁ r"] {
             let expression = parse_expression_str(source).unwrap();
@@ -327,7 +301,7 @@ mod tests {
     #[test]
     fn rejects_invalid_function_applications() {
         let mut env = TypeEnv::new();
-        env.insert("f", Type::relation(Type::Integer, Type::Boolean));
+        env.insert("f", Type::relation(Type::Int, Type::Bool));
         for source in [
             "f(TRUE)",
             "TRUE(0)",
@@ -349,7 +323,7 @@ mod tests {
     #[test]
     fn rejects_assignment_type_mismatches() {
         let mut env = TypeEnv::new();
-        env.insert("x", Type::Integer);
+        env.insert("x", Type::Int);
 
         for source in ["x ≔ TRUE", "x :∈ BOOL", "x :∣ x' = TRUE"] {
             let action = parse_action_str(source).unwrap();
@@ -396,7 +370,7 @@ mod tests {
     #[test]
     fn accepts_valid_quantified_binders_and_function_applications() {
         let mut env = TypeEnv::new();
-        env.insert("f", Type::relation(Type::Integer, Type::Boolean));
+        env.insert("f", Type::relation(Type::Int, Type::Bool));
 
         let predicate = parse_predicate_str("∀x⦂ℤ · x + 1 > x").unwrap();
         assert!(typed_predicate(&env, &predicate).is_some());
@@ -435,8 +409,8 @@ mod tests {
     #[test]
     fn assignment_expected_type_resolves_polymorphic_rhs() {
         let mut env = TypeEnv::new();
-        env.insert("f", Type::relation(Type::Integer, Type::Integer));
-        env.insert("S", Type::pow(Type::Integer));
+        env.insert("f", Type::relation(Type::Int, Type::Int));
+        env.insert("S", Type::pow(Type::Int));
 
         for source in ["f ≔ λx·1 = 1 ∣ x + 1", "S ≔ union(∅)"] {
             let action = parse_action_str(source).unwrap();
@@ -462,7 +436,7 @@ mod tests {
     #[test]
     fn unresolved_operands_are_not_reported_as_checked() {
         let mut env = TypeEnv::new();
-        env.insert("S", Type::pow(Type::Integer));
+        env.insert("S", Type::pow(Type::Int));
         let expression = parse_expression_str("S ∪ unknown").unwrap();
         assert!(typed_expression(&env, &expression).is_none());
     }

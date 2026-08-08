@@ -19,10 +19,10 @@
 
 use proptest::prelude::*;
 use rossi::{parse_action_str, parse_predicate_str};
+use rossi_build::Type;
 use rossi_build::normalize::{canonical_action, canonical_predicate};
 use rossi_build::sc_view::{ScView, strip_type_ascriptions_action, strip_type_ascriptions_pred};
 use rossi_build::type_env::TypeEnv;
-use rossi_build::types::Type;
 use rossi_build::{Project, ProjectComponent, build};
 
 // ---------------------------------------------------------------------
@@ -261,7 +261,7 @@ proptest! {
     #[test]
     fn scope_stack_restores_after_n_pushes(n in 0usize..10usize) {
         let mut env = TypeEnv::new();
-        env.insert("x", Type::Integer);
+        env.insert("x", Type::Int);
         let snapshot: Vec<(String, Type)> = env
             .iter()
             .map(|(k, v)| (k.to_string(), v.clone()))
@@ -269,8 +269,8 @@ proptest! {
 
         for i in 0..n {
             env.push_scope();
-            env.insert("x", Type::GivenSet(format!("S{i}")));
-            env.insert(format!("y{i}"), Type::Boolean);
+            env.insert("x", Type::Given(format!("S{i}")));
+            env.insert(format!("y{i}"), Type::Bool);
         }
         for _ in 0..n {
             env.pop_scope();
