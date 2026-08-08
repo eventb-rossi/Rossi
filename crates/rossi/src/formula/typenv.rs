@@ -95,6 +95,46 @@ impl SealedTypeEnvironment {
     }
 }
 
+/// The types a check derived for free identifiers that were absent
+/// from the initial environment, in first-occurrence order.
+///
+/// Only produced by a successful check, and only for initially-unknown
+/// names — merging it into the environment can never overwrite an
+/// existing binding.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct InferredTypeEnvironment {
+    entries: Vec<(String, Type)>,
+}
+
+impl InferredTypeEnvironment {
+    pub(super) fn push(&mut self, name: String, ty: Type) {
+        self.entries.push((name, ty));
+    }
+
+    /// The inferred type of `name`, if any.
+    pub fn get(&self, name: &str) -> Option<&Type> {
+        self.entries
+            .iter()
+            .find(|(entry, _)| entry == name)
+            .map(|(_, ty)| ty)
+    }
+
+    /// Iterates in first-occurrence order.
+    pub fn iter(&self) -> impl Iterator<Item = (&str, &Type)> {
+        self.entries.iter().map(|(name, ty)| (name.as_str(), ty))
+    }
+
+    /// Number of inferred names.
+    pub fn len(&self) -> usize {
+        self.entries.len()
+    }
+
+    /// Whether nothing was inferred.
+    pub fn is_empty(&self) -> bool {
+        self.entries.is_empty()
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
