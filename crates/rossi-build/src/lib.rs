@@ -39,7 +39,6 @@ pub mod sc_model;
 pub mod sc_view;
 pub mod type_env;
 pub mod types;
-pub mod wellformed;
 pub mod xml_out;
 
 mod ast_util;
