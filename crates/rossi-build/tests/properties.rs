@@ -11,19 +11,19 @@
 //! 2. **Parseability**: every canonical form parses back.
 //! 3. **AST round-trip** (modulo type ascriptions):
 //!    `strip(parse(canonical(p))) == strip(p)`.
-//! 4. **Inference monotonicity**: if `infer_constants` types `c` from
-//!    axioms `A`, then `infer_constants` still types `c` from any
-//!    superset `A ∪ B` — adding axioms never "untypes" a constant.
+//! 4. **Inference monotonicity**: if a context build types constant `c`
+//!    from axioms `A`, a build over any superset `A ∪ B` still types
+//!    `c` identically — adding axioms never "untypes" a constant.
 //! 5. **Scope stack**: push/insert/pop restores outer env regardless
 //!    of how many layers.
 
 use proptest::prelude::*;
 use rossi::{parse_action_str, parse_predicate_str};
-use rossi_build::infer::infer_constants;
 use rossi_build::normalize::{canonical_action, canonical_predicate};
-use rossi_build::sc_view::{strip_type_ascriptions_action, strip_type_ascriptions_pred};
+use rossi_build::sc_view::{ScView, strip_type_ascriptions_action, strip_type_ascriptions_pred};
 use rossi_build::type_env::TypeEnv;
 use rossi_build::types::Type;
+use rossi_build::{Project, ProjectComponent, build};
 
 // ---------------------------------------------------------------------
 // Strategies — hand-curated string samples instead of grammar-walking.
@@ -162,10 +162,10 @@ proptest! {
 // ---------------------------------------------------------------------
 // Inference monotonicity.
 //
-// Strategy: fabricate a carrier-set + constant set + handful of typing
-// axioms. Run inference. Then re-run with the axioms reshuffled and /
-// or augmented with extra (unrelated) axioms. The set of typed
-// constants must not shrink, and types must not change.
+// Strategy: fabricate a context with a carrier set, constants, and a
+// handful of typing axioms; build it. Then re-build with extra
+// (possibly unrelated) axioms appended. The set of typed constants in
+// the emitted .bcc must not shrink, and their types must not change.
 // ---------------------------------------------------------------------
 
 fn axiom_string_strategy() -> impl Strategy<Value = String> {
@@ -181,52 +181,69 @@ fn axiom_string_strategy() -> impl Strategy<Value = String> {
     ]
 }
 
+/// A context over carrier set USERS and the strategy's constants, with
+/// one labeled axiom per entry.
+fn context_component(axioms: &[String]) -> ProjectComponent {
+    let mut xml = String::from(
+        r#"<?xml version="1.0" encoding="UTF-8" standalone="no"?>
+<org.eventb.core.contextFile org.eventb.core.configuration="org.eventb.core.fwd" version="3">
+    <org.eventb.core.carrierSet name="s0" org.eventb.core.identifier="USERS"/>
+"#,
+    );
+    for (i, constant) in ["a", "b", "n", "S", "r"].iter().enumerate() {
+        xml.push_str(&format!(
+            "    <org.eventb.core.constant name=\"c{i}\" org.eventb.core.identifier=\"{constant}\"/>\n"
+        ));
+    }
+    for (i, axiom) in axioms.iter().enumerate() {
+        xml.push_str(&format!(
+            "    <org.eventb.core.axiom name=\"x{i}\" org.eventb.core.label=\"axm{i}\" org.eventb.core.predicate=\"{axiom}\"/>\n"
+        ));
+    }
+    xml.push_str("</org.eventb.core.contextFile>\n");
+    ProjectComponent::from_xml("C0.buc", &xml).expect("fabricated context parses")
+}
+
+/// The `constant name -> type` attribute map of the built context.
+fn built_constant_types(axioms: &[String]) -> std::collections::BTreeMap<String, String> {
+    let result = build(&Project::new("prop", vec![context_component(axioms)]));
+    let bcc = &result.files[0].contents;
+    let view = ScView::from_xml(bcc).expect("emitted .bcc parses");
+    view.constants
+        .into_iter()
+        .map(|(name, row)| (name, row.type_str))
+        .collect()
+}
+
 proptest! {
     #![proptest_config(ProptestConfig::with_cases(60))]
 
     #[test]
-    fn infer_constants_is_monotone(
+    fn constant_typing_is_monotone(
         core_axioms in proptest::collection::vec(axiom_string_strategy(), 1..6),
         extra_axioms in proptest::collection::vec(axiom_string_strategy(), 0..4),
     ) {
-        // Seed with a single carrier set USERS and the constants that
-        // appear in our axiom strategy.
-        let constants: Vec<String> = ["a", "b", "n", "S", "r"]
-            .iter()
-            .map(|s| s.to_string())
-            .collect();
-        let parsed_core: Vec<_> = core_axioms
-            .iter()
-            .filter_map(|s| parse_predicate_str(s).ok())
-            .collect();
-        let parsed_superset: Vec<_> = core_axioms
+        let superset: Vec<String> = core_axioms
             .iter()
             .chain(extra_axioms.iter())
-            .filter_map(|s| parse_predicate_str(s).ok())
+            .cloned()
             .collect();
 
-        let mut env_small = TypeEnv::new();
-        env_small.add_carrier_set("USERS");
-        infer_constants(&mut env_small, &constants, &parsed_core);
+        let small = built_constant_types(&core_axioms);
+        let big = built_constant_types(&superset);
 
-        let mut env_big = TypeEnv::new();
-        env_big.add_carrier_set("USERS");
-        infer_constants(&mut env_big, &constants, &parsed_superset);
-
-        // Every name typed with the small axiom set must still be
+        // Every constant typed with the core axiom set must still be
         // typed with the superset — and with the same type.
-        for name in &constants {
-            if let Some(ty_small) = env_small.get(name) {
-                let ty_big = env_big.get(name);
-                prop_assert_eq!(
-                    Some(ty_small),
-                    ty_big,
-                    "name {} was typed as {:?} with core axioms but {:?} with superset",
-                    name,
-                    ty_small,
-                    ty_big
-                );
-            }
+        for (name, ty_small) in &small {
+            let ty_big = big.get(name);
+            prop_assert_eq!(
+                Some(ty_small),
+                ty_big,
+                "constant {} was typed as {:?} with core axioms but {:?} with superset",
+                name,
+                ty_small,
+                ty_big
+            );
         }
     }
 }

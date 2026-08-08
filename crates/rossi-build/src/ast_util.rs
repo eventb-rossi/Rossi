@@ -1,8 +1,5 @@
 //! Small AST construction helpers shared across the static checker.
 
-use rossi::ast::expression::BinaryOp;
-use rossi::{Expression, ExpressionKind};
-
 /// Names that an action writes to (its LHS targets). Shared by the SC
 /// cascade-drop logic and the lint module's unmodified-variable / INIT
 /// completeness checks.
@@ -32,23 +29,4 @@ pub(crate) fn named_element_span(
         .iter()
         .find(|e| e.name == name)
         .and_then(|e| e.span)
-}
-
-/// Build a left-associative maplet chain from a non-empty list:
-/// `[a]` → `a`; `[a, b]` → `a ↦ b`; `[a, b, c]` → `(a ↦ b) ↦ c`.
-///
-/// Used to fold a set-comprehension short form's binders into the implicit
-/// projection expression (`{x, y ∣ P}` → `{x, y · P ∣ x ↦ y}`).
-pub(crate) fn left_assoc_maplet(args: &[Expression]) -> Expression {
-    let mut iter = args.iter().cloned();
-    let mut acc = iter.next().expect("left_assoc_maplet requires ≥1 argument");
-    for next in iter {
-        acc = ExpressionKind::Binary {
-            op: BinaryOp::Maplet,
-            left: Box::new(acc),
-            right: Box::new(next),
-        }
-        .into();
-    }
-    acc
 }

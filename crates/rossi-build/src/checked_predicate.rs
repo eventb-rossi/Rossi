@@ -25,7 +25,6 @@
 
 use rossi::{Action, Expression, LabeledPredicate, Predicate};
 
-use crate::enrich::{enrich_action, enrich_expression, enrich_predicate};
 use crate::normalize::{
     canonical_action_with_env, canonical_expression, canonical_predicate,
     canonical_typed_assignment, canonical_typed_expression, canonical_typed_predicate,
@@ -40,11 +39,9 @@ use crate::{Diagnostic, Severity};
 /// Result of checking a labeled predicate.
 #[derive(Debug, Clone)]
 pub struct PredicateCheck {
-    /// The [enriched](crate::enrich::enrich_predicate) predicate the
-    /// check ran on: binder types stamped, short-form comprehensions
-    /// lowered. `canonical` is a rendering of exactly this AST. Kept on
-    /// guard/axiom decls, where descendant (M1+) static checks re-read it
-    /// to re-derive parameter types for extended events.
+    /// The predicate the check ran on. Kept on guard/axiom decls, where
+    /// descendant (M1+) static checks re-read it to re-derive parameter
+    /// types for extended events.
     pub predicate: Predicate,
     /// Rodin-canonical formatting of the predicate.
     pub canonical: String,
@@ -71,8 +68,7 @@ pub struct ExpressionCheck {
 /// Result of checking an action.
 #[derive(Debug, Clone)]
 pub struct ActionCheck {
-    /// The enriched action the check ran on (see
-    /// [`PredicateCheck::predicate`]).
+    /// The action the check ran on (see [`PredicateCheck::predicate`]).
     pub action: Action,
     /// Rodin-canonical assignment text, with empty-set RHS annotated
     /// against the LHS type when known (see
@@ -91,56 +87,49 @@ pub struct ActionCheck {
 /// Check a predicate against `env`, producing both the canonical form
 /// and the first free identifier (if any).
 ///
-/// Both canonicalisation and free-identifier scanning run on the
-/// [enriched](crate::enrich::enrich_predicate) form so that:
-///
-/// 1. Quantifier and lambda binders carry their inferred types in the
-///    emitted text (matching Rodin's bcc form).
-/// 2. Short-form set comprehensions `{E ∣ P}` are lowered to the long
-///    form `{x⦂T · P ∣ E}` before scoping is resolved, so identifiers
-///    bound implicitly by the short form are not flagged as free.
+/// The canonical text of a well-typed predicate is rendered from the
+/// typed rebuild (binder types spelled, short comprehension forms
+/// escalated, matching Rodin's bcc form); an ill-typed predicate falls
+/// back to a plain rendering, which no emitted file ever contains.
 pub fn check_predicate(p: &Predicate, env: &TypeEnv) -> PredicateCheck {
-    let enriched = enrich_predicate(p.clone(), env);
-    let typed = crate::sc::typing::typed_predicate(env, &enriched);
+    let typed = crate::sc::typing::typed_predicate(env, p);
     PredicateCheck {
-        free_identifier: free_identifier_in_predicate(&enriched, env),
+        free_identifier: free_identifier_in_predicate(p, env),
         canonical: match &typed {
             Some(typed) => canonical_typed_predicate(typed),
-            None => canonical_predicate(&enriched),
+            None => canonical_predicate(p),
         },
         typed,
-        predicate: enriched,
+        predicate: p.clone(),
     }
 }
 
 /// Check an expression against `env`. Used by the variant.
 pub fn check_expression(e: &Expression, env: &TypeEnv) -> ExpressionCheck {
-    let enriched = enrich_expression(e.clone(), env);
-    let typed = crate::sc::typing::typed_expression(env, &enriched);
+    let typed = crate::sc::typing::typed_expression(env, e);
     ExpressionCheck {
-        free_identifier: free_identifier_in_expression(&enriched, env),
+        free_identifier: free_identifier_in_expression(e, env),
         canonical: match &typed {
             Some(typed) => canonical_typed_expression(typed),
-            None => canonical_expression(&enriched),
+            None => canonical_expression(e),
         },
         typed,
-        expression: enriched,
+        expression: e.clone(),
     }
 }
 
 /// Check an action against `env`. Walks every read-side expression and
 /// (for `:|`) the becomes-such-that predicate.
 pub fn check_action(a: &Action, env: &TypeEnv) -> ActionCheck {
-    let enriched = enrich_action(a.clone(), env);
-    let typed = crate::sc::typing::typed_assignment(env, &enriched);
+    let typed = crate::sc::typing::typed_assignment(env, a);
     ActionCheck {
-        free_identifier: free_identifier_in_action_rhs(&enriched, env),
+        free_identifier: free_identifier_in_action_rhs(a, env),
         canonical: match &typed {
             Some(typed) => canonical_typed_assignment(typed),
-            None => canonical_action_with_env(&enriched, env),
+            None => canonical_action_with_env(a, env),
         },
         typed,
-        action: enriched,
+        action: a.clone(),
     }
 }
 
@@ -175,9 +164,8 @@ pub fn check_labeled_predicate(
         .clone()
         .unwrap_or_else(|| default_label.to_string());
     if let Some(bad) = &pc.free_identifier {
-        // Anchor on the offending identifier in the *source* predicate (the
-        // enriched form may have rebuilt nodes without spans); fall back to the
-        // labeled predicate's own span.
+        // Anchor on the offending identifier; fall back to the labeled
+        // predicate's own span.
         let span = usage_span_in_predicate(&raw.predicate, bad).or(raw.span);
         return Err(Diagnostic {
             severity: Severity::Error,

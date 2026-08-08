@@ -381,7 +381,7 @@ fn lint_shadowed_names_machine(m: &Machine) -> Vec<Diagnostic> {
 /// needs such an invariant just to be typed, so counting it as a use would
 /// make a variable that exists only to be typed look alive. The shape
 /// mirrors the bare-ident-LHS predicates the type checker derives types
-/// from (`infer_constant_from_predicate`), deliberately narrowed: strict
+/// from, deliberately narrowed: strict
 /// subset, negations, and equality constrain the value beyond its type,
 /// and a bound that mentions another VARIABLE (`cur ∈ dom(routes)`, a
 /// gluing invariant's `abs ∈ ran(conc)`) relates dynamic state — those are
