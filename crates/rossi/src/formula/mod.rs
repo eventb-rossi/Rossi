@@ -18,6 +18,7 @@ pub mod predicate;
 pub mod rewrite;
 mod subst;
 pub mod tag;
+pub mod typecheck;
 pub mod typenv;
 pub mod types;
 
@@ -30,5 +31,6 @@ pub use fresh::FreshNameSolver;
 pub use position::{FormulaRef, Position, PositionError};
 pub use predicate::{Predicate, PredicateKind};
 pub use rewrite::FormulaRewriter;
-pub use typenv::{SealedTypeEnvironment, TypeEnvironmentBuilder};
+pub use typecheck::{ProblemKind, TypeCheckProblem, TypeCheckResult};
+pub use typenv::{InferredTypeEnvironment, SealedTypeEnvironment, TypeEnvironmentBuilder};
 pub use types::Type;

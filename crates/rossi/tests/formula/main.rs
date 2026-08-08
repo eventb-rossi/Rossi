@@ -6,3 +6,4 @@ mod equality;
 mod positions;
 mod rewriting;
 mod synthesis;
+mod typecheck;
