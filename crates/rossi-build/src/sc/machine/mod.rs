@@ -537,6 +537,7 @@ fn build_invariant_decl(
     Ok(InvariantDecl {
         label,
         source_index,
+        typed: pc.typed.expect("checked by check_labeled_predicate"),
         predicate: pc.predicate,
         predicate_canonical: pc.canonical,
         is_theorem: inv.is_theorem,
@@ -633,6 +634,7 @@ fn build_variant_decl(
     Ok((
         VariantDecl {
             label,
+            typed: ec.typed,
             expression: ec.expression,
             expression_canonical: ec.canonical,
             source,

@@ -102,6 +102,9 @@ pub struct InvariantDecl {
     /// from. Retained so downstream passes do not need to re-parse the XML
     /// representation.
     pub predicate: Predicate,
+    /// The fully typed formula-model form; see
+    /// [`super::context_record::AxiomDecl::typed`].
+    pub typed: rossi::formula::Predicate,
     pub predicate_canonical: String,
     pub is_theorem: bool,
     pub source: HandleUri,
@@ -123,6 +126,9 @@ pub struct VariantDecl {
     /// from. Retained so downstream passes do not need to re-parse the XML
     /// representation.
     pub expression: Expression,
+    /// The fully typed formula-model form; `None` when the variant was
+    /// kept despite referencing unknown identifiers (`usable = false`).
+    pub typed: Option<rossi::formula::Expression>,
     pub expression_canonical: String,
     pub source: HandleUri,
 }
@@ -219,6 +225,9 @@ pub struct GuardDecl {
     /// from. Re-read by [`EventDecl::typing_guard_predicates`] to recover
     /// parameter types for extended events in descendant (M1+) machines.
     pub predicate: Predicate,
+    /// The fully typed formula-model form; see
+    /// [`super::context_record::AxiomDecl::typed`].
+    pub typed: rossi::formula::Predicate,
     pub predicate_canonical: String,
     pub is_theorem: bool,
     pub source: HandleUri,
@@ -245,6 +254,9 @@ pub struct WitnessDecl {
     /// from. Retained so downstream passes do not need to re-parse the XML
     /// representation.
     pub predicate: Predicate,
+    /// The fully typed formula-model form; see
+    /// [`super::context_record::AxiomDecl::typed`].
+    pub typed: rossi::formula::Predicate,
     pub predicate_canonical: String,
     pub source: HandleUri,
 }
@@ -574,6 +586,7 @@ mod tests {
         r.invariants.push(InvariantDecl {
             label: "inv1".into(),
             source_index: 0,
+            typed: rossi::formula::lower::lower_predicate(&rossi::PredicateKind::True.into()),
             predicate: rossi::PredicateKind::True.into(),
             predicate_canonical: "⊤".into(),
             is_theorem: false,
