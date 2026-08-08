@@ -14,6 +14,7 @@ pub mod extension;
 pub mod factory;
 pub mod fresh;
 mod hashing;
+pub mod occurrences;
 pub mod position;
 pub mod predicate;
 pub mod rewrite;
