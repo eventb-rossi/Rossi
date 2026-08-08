@@ -72,6 +72,30 @@ static REGISTRY: LazyLock<Mutex<Registry>> = LazyLock::new(|| {
     })
 });
 
+impl Registry {
+    /// The permanent tag of an extension object, allocated on first
+    /// sight.
+    fn tag_for(&mut self, ext: &Extension) -> Tag {
+        let identity = ext.identity();
+        match self.tags.get(&identity) {
+            Some((tag, _)) => *tag,
+            None => {
+                let tag = self.next;
+                self.next += 1;
+                self.tags.insert(identity, (tag, ext.clone()));
+                tag
+            }
+        }
+    }
+}
+
+/// Allocates (or looks up) the permanent tag of an extension without
+/// building a factory. Datatype construction uses this so a type
+/// constructor knows its own tag before any factory exists.
+pub(super) fn register_extension_tag(ext: &Extension) -> Tag {
+    REGISTRY.lock().expect("registry lock").tag_for(ext)
+}
+
 /// A rejected extension set.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ExtensionError {
@@ -130,16 +154,7 @@ impl FormulaFactory {
         let mut registry = REGISTRY.lock().expect("registry lock");
         let mut by_tag: BTreeMap<Tag, Extension> = BTreeMap::new();
         for ext in extensions {
-            let identity = ext.identity();
-            let tag = match registry.tags.get(&identity) {
-                Some((tag, _)) => *tag,
-                None => {
-                    let tag = registry.next;
-                    registry.next += 1;
-                    registry.tags.insert(identity, (tag, ext.clone()));
-                    tag
-                }
-            };
+            let tag = registry.tag_for(&ext);
             by_tag.insert(tag, ext);
         }
         let key: Vec<Tag> = by_tag.keys().copied().collect();

@@ -2,6 +2,7 @@
 
 mod common;
 
+mod datatypes;
 mod equality;
 mod extensions;
 mod positions;
