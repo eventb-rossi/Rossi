@@ -15,8 +15,28 @@ use super::position::{FormulaRef, Position};
 use super::predicate::{Predicate, PredicateKind};
 use super::tag::BinaryPredOp;
 
+use super::factory::FormulaFactory;
+
 use computer::{wd_assign, wd_expr, wd_pred};
 use fb::FormulaBuilder;
+
+/// What extension well-definedness hooks receive to build their
+/// contribution.
+pub struct WdMediator<'a> {
+    fb: &'a FormulaBuilder,
+}
+
+impl WdMediator<'_> {
+    /// The trivial lemma `⊤`.
+    pub fn true_wd(&self) -> Predicate {
+        self.fb.btrue()
+    }
+
+    /// The factory to build the lemma with.
+    pub fn factory(&self) -> &FormulaFactory {
+        &self.fb.ff
+    }
+}
 
 impl Predicate {
     /// The well-definedness lemma, unsimplified beyond construction.
@@ -52,8 +72,10 @@ impl Predicate {
             PredicateKind::Binary { op, .. } => *op == BinaryPredOp::LEqv,
             PredicateKind::Associative { .. } | PredicateKind::Quantified { .. } => false,
             PredicateKind::Application { .. } => false,
-            // Refined when the extension mechanism lands.
-            PredicateKind::Extended { .. } => false,
+            PredicateKind::Extended { tag, .. } => self
+                .factory()
+                .extension(*tag)
+                .is_some_and(|ext| ext.common().conjoin_children_wd()),
         }
     }
 
@@ -88,8 +110,10 @@ impl Expression {
     pub fn is_wd_strict(&self) -> bool {
         match self.kind() {
             ExpressionKind::Quantified { .. } => false,
-            // Refined when the extension mechanism lands.
-            ExpressionKind::Extended { .. } => false,
+            ExpressionKind::Extended { tag, .. } => self
+                .factory()
+                .extension(*tag)
+                .is_some_and(|ext| ext.common().conjoin_children_wd()),
             _ => true,
         }
     }

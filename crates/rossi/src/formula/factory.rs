@@ -7,7 +7,8 @@
 //! that built it. Violating a structural invariant is a programming
 //! error and panics.
 
-use std::sync::{Arc, LazyLock};
+use std::collections::{BTreeMap, HashMap};
+use std::sync::{Arc, LazyLock, Mutex};
 
 use num_bigint::BigInt;
 
@@ -17,31 +18,162 @@ use super::assignment::{self, AssignData, Assignment, AssignmentKind};
 use super::caches::CacheBuilder;
 use super::decl::{self, BoundIdentDecl, DeclData};
 use super::expression::{self, ExprData, Expression, ExpressionKind, Form};
+use super::extension::{ExpressionExtension, Extension, PredicateExtension};
 use super::predicate::{self, PredData, Predicate, PredicateKind};
 use super::tag::{
-    AssocExprOp, AssocPredOp, AtomicOp, BinaryExprOp, BinaryPredOp, LiteralPredOp, QuantExprOp,
-    QuantPredOp, RelationalOp, UnaryExprOp,
+    self, AssocExprOp, AssocPredOp, AtomicOp, BinaryExprOp, BinaryPredOp, LiteralPredOp,
+    QuantExprOp, QuantPredOp, RelationalOp, Tag, UnaryExprOp,
 };
 use super::types::Type;
 
 /// Builds formula nodes.
 ///
-/// A factory is a cheap-to-clone handle; factories compare by identity.
-/// Today there is a single core-language factory; factories carrying
-/// operator extensions are introduced with the extension mechanism.
+/// A factory is a cheap-to-clone handle carrying the set of operator
+/// extensions it supports; factories with equal extension sets are
+/// interned to the same instance, so factories compare by identity.
 #[derive(Clone)]
 pub struct FormulaFactory(pub(super) Arc<FactoryData>);
 
-#[derive(Debug)]
-pub(super) struct FactoryData {}
+pub(super) struct FactoryData {
+    /// This factory's extensions, by dynamic tag.
+    extensions: BTreeMap<Tag, Extension>,
+    /// Extension object identity → tag, for construction lookups.
+    by_identity: HashMap<usize, Tag>,
+}
 
-static DEFAULT: LazyLock<FormulaFactory> =
-    LazyLock::new(|| FormulaFactory(Arc::new(FactoryData {})));
+impl std::fmt::Debug for FactoryData {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("FactoryData")
+            .field("extensions", &self.extensions.len())
+            .finish()
+    }
+}
+
+static DEFAULT: LazyLock<FormulaFactory> = LazyLock::new(|| {
+    FormulaFactory(Arc::new(FactoryData {
+        extensions: BTreeMap::new(),
+        by_identity: HashMap::new(),
+    }))
+});
+
+/// The process-global extension registry: identity → permanent tag,
+/// plus the interned factories per extension set.
+struct Registry {
+    tags: HashMap<usize, (Tag, Extension)>,
+    next: Tag,
+    factories: HashMap<Vec<Tag>, FormulaFactory>,
+}
+
+static REGISTRY: LazyLock<Mutex<Registry>> = LazyLock::new(|| {
+    Mutex::new(Registry {
+        tags: HashMap::new(),
+        next: tag::FIRST_EXTENSION_TAG,
+        factories: HashMap::new(),
+    })
+});
+
+/// A rejected extension set.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ExtensionError {
+    /// Two extensions in the set share a syntax symbol, or the symbol
+    /// collides with core vocabulary.
+    DuplicateSymbol(String),
+    /// Two extensions in the set share an identifier.
+    DuplicateId(String),
+}
+
+/// A rejected extended-node construction.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum FactoryError {
+    /// The extension is not part of this factory's set.
+    UnknownExtension,
+    /// The child counts do not fit the extension's kind.
+    ArityMismatch,
+    /// The explicit type was rejected by the extension.
+    TypeMisfit,
+}
 
 impl FormulaFactory {
     /// The factory for the core mathematical language.
     pub fn default_factory() -> FormulaFactory {
         DEFAULT.clone()
+    }
+
+    /// The interned factory supporting the core language plus the
+    /// given extensions. Each distinct extension object keeps one
+    /// process-wide tag; an empty set yields the default factory.
+    pub fn with_extensions(
+        extensions: impl IntoIterator<Item = Extension>,
+    ) -> Result<FormulaFactory, ExtensionError> {
+        let extensions: Vec<Extension> = extensions.into_iter().collect();
+        for (i, ext) in extensions.iter().enumerate() {
+            let symbol = ext.common().symbol();
+            let id = ext.common().id();
+            if crate::builtins::is_reserved_name(symbol) {
+                return Err(ExtensionError::DuplicateSymbol(symbol.to_string()));
+            }
+            for other in &extensions[i + 1..] {
+                if other.identity() == ext.identity() {
+                    continue;
+                }
+                if other.common().symbol() == symbol {
+                    return Err(ExtensionError::DuplicateSymbol(symbol.to_string()));
+                }
+                if other.common().id() == id {
+                    return Err(ExtensionError::DuplicateId(id.to_string()));
+                }
+            }
+        }
+        if extensions.is_empty() {
+            return Ok(Self::default_factory());
+        }
+        let mut registry = REGISTRY.lock().expect("registry lock");
+        let mut by_tag: BTreeMap<Tag, Extension> = BTreeMap::new();
+        for ext in extensions {
+            let identity = ext.identity();
+            let tag = match registry.tags.get(&identity) {
+                Some((tag, _)) => *tag,
+                None => {
+                    let tag = registry.next;
+                    registry.next += 1;
+                    registry.tags.insert(identity, (tag, ext.clone()));
+                    tag
+                }
+            };
+            by_tag.insert(tag, ext);
+        }
+        let key: Vec<Tag> = by_tag.keys().copied().collect();
+        if let Some(factory) = registry.factories.get(&key) {
+            return Ok(factory.clone());
+        }
+        let by_identity = by_tag
+            .iter()
+            .map(|(tag, ext)| (ext.identity(), *tag))
+            .collect();
+        let factory = FormulaFactory(Arc::new(FactoryData {
+            extensions: by_tag,
+            by_identity,
+        }));
+        registry.factories.insert(key, factory.clone());
+        Ok(factory)
+    }
+
+    /// The extension registered under `tag` in this factory, if any.
+    pub fn extension(&self, tag: Tag) -> Option<&Extension> {
+        self.0.extensions.get(&tag)
+    }
+
+    /// The extensions this factory supports, in tag order.
+    pub fn extensions(&self) -> impl Iterator<Item = (Tag, &Extension)> {
+        self.0.extensions.iter().map(|(tag, ext)| (*tag, ext))
+    }
+
+    fn tag_of_identity(&self, identity: usize) -> Result<Tag, FactoryError> {
+        self.0
+            .by_identity
+            .get(&identity)
+            .copied()
+            .ok_or(FactoryError::UnknownExtension)
     }
 
     fn same_factory(&self, other: &FormulaFactory) -> bool {
@@ -535,6 +667,85 @@ impl FormulaFactory {
             span,
             caches,
         )
+    }
+
+    // ----- extended nodes -----------------------------------------------
+
+    /// An occurrence of an expression extension. The child counts must
+    /// fit the extension's kind; an explicit type must be accepted by
+    /// the extension, and without one the type is synthesized when all
+    /// children are typed.
+    /// Shared head of the extended constructors: resolves the
+    /// extension's tag, checks arity and child ownership, and builds
+    /// the child caches.
+    fn check_extended(
+        &self,
+        identity: usize,
+        kind: &super::extension::ExtensionKind,
+        exprs: &[Expression],
+        preds: &[Predicate],
+    ) -> Result<(Tag, CacheBuilder), FactoryError> {
+        let tag = self.tag_of_identity(identity)?;
+        if !kind.children.exprs.accepts(exprs.len()) || !kind.children.preds.accepts(preds.len()) {
+            return Err(FactoryError::ArityMismatch);
+        }
+        self.check_expr_children(exprs);
+        self.check_pred_children(preds);
+        let mut caches = CacheBuilder::new();
+        for child in exprs {
+            caches.add_expr(child);
+        }
+        for child in preds {
+            caches.add_pred(child);
+        }
+        Ok((tag, caches))
+    }
+
+    pub fn extended_expression(
+        &self,
+        extension: &Arc<dyn ExpressionExtension>,
+        exprs: Vec<Expression>,
+        preds: Vec<Predicate>,
+        span: Option<Span>,
+        ty: Option<Type>,
+    ) -> Result<Expression, FactoryError> {
+        let identity = Arc::as_ptr(extension) as *const () as usize;
+        let (tag, caches) = self.check_extended(identity, &extension.kind(), &exprs, &preds)?;
+        let ty = match ty {
+            Some(ty) => {
+                if !extension.verify_type(&ty, &exprs, &preds) {
+                    return Err(FactoryError::TypeMisfit);
+                }
+                Some(ty)
+            }
+            None => {
+                let all_typed = exprs.iter().all(Expression::is_type_checked)
+                    && preds.iter().all(Predicate::is_type_checked);
+                all_typed
+                    .then(|| extension.synthesize_type(&exprs, &preds))
+                    .flatten()
+            }
+        };
+        Ok(self.make_expr(
+            ExpressionKind::Extended { tag, exprs, preds },
+            ty,
+            span,
+            caches,
+        ))
+    }
+
+    /// An occurrence of a predicate extension; see
+    /// [`Self::extended_expression`].
+    pub fn extended_predicate(
+        &self,
+        extension: &Arc<dyn PredicateExtension>,
+        exprs: Vec<Expression>,
+        preds: Vec<Predicate>,
+        span: Option<Span>,
+    ) -> Result<Predicate, FactoryError> {
+        let identity = Arc::as_ptr(extension) as *const () as usize;
+        let (tag, caches) = self.check_extended(identity, &extension.kind(), &exprs, &preds)?;
+        Ok(self.make_pred(PredicateKind::Extended { tag, exprs, preds }, span, caches))
     }
 
     // ----- assignments --------------------------------------------------
