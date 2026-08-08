@@ -569,20 +569,30 @@ impl FormulaFactory {
         )
     }
 
-    /// `x :∈ S`.
+    /// `x, y :∈ S`.
     #[track_caller]
     pub fn becomes_member_of(
         &self,
-        ident: Expression,
+        idents: Vec<Expression>,
         set: Expression,
         span: Option<Span>,
     ) -> Assignment {
-        assert_free_identifiers(std::slice::from_ref(&ident));
-        self.check_expr_children([&ident, &set]);
+        assert!(
+            !idents.is_empty(),
+            "an assignment needs at least one target"
+        );
+        assert_free_identifiers(&idents);
+        self.check_expr_children(idents.iter().chain([&set]));
         let mut caches = CacheBuilder::new();
-        caches.add_expr(&ident);
+        for ident in &idents {
+            caches.add_expr(ident);
+        }
         caches.add_expr(&set);
-        self.make_assign(AssignmentKind::BecomesMemberOf { ident, set }, span, caches)
+        self.make_assign(
+            AssignmentKind::BecomesMemberOf { idents, set },
+            span,
+            caches,
+        )
     }
 
     /// `x, y :∣ P`, with one primed declaration per target bound over
