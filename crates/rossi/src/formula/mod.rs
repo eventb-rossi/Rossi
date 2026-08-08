@@ -7,3 +7,8 @@
 //! existing AST and is not yet wired into the parser.
 
 pub mod tag;
+pub mod typenv;
+pub mod types;
+
+pub use typenv::{SealedTypeEnvironment, TypeEnvironmentBuilder};
+pub use types::Type;
