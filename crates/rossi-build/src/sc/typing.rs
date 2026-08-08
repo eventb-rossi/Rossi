@@ -14,9 +14,9 @@
 //! exactly as the previous engine refused predicates it could not
 //! fully verify.
 
-use rossi::Predicate;
-use rossi::formula::lower::lower_predicate;
+use rossi::formula::lower::{lower_action, lower_expression, lower_predicate};
 use rossi::formula::{self, TypeEnvironmentBuilder};
+use rossi::{Action, Expression, Predicate};
 
 use crate::type_env::TypeEnv;
 use crate::types::Type;
@@ -63,6 +63,31 @@ pub(crate) fn resolve_identifier_types<'a>(
         .filter(|name| !env.contains(name))
         .map(String::as_str)
         .collect()
+}
+
+/// The per-formula gate: the predicate fully type-checks against
+/// `env`, deriving nothing new — an identifier the environment does
+/// not know makes the formula unverifiable.
+pub(crate) fn predicate_well_typed(env: &TypeEnv, pred: &Predicate) -> bool {
+    let result = lower_predicate(pred).type_check(&seal(env));
+    result.is_success() && result.inferred.is_empty()
+}
+
+/// See [`predicate_well_typed`].
+pub(crate) fn expression_well_typed(env: &TypeEnv, expr: &Expression) -> bool {
+    let result = lower_expression(expr).type_check(&seal(env));
+    result.is_success() && result.inferred.is_empty()
+}
+
+/// See [`predicate_well_typed`]. `skip` has nothing to check.
+pub(crate) fn action_well_typed(env: &TypeEnv, action: &Action) -> bool {
+    match lower_action(action) {
+        Some(assignment) => {
+            let result = assignment.type_check(&seal(env));
+            result.is_success() && result.inferred.is_empty()
+        }
+        None => true,
+    }
 }
 
 /// The checker-facing snapshot of the pipeline's environment.
