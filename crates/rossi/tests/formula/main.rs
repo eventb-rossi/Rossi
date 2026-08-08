@@ -5,6 +5,7 @@ mod common;
 mod datatypes;
 mod equality;
 mod extensions;
+mod lowering;
 mod occurrences;
 mod positions;
 mod printing;
