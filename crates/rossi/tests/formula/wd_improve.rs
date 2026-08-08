@@ -5,11 +5,7 @@ use rossi::formula::tag::{
 };
 use rossi::formula::{Expression, Predicate, SealedTypeEnvironment, Type, TypeEnvironmentBuilder};
 
-use crate::common::{decl, eq_pred, ff, fid, int};
-
-fn btrue() -> Predicate {
-    ff().literal_predicate(rossi::formula::tag::LiteralPredOp::BTrue, None)
-}
+use crate::common::{btrue, checked, decl, eq_pred, ff, fid, int};
 
 /// An environment with a partial function `f ⦂ S ⇸ S` and elements of S.
 fn fun_env() -> SealedTypeEnvironment {
@@ -19,12 +15,6 @@ fn fun_env() -> SealedTypeEnvironment {
     builder.insert("a", Type::given("S"));
     builder.insert("b", Type::given("S"));
     builder.make_snapshot()
-}
-
-fn checked(pred: Predicate, environment: &SealedTypeEnvironment) -> Predicate {
-    let result = pred.type_check(environment);
-    assert!(result.is_success(), "problems: {:?}", result.problems);
-    result.typed.expect("typed")
 }
 
 fn apply(f: &str, arg: Expression) -> Expression {

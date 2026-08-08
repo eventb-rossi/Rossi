@@ -5,30 +5,9 @@ use rossi::formula::tag::{
     AssocPredOp, AtomicOp, BinaryExprOp, BinaryPredOp, QuantExprOp, QuantPredOp, RelationalOp,
     UnaryExprOp,
 };
-use rossi::formula::{
-    Expression, Form, Predicate, SealedTypeEnvironment, Type, TypeEnvironmentBuilder,
-};
+use rossi::formula::{Expression, Form, Type, TypeEnvironmentBuilder};
 
-use crate::common::{bid, decl, eq_pred, ff, fid, forall, int};
-
-fn env(bindings: &[(&str, Type)]) -> SealedTypeEnvironment {
-    let mut builder = TypeEnvironmentBuilder::new();
-    for (name, ty) in bindings {
-        builder.insert(*name, ty.clone());
-    }
-    builder.make_snapshot()
-}
-
-/// Type-checks and returns the typed predicate.
-fn checked(pred: Predicate, environment: &SealedTypeEnvironment) -> Predicate {
-    let result = pred.type_check(environment);
-    assert!(result.is_success(), "problems: {:?}", result.problems);
-    result.typed.expect("typed")
-}
-
-fn btrue() -> Predicate {
-    ff().literal_predicate(rossi::formula::tag::LiteralPredOp::BTrue, None)
-}
+use crate::common::{bid, btrue, checked, decl, env, eq_pred, ff, fid, forall, int};
 
 /// A typed integer identifier.
 fn iid(name: &str) -> Expression {
