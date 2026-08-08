@@ -1,14 +1,19 @@
 //! Complete well-typedness gates for guards and actions.
 //!
-//! Rodin drops a guard or action when any expression constraint fails and
-//! marks the enclosing event inaccurate. Unknown forms are not accepted as
-//! well typed: the inference engine reports them as unverified.
+//! Rodin drops a guard or action when any expression constraint fails
+//! and marks the enclosing event inaccurate. Unknown forms are not
+//! accepted as well typed: a formula the type checker cannot fully
+//! resolve against the environment is unverifiable.
+//!
+//! The gates run through the formula model: the formula is lowered and
+//! type-checked, and an assignment's target/product/prime constraints
+//! are the model's own typing rules — a such-that condition binds its
+//! primed identifiers to declarations that share their target's type.
 
-use rossi::{Action, ActionKind, Expression, Predicate};
+use rossi::{Action, Expression, Predicate};
 
-use crate::infer::{check_expression_type, check_predicate_type};
+use crate::sc::typing::{action_well_typed, expression_well_typed, predicate_well_typed};
 use crate::type_env::TypeEnv;
-use crate::types::Type;
 
 /// `true` if every predicate and embedded expression constraint is verified.
 pub fn is_well_typed_predicate(env: &TypeEnv, pred: &Predicate) -> bool {
@@ -17,7 +22,7 @@ pub fn is_well_typed_predicate(env: &TypeEnv, pred: &Predicate) -> bool {
 }
 
 pub(crate) fn is_well_typed_enriched_predicate(env: &TypeEnv, pred: &Predicate) -> bool {
-    check_predicate_type(env, pred).is_ok()
+    predicate_well_typed(env, pred)
 }
 
 /// `true` if every assignment target and RHS satisfy Rodin's constraints.
@@ -27,48 +32,18 @@ pub fn is_well_typed_action(env: &TypeEnv, action: &Action) -> bool {
 }
 
 pub(crate) fn is_well_typed_enriched_action(env: &TypeEnv, action: &Action) -> bool {
-    match &action.kind {
-        ActionKind::Skip => true,
-        ActionKind::Assignment { assignments } => assignments.iter().all(|(target, rhs)| {
-            env.get(target.as_str())
-                .is_some_and(|expected| check_expression_type(env, rhs, Some(expected)).is_ok())
-        }),
-        ActionKind::BecomesIn { variables, set } => assignment_product_type(env, variables)
-            .map(Type::pow)
-            .is_some_and(|expected| check_expression_type(env, set, Some(&expected)).is_ok()),
-        ActionKind::BecomesSuchThat {
-            variables,
-            predicate,
-        } => {
-            let mut local = env.clone();
-            for variable in variables {
-                let Some(ty) = env.get(variable.as_str()) else {
-                    return false;
-                };
-                local.insert(format!("{}'", variable.as_str()), ty.clone());
-            }
-            check_predicate_type(&local, predicate).is_ok()
-        }
-    }
-}
-
-fn assignment_product_type(env: &TypeEnv, variables: &[rossi::ast::Ident]) -> Option<Type> {
-    let mut variables = variables.iter();
-    let first = env.get(variables.next()?.as_str())?.clone();
-    variables.try_fold(first, |product, variable| {
-        Some(Type::prod(product, env.get(variable.as_str())?.clone()))
-    })
+    action_well_typed(env, action)
 }
 
 /// `true` if every expression constraint is verified.
 pub fn is_well_typed_expression(env: &TypeEnv, expr: &Expression) -> bool {
     let enriched = crate::enrich::enrich_expression(expr.clone(), env);
-    check_expression_type(env, &enriched, None).is_ok()
+    expression_well_typed(env, &enriched)
 }
-
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::types::Type;
     use rossi::ast::expression::{BinaryOp, UnaryOp};
     use rossi::{parse_action_str, parse_expression_str, parse_predicate_str};
 

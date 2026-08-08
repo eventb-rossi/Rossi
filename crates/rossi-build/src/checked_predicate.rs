@@ -26,7 +26,6 @@
 use rossi::{Action, Expression, LabeledPredicate, Predicate};
 
 use crate::enrich::{enrich_action, enrich_expression, enrich_predicate};
-use crate::infer::check_predicate_type;
 use crate::normalize::{canonical_action_with_env, canonical_expression, canonical_predicate};
 use crate::sc::identifier_walker::{
     free_identifier_in_action_rhs, free_identifier_in_expression, free_identifier_in_predicate,
@@ -160,7 +159,7 @@ pub fn check_labeled_predicate(
             span,
         });
     }
-    if check_predicate_type(env, &pc.predicate).is_err() {
+    if !crate::sc::typing::predicate_well_typed(env, &pc.predicate) {
         return Err(Diagnostic {
             severity: Severity::Error,
             origin: origin(&label),

@@ -266,24 +266,6 @@ pub fn type_of_expression(env: &TypeEnv, expr: &Expression) -> Option<Type> {
     ground(&u, &t)
 }
 
-/// Check every type constraint in an expression, optionally constraining its
-/// result to `expected`. Unlike [`type_of_expression`], an unresolved operand
-/// is distinct from a verified polymorphic type and is rejected.
-pub(crate) fn check_expression_type(
-    env: &TypeEnv,
-    expr: &Expression,
-    expected: Option<&Type>,
-) -> Result<(), TypeError> {
-    let mut u = Unifier::new();
-    let Some(t) = synth(env, expr, &mut u) else {
-        return Err(synthesis_error(&u));
-    };
-    if let Some(expected) = expected {
-        u.unify(&t, &ITy::from(expected)).ok();
-    }
-    finish_type_check(&u)
-}
-
 /// Check every type constraint in a predicate.
 pub(crate) fn check_predicate_type(env: &TypeEnv, pred: &Predicate) -> Result<(), TypeError> {
     let mut u = Unifier::new();
