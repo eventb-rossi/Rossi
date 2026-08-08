@@ -418,13 +418,13 @@ pub(super) fn rewrite_assign(a: &Assignment, rw: &mut dyn FormulaRewriter) -> As
                 a.clone()
             }
         }
-        AssignmentKind::BecomesMemberOf { ident, set } => {
-            let i2 = rewrite_expr(ident, rw);
+        AssignmentKind::BecomesMemberOf { idents, set } => {
+            let (idents2, ic) = rewrite_exprs(idents, rw);
             let s2 = rewrite_expr(set, rw);
-            if same_expr(&i2, ident) && same_expr(&s2, set) {
-                a.clone()
+            if ic || !same_expr(&s2, set) {
+                ff.becomes_member_of(idents2, s2, a.span())
             } else {
-                ff.becomes_member_of(i2, s2, a.span())
+                a.clone()
             }
         }
         AssignmentKind::BecomesSuchThat {

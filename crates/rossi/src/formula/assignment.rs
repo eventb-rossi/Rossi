@@ -47,10 +47,12 @@ pub enum AssignmentKind {
         /// The assigned values, parallel to `idents`.
         values: Vec<Expression>,
     },
-    /// `x :∈ S` — nondeterministic choice from a set, single-target.
+    /// `x, y :∈ S` — nondeterministic choice from a set. With several
+    /// targets, the set ranges over the left-nested product of the
+    /// target types.
     BecomesMemberOf {
-        /// The assigned identifier (a free-identifier expression).
-        ident: Expression,
+        /// The assigned identifiers (free-identifier expressions).
+        idents: Vec<Expression>,
         /// The set chosen from.
         set: Expression,
     },
@@ -110,8 +112,8 @@ impl Assignment {
     pub fn assigned_identifiers(&self) -> &[Expression] {
         match &self.0.kind {
             AssignmentKind::BecomesEqualTo { idents, .. }
+            | AssignmentKind::BecomesMemberOf { idents, .. }
             | AssignmentKind::BecomesSuchThat { idents, .. } => idents,
-            AssignmentKind::BecomesMemberOf { ident, .. } => std::slice::from_ref(ident),
         }
     }
 }
@@ -154,7 +156,9 @@ pub(super) fn kind_hash(kind: &AssignmentKind) -> u64 {
             fold(idents.iter().map(|i| i.0.hash)),
             fold(values.iter().map(|v| v.0.hash)),
         ),
-        AssignmentKind::BecomesMemberOf { ident, set } => combine(ident.0.hash, set.0.hash),
+        AssignmentKind::BecomesMemberOf { idents, set } => {
+            combine(fold(idents.iter().map(|i| i.0.hash)), set.0.hash)
+        }
         AssignmentKind::BecomesSuchThat { idents, pred, .. } => {
             combine(fold(idents.iter().map(|i| i.0.hash)), pred.0.hash)
         }
@@ -175,12 +179,12 @@ pub(super) fn kind_eq(a: &AssignmentKind, b: &AssignmentKind) -> bool {
             },
         ) => idents == idents2 && values == values2,
         (
-            K::BecomesMemberOf { ident, set },
+            K::BecomesMemberOf { idents, set },
             K::BecomesMemberOf {
-                ident: ident2,
+                idents: idents2,
                 set: set2,
             },
-        ) => ident == ident2 && set == set2,
+        ) => idents == idents2 && set == set2,
         (
             K::BecomesSuchThat {
                 idents,
@@ -210,8 +214,8 @@ pub(super) fn kind_typed(kind: &AssignmentKind) -> bool {
             idents.iter().all(Expression::is_type_checked)
                 && values.iter().all(Expression::is_type_checked)
         }
-        AssignmentKind::BecomesMemberOf { ident, set } => {
-            ident.is_type_checked() && set.is_type_checked()
+        AssignmentKind::BecomesMemberOf { idents, set } => {
+            idents.iter().all(Expression::is_type_checked) && set.is_type_checked()
         }
         AssignmentKind::BecomesSuchThat {
             idents,
