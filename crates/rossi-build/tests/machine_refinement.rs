@@ -435,7 +435,7 @@ mod inherited_param_scope {
     //! - `CheckedMachine::event_env` rebuilds the event-local type scope
     //!   (machine env + chain parameters).
 
-    use rossi_build::normalize::{canonical_expression, canonical_predicate};
+    use rossi_build::normalize::{canonical_typed_expression, canonical_typed_predicate};
     use rossi_build::{Project, ProjectComponent, Type, build, build_with_model, sc_view::ScView};
 
     fn project() -> Project {
@@ -553,7 +553,7 @@ mod inherited_param_scope {
     }
 
     #[test]
-    fn machine_record_carries_enriched_formulas() {
+    fn machine_record_carries_typed_formulas() {
         let (r, model) = build_with_model(&project());
         assert!(r.is_ok(), "diagnostics: {:?}", r.diagnostics);
 
@@ -562,18 +562,19 @@ mod inherited_param_scope {
         let invariant = &m0.record.invariants[0];
         assert_eq!(invariant.label, "inv1");
         assert_eq!(
-            canonical_predicate(&invariant.predicate),
+            canonical_typed_predicate(&invariant.typed),
             invariant.predicate_canonical
         );
         assert!(
             invariant.predicate_canonical.contains("∀x⦂ℤ·"),
-            "invariant binder should be enriched: {:?}",
+            "invariant binder should carry its type: {:?}",
             invariant.predicate
         );
 
         let variant = m0.record.variant.as_ref().expect("variant in record");
+        let variant_typed = variant.typed.as_ref().expect("variant type-checks");
         assert_eq!(
-            canonical_expression(&variant.expression),
+            canonical_typed_expression(variant_typed),
             variant.expression_canonical
         );
         assert_eq!(
@@ -588,12 +589,12 @@ mod inherited_param_scope {
         let witness = event.witnesses.first().expect("p witness");
         assert_eq!(witness.label, "p");
         assert_eq!(
-            canonical_predicate(&witness.predicate),
+            canonical_typed_predicate(&witness.typed),
             witness.predicate_canonical
         );
         assert!(
             witness.predicate_canonical.contains("∀z⦂ℤ·"),
-            "witness binder should be enriched: {:?}",
+            "witness binder should carry its type: {:?}",
             witness.predicate
         );
     }

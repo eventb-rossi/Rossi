@@ -101,7 +101,7 @@ impl CheckedContext {
 pub struct CheckedMachine {
     /// The typed record this machine's `.bcm` was rendered from —
     /// name, output filename, environment, invariants, variant, events,
-    /// and ancestors in enriched-AST form. The machine analogue of
+    /// and ancestors as typed formulas. The machine analogue of
     /// [`CheckedContext::record`] and the single home for those fields;
     /// downstream passes (well-definedness, IDE tooling) read them via
     /// the accessors below.

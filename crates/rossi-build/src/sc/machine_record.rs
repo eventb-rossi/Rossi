@@ -239,8 +239,8 @@ pub struct ActionDecl {
     /// Position of this action in the *raw* event's `actions` list — see
     /// [`super::context_record::AxiomDecl::source_index`].
     pub source_index: usize,
-    /// Enriched action AST. Read in `machine/mod.rs` (via `lhs_variables`)
-    /// to find the LHS variables an inherited INITIALISATION action
+    /// Action AST. Read in `machine/mod.rs` (via `lhs_variables`) to
+    /// find the LHS variables an inherited INITIALISATION action
     /// assigns when deciding extended-event scope.
     pub action: Action,
     pub canonical: String,
