@@ -46,6 +46,7 @@ pub(crate) mod comment_attach;
 pub mod comments;
 pub mod deps;
 pub mod error;
+pub mod formula;
 pub mod keywords;
 pub mod names;
 pub mod nesting;
