@@ -81,6 +81,63 @@ impl<T> TypeCheckResult<T> {
     }
 }
 
+/// An opaque handle to a type being solved; what extension typing
+/// rules receive for their expression children. Inference variables
+/// never escape through it.
+#[derive(Debug, Clone, Copy)]
+pub struct TcType(TRef);
+
+/// The interface extension typing rules use to state constraints.
+pub struct TypeCheckMediator<'c, 'a> {
+    checker: &'c mut Checker<'a>,
+    span: Option<Span>,
+}
+
+impl TypeCheckMediator<'_, '_> {
+    /// A fresh type unknown.
+    pub fn fresh(&mut self) -> TcType {
+        TcType(self.checker.uni.fresh())
+    }
+
+    /// A known type.
+    pub fn from_type(&mut self, ty: &Type) -> TcType {
+        TcType(self.checker.uni.lift(ty))
+    }
+
+    /// `ℙ(base)`
+    pub fn pow(&mut self, base: TcType) -> TcType {
+        TcType(self.checker.uni.pow(base.0))
+    }
+
+    /// `left × right`
+    pub fn prod(&mut self, left: TcType, right: TcType) -> TcType {
+        TcType(self.checker.uni.prod(left.0, right.0))
+    }
+
+    /// `ℙ(left × right)`
+    pub fn relation(&mut self, left: TcType, right: TcType) -> TcType {
+        TcType(self.checker.uni.relation(left.0, right.0))
+    }
+
+    /// An instance of a registered type constructor.
+    pub fn parametric(
+        &mut self,
+        tag: super::tag::Tag,
+        symbol: &str,
+        params: Vec<TcType>,
+    ) -> TcType {
+        let params = params.into_iter().map(|p| p.0).collect();
+        TcType(self.checker.uni.parametric(tag, symbol, params))
+    }
+
+    /// Requires two types to be equal; a conflict is reported against
+    /// the extended node.
+    pub fn same_type(&mut self, a: TcType, b: TcType) {
+        let span = self.span;
+        self.checker.expect(a.0, b.0, span);
+    }
+}
+
 /// Interprets an expression as a type spelling: `ℤ`, `BOOL`, a free
 /// identifier as a given set, `ℙ(·)`/`ℙ1(·)`, and products.
 pub fn type_from_expression(expr: &Expression) -> Option<Type> {
@@ -349,8 +406,21 @@ impl<'a> Checker<'a> {
                 }
                 t
             }
-            ExpressionKind::Extended { .. } => {
-                unreachable!("extension nodes are not constructible yet")
+            ExpressionKind::Extended { tag, exprs, preds } => {
+                let extension = match e.factory().extension(*tag) {
+                    Some(super::extension::Extension::Expr(ext)) => ext.clone(),
+                    _ => unreachable!("extended nodes carry a registered extension"),
+                };
+                let child_refs: Vec<TcType> =
+                    exprs.iter().map(|c| TcType(self.check_expr(c))).collect();
+                for pred in preds {
+                    self.check_pred(pred);
+                }
+                let mut mediator = TypeCheckMediator {
+                    checker: self,
+                    span,
+                };
+                extension.type_check(&mut mediator, &child_refs).0
             }
         }
     }
@@ -690,8 +760,21 @@ impl<'a> Checker<'a> {
                 }
                 self.problem(ProblemKind::UncheckableApplication, span);
             }
-            PredicateKind::Extended { .. } => {
-                unreachable!("extension nodes are not constructible yet")
+            PredicateKind::Extended { tag, exprs, preds } => {
+                let extension = match p.factory().extension(*tag) {
+                    Some(super::extension::Extension::Pred(ext)) => ext.clone(),
+                    _ => unreachable!("extended nodes carry a registered extension"),
+                };
+                let child_refs: Vec<TcType> =
+                    exprs.iter().map(|c| TcType(self.check_expr(c))).collect();
+                for pred in preds {
+                    self.check_pred(pred);
+                }
+                let mut mediator = TypeCheckMediator {
+                    checker: self,
+                    span,
+                };
+                extension.type_check(&mut mediator, &child_refs);
             }
         }
     }
@@ -886,8 +969,17 @@ impl Rebuilder<'_> {
                 // The spelled type is presentation; it stays verbatim.
                 self.ff.ascription(expr, type_expr.clone(), span)
             }
-            ExpressionKind::Extended { .. } => {
-                unreachable!("extension nodes are not constructible yet")
+            ExpressionKind::Extended { tag, exprs, preds } => {
+                let extension = match self.ff.extension(*tag) {
+                    Some(super::extension::Extension::Expr(ext)) => ext.clone(),
+                    _ => unreachable!("extended nodes carry a registered extension"),
+                };
+                let exprs = exprs.iter().map(|c| self.rebuild_expr(c)).collect();
+                let preds = preds.iter().map(|c| self.rebuild_pred(c)).collect();
+                let solved = self.solved(slot);
+                self.ff
+                    .extended_expression(&extension, exprs, preds, span, Some(solved))
+                    .expect("a checked construction fits its extension")
             }
         }
     }
@@ -931,8 +1023,16 @@ impl Rebuilder<'_> {
             PredicateKind::Application { .. } => {
                 unreachable!("applications never type-check")
             }
-            PredicateKind::Extended { .. } => {
-                unreachable!("extension nodes are not constructible yet")
+            PredicateKind::Extended { tag, exprs, preds } => {
+                let extension = match self.ff.extension(*tag) {
+                    Some(super::extension::Extension::Pred(ext)) => ext.clone(),
+                    _ => unreachable!("extended nodes carry a registered extension"),
+                };
+                let exprs = exprs.iter().map(|c| self.rebuild_expr(c)).collect();
+                let preds = preds.iter().map(|c| self.rebuild_pred(c)).collect();
+                self.ff
+                    .extended_predicate(&extension, exprs, preds, span)
+                    .expect("a checked construction fits its extension")
             }
         }
     }

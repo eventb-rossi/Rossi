@@ -476,6 +476,14 @@ fn rewrite_expr_at(
             )),
             _ => Err(PositionError::OutOfRange),
         },
+        ExpressionKind::Extended { tag, exprs, preds } => {
+            let Some(super::extension::Extension::Expr(ext)) = ff.extension(*tag).cloned() else {
+                return Err(PositionError::OutOfRange);
+            };
+            let (exprs, preds) = replace_extended_children(exprs, preds, index, rest, replacement)?;
+            ff.extended_expression(&ext, exprs, preds, e.span(), None)
+                .map_err(|_| PositionError::IncompatibleReplacement)
+        }
         _ => Err(PositionError::OutOfRange),
     }
 }
@@ -563,7 +571,33 @@ fn rewrite_pred_at(
             let args = replace_expr_list(args, index, rest, replacement)?;
             Ok(ff.predicate_application(function, *function_span, args, p.span()))
         }
+        PredicateKind::Extended { tag, exprs, preds } => {
+            let Some(super::extension::Extension::Pred(ext)) = ff.extension(*tag).cloned() else {
+                return Err(PositionError::OutOfRange);
+            };
+            let (exprs, preds) = replace_extended_children(exprs, preds, index, rest, replacement)?;
+            ff.extended_predicate(&ext, exprs, preds, p.span())
+                .map_err(|_| PositionError::IncompatibleReplacement)
+        }
         _ => Err(PositionError::OutOfRange),
+    }
+}
+
+/// Replaces one positional child of an extended node (expressions
+/// first, then predicates).
+fn replace_extended_children(
+    exprs: &[Expression],
+    preds: &[Predicate],
+    index: usize,
+    rest: &[u32],
+    replacement: FormulaRef<'_>,
+) -> Result<(Vec<Expression>, Vec<Predicate>), PositionError> {
+    if index < exprs.len() {
+        let exprs = replace_expr_list(exprs, index, rest, replacement)?;
+        Ok((exprs, preds.to_vec()))
+    } else {
+        let preds = replace_pred_list(preds, index - exprs.len(), rest, replacement)?;
+        Ok((exprs.to_vec(), preds))
     }
 }
 

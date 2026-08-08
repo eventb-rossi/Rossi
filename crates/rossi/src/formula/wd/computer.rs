@@ -52,9 +52,38 @@ pub(super) fn wd_expr(fb: &FormulaBuilder, e: &Expression) -> Predicate {
             fb.land(children_wd, local_wd)
         }
         ExpressionKind::Ascription { expr, .. } => wd_expr(fb, expr),
-        ExpressionKind::Extended { .. } => {
-            unreachable!("extension nodes are not constructible yet")
+        ExpressionKind::Extended { tag, exprs, preds } => {
+            let extension = e
+                .factory()
+                .extension(*tag)
+                .expect("extended nodes carry a registered extension");
+            extended_wd(fb, extension.common(), exprs, preds)
         }
+    }
+}
+
+/// The lemma of an extended node: the extension's own contribution,
+/// conjoined with the children's lemmas for strict operators.
+fn extended_wd(
+    fb: &FormulaBuilder,
+    extension: &dyn super::super::extension::FormulaExtension,
+    exprs: &[Expression],
+    preds: &[Predicate],
+) -> Predicate {
+    let own = extension.wd_predicate(
+        super::super::extension::ExtendedRef { exprs, preds },
+        &super::WdMediator { fb },
+    );
+    if extension.conjoin_children_wd() {
+        fb.land_all(
+            exprs
+                .iter()
+                .map(|c| wd_expr(fb, c))
+                .chain(preds.iter().map(|c| wd_pred(fb, c)))
+                .chain([own]),
+        )
+    } else {
+        own
     }
 }
 
@@ -142,8 +171,12 @@ pub(super) fn wd_pred(fb: &FormulaBuilder, p: &Predicate) -> Predicate {
         PredicateKind::Application { .. } => {
             unreachable!("applications never type-check")
         }
-        PredicateKind::Extended { .. } => {
-            unreachable!("extension nodes are not constructible yet")
+        PredicateKind::Extended { tag, exprs, preds } => {
+            let extension = p
+                .factory()
+                .extension(*tag)
+                .expect("extended nodes carry a registered extension");
+            extended_wd(fb, extension.common(), exprs, preds)
         }
     }
 }

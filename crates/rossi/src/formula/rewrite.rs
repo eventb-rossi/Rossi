@@ -264,9 +264,20 @@ pub(super) fn rewrite_expr(e: &Expression, rw: &mut dyn FormulaRewriter) -> Expr
                 ff.ascription(x2, t2, e.span())
             }
         }
-        // Extension nodes cannot be constructed yet; rebuilt with the
-        // extension mechanism.
-        ExpressionKind::Extended { .. } => e.clone(),
+        ExpressionKind::Extended { tag, exprs, preds } => {
+            let (exprs2, ec) = rewrite_exprs(exprs, rw);
+            let (preds2, pc) = rewrite_preds(preds, rw);
+            if ec || pc {
+                let Some(super::extension::Extension::Expr(ext)) = ff.extension(*tag).cloned()
+                else {
+                    unreachable!("extended nodes carry a registered extension");
+                };
+                ff.extended_expression(&ext, exprs2, preds2, e.span(), None)
+                    .expect("a rebuilt node keeps its shape")
+            } else {
+                e.clone()
+            }
+        }
     };
     rw.rewrite_expression(&rebuilt)
 }
@@ -399,9 +410,20 @@ pub(super) fn rewrite_pred(p: &Predicate, rw: &mut dyn FormulaRewriter) -> Predi
                 p.clone()
             }
         }
-        // Extension nodes cannot be constructed yet; rebuilt with the
-        // extension mechanism.
-        PredicateKind::Extended { .. } => p.clone(),
+        PredicateKind::Extended { tag, exprs, preds } => {
+            let (exprs2, ec) = rewrite_exprs(exprs, rw);
+            let (preds2, pc) = rewrite_preds(preds, rw);
+            if ec || pc {
+                let Some(super::extension::Extension::Pred(ext)) = ff.extension(*tag).cloned()
+                else {
+                    unreachable!("extended nodes carry a registered extension");
+                };
+                ff.extended_predicate(&ext, exprs2, preds2, p.span())
+                    .expect("a rebuilt node keeps its shape")
+            } else {
+                p.clone()
+            }
+        }
     };
     rw.rewrite_predicate(&rebuilt)
 }

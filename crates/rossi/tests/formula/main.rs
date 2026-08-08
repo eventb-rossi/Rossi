@@ -3,6 +3,7 @@
 mod common;
 
 mod equality;
+mod extensions;
 mod positions;
 mod rewriting;
 mod synthesis;

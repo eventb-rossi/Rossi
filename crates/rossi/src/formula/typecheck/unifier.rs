@@ -80,6 +80,15 @@ impl TypeUnifier {
         self.pow(prod)
     }
 
+    /// An instance of a registered type constructor.
+    pub(super) fn parametric(&mut self, tag: Tag, symbol: &str, params: Vec<TRef>) -> TRef {
+        self.push(TNode::Parametric {
+            tag,
+            symbol: symbol.to_string(),
+            params,
+        })
+    }
+
     /// Lifts a solved type into the arena.
     pub(super) fn lift(&mut self, ty: &Type) -> TRef {
         match ty {
