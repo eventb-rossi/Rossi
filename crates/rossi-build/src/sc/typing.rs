@@ -65,18 +65,38 @@ pub(crate) fn resolve_identifier_types<'a>(
         .collect()
 }
 
-/// The per-formula gate: the predicate fully type-checks against
-/// `env`, deriving nothing new — an identifier the environment does
-/// not know makes the formula unverifiable.
-pub(crate) fn predicate_well_typed(env: &TypeEnv, pred: &Predicate) -> bool {
+/// The per-formula gate and its payoff in one step: the fully typed
+/// formula-model rebuild of the predicate, or `None` when it does not
+/// type-check against `env` without deriving anything new — an
+/// identifier the environment does not know makes the formula
+/// unverifiable.
+pub(crate) fn typed_predicate(env: &TypeEnv, pred: &Predicate) -> Option<formula::Predicate> {
     let result = lower_predicate(pred).type_check(&seal(env));
-    result.is_success() && result.inferred.is_empty()
+    (result.is_success() && result.inferred.is_empty()).then(|| {
+        result
+            .typed
+            .expect("a successful check produces the rebuild")
+    })
 }
 
-/// See [`predicate_well_typed`].
-pub(crate) fn expression_well_typed(env: &TypeEnv, expr: &Expression) -> bool {
+/// See [`typed_predicate`].
+pub(crate) fn predicate_well_typed(env: &TypeEnv, pred: &Predicate) -> bool {
+    typed_predicate(env, pred).is_some()
+}
+
+/// See [`typed_predicate`].
+pub(crate) fn typed_expression(env: &TypeEnv, expr: &Expression) -> Option<formula::Expression> {
     let result = lower_expression(expr).type_check(&seal(env));
-    result.is_success() && result.inferred.is_empty()
+    (result.is_success() && result.inferred.is_empty()).then(|| {
+        result
+            .typed
+            .expect("a successful check produces the rebuild")
+    })
+}
+
+/// See [`typed_predicate`].
+pub(crate) fn expression_well_typed(env: &TypeEnv, expr: &Expression) -> bool {
+    typed_expression(env, expr).is_some()
 }
 
 /// See [`predicate_well_typed`]. `skip` has nothing to check.

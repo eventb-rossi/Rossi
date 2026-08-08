@@ -481,6 +481,7 @@ fn synthesize_witness(
     WitnessDecl {
         label: name.to_string(),
         predicate_canonical: crate::normalize::canonical_predicate(&predicate),
+        typed: rossi::formula::lower::lower_predicate(&predicate),
         predicate,
         source: crate::sc::file_child_source(
             ids,
@@ -1222,6 +1223,7 @@ fn build_guard_decl(
     Ok(GuardDecl {
         label,
         source_index,
+        typed: pc.typed.expect("checked by check_labeled_predicate"),
         predicate: pc.predicate,
         predicate_canonical: pc.canonical,
         is_theorem: g.is_theorem,
@@ -1295,6 +1297,7 @@ fn build_witness_decl(
     );
     WitnessDecl {
         label: witness_label.to_string(),
+        typed: checked.typed.expect("gated before construction"),
         predicate: checked.predicate,
         predicate_canonical: checked.canonical,
         source,

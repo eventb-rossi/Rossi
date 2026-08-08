@@ -72,6 +72,10 @@ pub struct AxiomDecl {
     /// analyses can re-check it without re-parsing strings.
     #[allow(dead_code)] // used by machine SC (M1+)
     pub predicate: Predicate,
+    /// The fully typed formula-model form: every expression node
+    /// carries its solved type. What downstream analyses
+    /// (well-definedness, proof obligations, translation) consume.
+    pub typed: rossi::formula::Predicate,
     pub predicate_canonical: String,
     pub is_theorem: bool,
     pub source: HandleUri,
@@ -183,6 +187,9 @@ mod tests {
             axioms: vec![AxiomDecl {
                 label: "axm1".into(),
                 source_index: 0,
+                typed: rossi::formula::lower::lower_predicate(
+                    &rossi::parse_predicate_str("c ∈ ℕ").unwrap(),
+                ),
                 predicate: rossi::parse_predicate_str("c ∈ ℕ").unwrap(),
                 predicate_canonical: "c∈ℕ".into(),
                 is_theorem: false,

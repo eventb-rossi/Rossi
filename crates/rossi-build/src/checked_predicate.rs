@@ -49,6 +49,9 @@ pub struct PredicateCheck {
     /// bound by a local quantifier / lambda / set-comprehension. `None`
     /// iff the predicate is closed against `env`.
     pub free_identifier: Option<String>,
+    /// The fully typed formula-model rebuild, when the predicate
+    /// type-checks against `env`. `None` is the ill-typed verdict.
+    pub typed: Option<rossi::formula::Predicate>,
 }
 
 /// Result of checking a standalone expression (currently only used by
@@ -58,6 +61,8 @@ pub struct ExpressionCheck {
     pub expression: Expression,
     pub canonical: String,
     pub free_identifier: Option<String>,
+    /// See [`PredicateCheck::typed`].
+    pub typed: Option<rossi::formula::Expression>,
 }
 
 /// Result of checking an action.
@@ -91,6 +96,7 @@ pub fn check_predicate(p: &Predicate, env: &TypeEnv) -> PredicateCheck {
     PredicateCheck {
         free_identifier: free_identifier_in_predicate(&enriched, env),
         canonical: canonical_predicate(&enriched),
+        typed: crate::sc::typing::typed_predicate(env, &enriched),
         predicate: enriched,
     }
 }
@@ -101,6 +107,7 @@ pub fn check_expression(e: &Expression, env: &TypeEnv) -> ExpressionCheck {
     ExpressionCheck {
         free_identifier: free_identifier_in_expression(&enriched, env),
         canonical: canonical_expression(&enriched),
+        typed: crate::sc::typing::typed_expression(env, &enriched),
         expression: enriched,
     }
 }
@@ -159,7 +166,7 @@ pub fn check_labeled_predicate(
             span,
         });
     }
-    if !crate::sc::typing::predicate_well_typed(env, &pc.predicate) {
+    if pc.typed.is_none() {
         return Err(Diagnostic {
             severity: Severity::Error,
             origin: origin(&label),
