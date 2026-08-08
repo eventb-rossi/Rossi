@@ -2,14 +2,15 @@
 //!
 //! This module contains the data structures representing the parsed Event-B components.
 
-pub mod action;
 pub mod context;
 pub mod event;
-pub mod expression;
+pub mod legacy;
 pub mod machine;
-pub mod predicate;
-pub mod visit_mut;
-pub mod walk;
+
+// The formula types live in `legacy` while the typed formula model
+// replaces them; the historical paths stay valid through these
+// re-exports.
+pub use legacy::{action, expression, predicate, visit_mut, walk};
 
 pub use action::{Action, ActionKind};
 pub use context::{Context, SetDeclaration};
