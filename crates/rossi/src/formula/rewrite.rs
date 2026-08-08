@@ -370,9 +370,33 @@ pub(super) fn rewrite_pred(p: &Predicate, rw: &mut dyn FormulaRewriter) -> Predi
                     _ => None,
                 };
                 if let Some((inner_decls, inner_pred)) = nested {
-                    decls2.extend(inner_decls);
-                    p2 = inner_pred;
-                    changed = true;
+                    // An inner declaration's annotation is scoped under the
+                    // outer binders; in the merged declaration list it must
+                    // read in the enclosing scope instead. A reference to an
+                    // outer binder cannot be expressed there — keep the
+                    // nesting in that case — and a reference to an enclosing
+                    // binder renumbers past the departed outer frame.
+                    let n_outer = decls2.len() as u32;
+                    let mergeable = inner_decls.iter().all(|d| {
+                        d.annotation().is_none_or(|a| {
+                            a.dangling_bound_indices().iter().all(|&i| i >= n_outer)
+                        })
+                    });
+                    if mergeable {
+                        decls2.extend(inner_decls.iter().map(|d| match d.annotation() {
+                            Some(a) if !a.dangling_bound_indices().is_empty() => {
+                                ff.bound_ident_decl(
+                                    d.name(),
+                                    d.span(),
+                                    Some(a.shift_bound_identifiers(-(n_outer as i32))),
+                                    d.ty().cloned(),
+                                )
+                            }
+                            _ => d.clone(),
+                        }));
+                        p2 = inner_pred;
+                        changed = true;
+                    }
                 }
             }
 

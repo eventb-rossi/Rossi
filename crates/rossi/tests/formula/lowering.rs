@@ -126,6 +126,27 @@ fn comprehensions_round_trip() {
 }
 
 #[test]
+fn implicit_set_builder_leaves_outer_bound_names_free() {
+    use rossi::formula::{ExpressionKind, PredicateKind};
+
+    // In `∀x·{x + y∣y < x} ⊆ s`, the member expression's `x` reads the
+    // enclosing binder; only `y` is free within it and gets bound.
+    let legacy = parse_predicate_str("∀x·{x + y∣y < x} ⊆ s").unwrap();
+    let lowered = lower_predicate(&legacy);
+    let PredicateKind::Quantified { pred, .. } = lowered.kind() else {
+        panic!("expected the universal quantifier");
+    };
+    let PredicateKind::Relational { left, .. } = pred.kind() else {
+        panic!("expected the subset comparison");
+    };
+    let ExpressionKind::Quantified { decls, .. } = left.kind() else {
+        panic!("expected the comprehension");
+    };
+    let names: Vec<&str> = decls.iter().map(|d| d.name()).collect();
+    assert_eq!(names, ["y"]);
+}
+
+#[test]
 fn actions_round_trip() {
     for source in [
         "x ≔ 1",

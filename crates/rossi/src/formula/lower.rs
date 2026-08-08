@@ -196,10 +196,14 @@ impl Lowerer {
                 member_expression,
                 predicate,
             } => {
-                // Every identifier of the member expression becomes a
-                // declaration, in first-occurrence order.
+                // Every identifier free in the member expression becomes
+                // a declaration, in first-occurrence order. Occurrences
+                // already bound by an enclosing binder stay references
+                // to it — the member expression is read in the enclosing
+                // scope, and only what is free there gets bound.
                 let mut names: Vec<String> = Vec::new();
                 collect_identifiers(member_expression, &mut names);
+                names.retain(|name| !self.binders.contains(name));
                 let decls: Vec<BoundIdentDecl> = names
                     .iter()
                     .map(|name| self.ff.bound_ident_decl(name, None, None, None))

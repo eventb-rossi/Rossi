@@ -218,8 +218,22 @@ pub fn walk_expression<V: IdentVisitor>(
             member_expression,
             predicate,
         } => {
-            walk_expression(member_expression, binders, v)?;
-            walk_predicate(predicate, binders, v)
+            // `{E∣P}` implicitly binds, over both E and P, every
+            // identifier free in E that no enclosing binder already
+            // covers. There is no declaration site: the first
+            // occurrence in E stands in for one, so the frame carries
+            // its span and no [`IdentRole::Binder`] event is emitted.
+            let frame = implicit_set_builder_frame(member_expression, binders);
+            with_binders(
+                v,
+                binders,
+                frame,
+                union_span(member_expression.span, predicate.span),
+                |binders, v| {
+                    walk_expression(member_expression, binders, v)?;
+                    walk_predicate(predicate, binders, v)
+                },
+            )
         }
         ExpressionKind::Lambda {
             pattern,
@@ -330,6 +344,36 @@ fn binder_frame(idents: &[TypedIdentifier]) -> Vec<Binder> {
             span: ti.span,
         })
         .collect()
+}
+
+/// The implicit binders of `{E∣P}`: identifiers free within `E` (first
+/// occurrence order, deduped) that `binders` does not already cover.
+fn implicit_set_builder_frame(member_expression: &Expression, binders: &[Binder]) -> Vec<Binder> {
+    struct Collector<'a> {
+        outer: &'a [Binder],
+        frame: Vec<Binder>,
+    }
+    impl IdentVisitor for Collector<'_> {
+        fn visit(&mut self, occ: IdentOccurrence<'_>) -> ControlFlow<()> {
+            if occ.role == IdentRole::Usage
+                && !occ.binders.iter().any(|b| b.name == occ.name)
+                && !self.outer.iter().any(|b| b.name == occ.name)
+                && !self.frame.iter().any(|b| b.name == occ.name)
+            {
+                self.frame.push(Binder {
+                    name: occ.name.to_string(),
+                    span: occ.span,
+                });
+            }
+            ControlFlow::Continue(())
+        }
+    }
+    let mut collector = Collector {
+        outer: binders,
+        frame: Vec::new(),
+    };
+    let _ = walk_expression(member_expression, &mut Vec::new(), &mut collector);
+    collector.frame
 }
 
 /// Report each leaf binder of a lambda pattern (enclosing scope) and walk its
@@ -486,5 +530,32 @@ mod tests {
         assert_eq!(union_span(None, Some(b)), Some(b));
         assert_eq!(union_span(Some(a), None), Some(a));
         assert_eq!(union_span(None, None), None);
+    }
+
+    fn recorded_scopes(src: &str) -> Vec<Vec<String>> {
+        let p = crate::parse_predicate_str(src).expect(src);
+        let mut rec = ScopeRecorder { scopes: Vec::new() };
+        let _ = walk_predicate(&p, &mut Vec::new(), &mut rec);
+        rec.scopes.into_iter().map(|(names, _)| names).collect()
+    }
+
+    #[test]
+    fn set_builder_scopes_its_member_identifiers() {
+        // `{n + m∣n < m}` implicitly binds n and m over both sides, in
+        // first-occurrence order.
+        assert_eq!(
+            recorded_scopes("{n + m∣n < m} ⊆ s"),
+            vec![vec!["n".to_string(), "m".to_string()]]
+        );
+    }
+
+    #[test]
+    fn set_builder_leaves_outer_bound_names_to_their_binder() {
+        // The member expression's `x` reads the enclosing ∀ binder;
+        // only `y` becomes an implicit declaration.
+        assert_eq!(
+            recorded_scopes("∀x·{x + y∣y < x} ⊆ s"),
+            vec![vec!["x".to_string()], vec!["y".to_string()]]
+        );
     }
 }

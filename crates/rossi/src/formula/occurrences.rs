@@ -94,6 +94,25 @@ impl Occurrence<'_> {
             Resolution::Free => None,
         }
     }
+
+    /// Whether this is an after-state read: a bound occurrence of a
+    /// becomes-such-that primed declaration (`x'`), which reads the
+    /// post-value of the assigned variable `x` rather than a local
+    /// binder. The primed-name spelling is the model's representation
+    /// of those declarations; this is its one decoding site.
+    pub fn is_after_state_read(&self) -> bool {
+        matches!(self.resolution, Resolution::Bound { .. }) && self.name.ends_with('\'')
+    }
+
+    /// The unprimed variable an after-state read refers to (`x` for
+    /// `x'`); `None` when this is not an after-state read.
+    pub fn after_state_base(&self) -> Option<&str> {
+        if self.is_after_state_read() {
+            self.name.strip_suffix('\'')
+        } else {
+            None
+        }
+    }
 }
 
 /// Invoked for every occurrence. Returning [`ControlFlow::Break`]
@@ -191,17 +210,14 @@ pub fn walk_expression<V: OccurrenceVisitor>(
         }
         ExpressionKind::BoundIdentifier(index) => {
             match scope.len().checked_sub(1 + *index as usize) {
-                Some(i) => {
-                    let name = scope[i].name.clone();
-                    emit(
-                        v,
-                        &name,
-                        e.span(),
-                        Role::Usage,
-                        Resolution::Bound { index: *index },
-                        scope,
-                    )
-                }
+                Some(i) => emit(
+                    v,
+                    &scope[i].name,
+                    e.span(),
+                    Role::Usage,
+                    Resolution::Bound { index: *index },
+                    scope,
+                ),
                 // An index with no enclosing declaration names nothing.
                 None => ControlFlow::Continue(()),
             }
@@ -226,9 +242,20 @@ pub fn walk_expression<V: OccurrenceVisitor>(
         }
         ExpressionKind::Unary { child, .. } => walk_expression(child, scope, v),
         ExpressionKind::Quantified {
-            decls, pred, expr, ..
+            decls,
+            pred,
+            expr,
+            form,
+            ..
         } => {
-            decl_intros(decls, scope, v)?;
+            // An implicit comprehension `{E ∣ P}` has no declaration
+            // site: its binders are the identifiers free in E, and the
+            // first occurrence there stands in for the declaration. No
+            // Binder occurrence is reported for them — emitting one at
+            // the stand-in span would double the occurrence.
+            if *form != super::expression::Form::Implicit {
+                decl_intros(decls, scope, v)?;
+            }
             with_frame(
                 decls,
                 union_span(pred.span(), expr.span()),
