@@ -66,17 +66,15 @@ pub struct AxiomDecl {
     /// clause by identity rather than by label, which is ambiguous when
     /// two clauses share an (effective) label.
     pub source_index: usize,
-    /// Enriched predicate AST (binder types stamped, short-form
-    /// comprehensions lowered) — the form `predicate_canonical` was
-    /// rendered from. Kept so dependent machines and downstream
-    /// analyses can re-check it without re-parsing strings.
+    /// Predicate AST as parsed. Kept so dependent machines and
+    /// downstream analyses can re-check it without re-parsing strings.
     #[allow(dead_code)] // used by machine SC (M1+)
     pub predicate: Predicate,
     /// The fully typed formula-model form: every expression node
     /// carries its solved type. What downstream analyses
-    /// (well-definedness, proof obligations, translation) consume.
+    /// (well-definedness, proof obligations, translation) consume,
+    /// and what the emitted predicate attribute is rendered from.
     pub typed: rossi::formula::Predicate,
-    pub predicate_canonical: String,
     pub is_theorem: bool,
     pub source: HandleUri,
 }
@@ -133,7 +131,10 @@ fn render_axiom(a: &AxiomDecl, internal_name: String) -> Element {
     Element::new(tag::SC_AXIOM)
         .attr(attr::NAME, internal_name)
         .attr(attr::LABEL, a.label.clone())
-        .attr(attr::PREDICATE, a.predicate_canonical.clone())
+        .attr(
+            attr::PREDICATE,
+            crate::normalize::canonical_typed_predicate(&a.typed),
+        )
         .attr(attr::SOURCE, a.source.as_str())
         .attr_bool(attr::THEOREM, a.is_theorem)
 }
@@ -191,7 +192,6 @@ mod tests {
                     &rossi::parse_predicate_str("c ∈ ℕ").unwrap(),
                 ),
                 predicate: rossi::parse_predicate_str("c ∈ ℕ").unwrap(),
-                predicate_canonical: "c∈ℕ".into(),
                 is_theorem: false,
                 source: mk_uri().child("org.eventb.core.axiom", "axm1"),
             }],

@@ -561,12 +561,8 @@ mod inherited_param_scope {
         assert_eq!(m0.record.invariants.len(), 1);
         let invariant = &m0.record.invariants[0];
         assert_eq!(invariant.label, "inv1");
-        assert_eq!(
-            canonical_typed_predicate(&invariant.typed),
-            invariant.predicate_canonical
-        );
         assert!(
-            invariant.predicate_canonical.contains("∀x⦂ℤ·"),
+            canonical_typed_predicate(&invariant.typed).contains("∀x⦂ℤ·"),
             "invariant binder should carry its type: {:?}",
             invariant.predicate
         );
@@ -575,10 +571,6 @@ mod inherited_param_scope {
         let variant_typed = variant.typed.as_ref().expect("variant type-checks");
         assert_eq!(
             canonical_typed_expression(variant_typed),
-            variant.expression_canonical
-        );
-        assert_eq!(
-            variant.expression_canonical,
             "card({x⦂USERS·x∈registered∣x} ∖ registered)"
         );
 
@@ -588,12 +580,8 @@ mod inherited_param_scope {
             .expect("W in M1");
         let witness = event.witnesses.first().expect("p witness");
         assert_eq!(witness.label, "p");
-        assert_eq!(
-            canonical_typed_predicate(&witness.typed),
-            witness.predicate_canonical
-        );
         assert!(
-            witness.predicate_canonical.contains("∀z⦂ℤ·"),
+            canonical_typed_predicate(&witness.typed).contains("∀z⦂ℤ·"),
             "witness binder should carry its type: {:?}",
             witness.predicate
         );

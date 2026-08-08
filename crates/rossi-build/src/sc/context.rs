@@ -323,7 +323,6 @@ fn build_axiom_decl(
     Ok(AxiomDecl {
         label,
         source_index,
-        predicate_canonical: pc.canonical,
         typed: pc.typed.expect("checked by check_labeled_predicate"),
         predicate: pc.predicate,
         is_theorem: ax.is_theorem,

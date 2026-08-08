@@ -2,16 +2,12 @@
 //!
 //! Rodin's `.bcc`/`.bcm` attribute values use tighter spacing than readable
 //! Event-B text. [`PrettyPrinter`] emits that representation directly from
-//! the AST; this module adds the build-specific type annotations Rodin's
-//! static checker introduces.
+//! the AST; the typed renderings add the type annotations Rodin's static
+//! checker introduces (bound-declaration ascriptions, typed empty sets).
 
-use rossi::ast::expression::BinaryOp;
 use rossi::formula;
 use rossi::pretty::PrettyPrinter;
-use rossi::{Action, ActionKind, Expression, ExpressionKind, Predicate};
-
-use crate::type_env::TypeEnv;
-use rossi::formula::Type;
+use rossi::{Action, Expression, Predicate};
 
 /// Canonicalise a predicate to Rodin's tight form.
 pub fn canonical_predicate(p: &Predicate) -> String {
@@ -75,80 +71,11 @@ pub fn canonical_action(a: &Action) -> String {
     PrettyPrinter::rodin_canonical().print_action(a)
 }
 
-/// Canonicalise an action, injecting `⦂ T` annotations on any bare
-/// empty-set RHS expressions using the known type of the LHS variable.
-///
-/// Rodin's SC does this during type-checking: `x ≔ ∅` becomes
-/// `x ≔ ∅ ⦂ ℙ(USERS)` when `x : ℙ(USERS)`. Only deterministic assignments
-/// are affected; `:∈` (becomes-in) and `:|` (becomes-such-that) keep
-/// their raw form because the RHS is a set / predicate, not a value.
-pub fn canonical_action_with_env(a: &Action, env: &TypeEnv) -> String {
-    let annotated = annotate_empty_sets(a, env);
-    canonical_action(&annotated)
-}
-
-fn annotate_empty_sets(a: &Action, env: &TypeEnv) -> Action {
-    match &a.kind {
-        ActionKind::Assignment { assignments } => ActionKind::Assignment {
-            assignments: assignments
-                .iter()
-                .map(|(variable, expression)| {
-                    let expression = match (&expression.kind, env.get(variable.as_str())) {
-                        (ExpressionKind::EmptySet, Some(ty)) => typed_empty_set(ty),
-                        _ => expression.clone(),
-                    };
-                    (variable.clone(), expression)
-                })
-                .collect(),
-        }
-        .into(),
-        _ => a.clone(),
-    }
-}
-
-fn typed_empty_set(ty: &Type) -> Expression {
-    // Rodin only annotates empty sets on set-typed LHS (ℙ(T)).
-    // An assignment `n ≔ 0` to an ℤ-typed variable is never an empty set,
-    // so we guard here.
-    if !matches!(ty, Type::Pow(_)) {
-        return ExpressionKind::EmptySet.into();
-    }
-    ExpressionKind::Binary {
-        op: BinaryOp::OfType,
-        left: Box::new(ExpressionKind::EmptySet.into()),
-        right: Box::new(type_to_expression(ty)),
-    }
-    .into()
-}
-
-/// Convert a [`Type`] into the `Expression` shape used for type ascriptions
-/// in predicate / action text, so the pretty-printer can emit it.
-pub(crate) fn type_to_expression(ty: &Type) -> Expression {
-    use ExpressionKind as E;
-    match ty {
-        Type::Int => E::Integers.into(),
-        Type::Bool => E::BoolType.into(),
-        Type::Given(name) => E::Identifier(name.clone()).into(),
-        Type::Pow(inner) => E::Unary {
-            op: rossi::ast::expression::UnaryOp::PowerSet,
-            operand: Box::new(type_to_expression(inner)),
-        }
-        .into(),
-        Type::Prod(l, r) => E::Binary {
-            op: BinaryOp::CartesianProduct,
-            left: Box::new(type_to_expression(l)),
-            right: Box::new(type_to_expression(r)),
-        }
-        .into(),
-        Type::Parametric { symbol, .. } => {
-            unreachable!("no type constructors in the core language: {symbol}")
-        }
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::type_env::TypeEnv;
+    use rossi::formula::Type;
     use rossi::parse_predicate_str;
 
     fn canonical_from_str(src: &str) -> String {
@@ -175,44 +102,47 @@ mod tests {
         assert_eq!(canonical_predicate(&p), "x∈dom(f)∧y∈dom(f)∧x≤y");
     }
 
+    /// The typed rendering of an assignment, through the same seam the
+    /// checker uses.
+    fn canonical_typed_from_str(src: &str, env: &TypeEnv) -> String {
+        use rossi::parse_action_str;
+        let a = parse_action_str(src).unwrap();
+        let typed = crate::sc::typing::typed_assignment(env, &a).expect("assignment type-checks");
+        canonical_typed_assignment(&typed)
+    }
+
     #[test]
     fn empty_set_assignment_gets_powerset_ascription() {
-        use rossi::parse_action_str;
         let mut env = TypeEnv::new();
         env.insert("x", Type::pow(Type::Given("USERS".into())));
-        let a = parse_action_str("x ≔ ∅").unwrap();
-        assert_eq!(canonical_action_with_env(&a, &env), "x ≔ ∅ ⦂ ℙ(USERS)");
+        assert_eq!(canonical_typed_from_str("x ≔ ∅", &env), "x ≔ ∅ ⦂ ℙ(USERS)");
     }
 
     #[test]
     fn parallel_assignment_annotates_every_pair() {
-        use rossi::parse_action_str;
         let mut env = TypeEnv::new();
         env.insert("x", Type::pow(Type::Given("USERS".into())));
         env.insert("y", Type::pow(Type::Given("ITEMS".into())));
-        let action = parse_action_str("x, y ≔ ∅, ∅").unwrap();
         assert_eq!(
-            canonical_action_with_env(&action, &env),
+            canonical_typed_from_str("x, y ≔ ∅, ∅", &env),
             "x,y ≔ ∅ ⦂ ℙ(USERS),∅ ⦂ ℙ(ITEMS)"
         );
     }
 
     #[test]
     fn integer_assignment_unchanged() {
-        use rossi::parse_action_str;
         let mut env = TypeEnv::new();
         env.insert("n", Type::Int);
-        let a = parse_action_str("n ≔ 0").unwrap();
         // `0` isn't an empty set — no ascription.
-        assert_eq!(canonical_action_with_env(&a, &env), "n ≔ 0");
+        assert_eq!(canonical_typed_from_str("n ≔ 0", &env), "n ≔ 0");
     }
 
     #[test]
-    fn empty_set_assignment_without_env_stays_bare() {
+    fn untyped_assignment_renders_bare() {
         use rossi::parse_action_str;
-        let env = TypeEnv::new();
+        // The render-time fallback for a decl with no typed form.
         let a = parse_action_str("x ≔ ∅").unwrap();
-        assert_eq!(canonical_action_with_env(&a, &env), "x ≔ ∅");
+        assert_eq!(canonical_action(&a), "x ≔ ∅");
     }
 
     #[test]
@@ -229,12 +159,11 @@ mod tests {
     #[test]
     fn function_override_canonical_form() {
         use rossi::parse_action_str;
-        let env = TypeEnv::new();
-        // The parser lowers `f(x) ≔ E` to `f ≔ f\u{E103}{x ↦ E}` directly.
-        // canonical_action_with_env emits the lowered Assignment canonically.
+        // The parser lowers `f(x) ≔ E` to `f ≔ f\u{E103}{x ↦ E}` directly;
+        // the canonical form emits the lowered Assignment.
         let a = parse_action_str("currentFloor(c) ≔ f").unwrap();
         assert_eq!(
-            canonical_action_with_env(&a, &env),
+            canonical_action(&a),
             "currentFloor ≔ currentFloor\u{E103}{c ↦ f}"
         );
     }
@@ -242,15 +171,11 @@ mod tests {
     #[test]
     fn function_override_maplet_arg() {
         use rossi::parse_action_str;
-        let env = TypeEnv::new();
         // Override on a pair domain uses a maplet argument `g(a ↦ b) ≔ y`
         // (function application is single-argument); it lowers to the override
         // `g ≔ g <+ {(a ↦ b) ↦ y}`, the maplet printed flat (left-associative).
         let a = parse_action_str("g(a ↦ b) ≔ y").unwrap();
-        assert_eq!(
-            canonical_action_with_env(&a, &env),
-            "g ≔ g\u{E103}{a ↦ b ↦ y}"
-        );
+        assert_eq!(canonical_action(&a), "g ≔ g\u{E103}{a ↦ b ↦ y}");
     }
 
     /// Rodin keeps relation operators spaced and spells them with private-use

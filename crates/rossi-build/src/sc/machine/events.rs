@@ -480,7 +480,6 @@ fn synthesize_witness(
     let predicate = PredicateKind::True.into();
     WitnessDecl {
         label: name.to_string(),
-        predicate_canonical: crate::normalize::canonical_predicate(&predicate),
         typed: rossi::formula::lower::lower_predicate(&predicate),
         predicate,
         source: crate::sc::file_child_source(
@@ -817,7 +816,7 @@ fn build_repair_action(
         // other synthetic decls.
         source_index: 0,
         action: checked.action,
-        canonical: checked.canonical,
+        typed: checked.typed,
         source: source.clone(),
     }
 }
@@ -1225,7 +1224,6 @@ fn build_guard_decl(
         source_index,
         typed: pc.typed.expect("checked by check_labeled_predicate"),
         predicate: pc.predicate,
-        predicate_canonical: pc.canonical,
         is_theorem: g.is_theorem,
         source,
     })
@@ -1275,7 +1273,7 @@ fn build_action_decl(
         label,
         source_index,
         action: checked.action,
-        canonical: checked.canonical,
+        typed: checked.typed,
         source,
     }
 }
@@ -1299,7 +1297,6 @@ fn build_witness_decl(
         label: witness_label.to_string(),
         typed: checked.typed.expect("gated before construction"),
         predicate: checked.predicate,
-        predicate_canonical: checked.canonical,
         source,
     }
 }

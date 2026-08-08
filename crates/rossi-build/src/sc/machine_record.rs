@@ -27,6 +27,10 @@ use std::rc::Rc;
 use rossi::{Action, EventStatus, Expression, Predicate};
 
 use crate::handles::HandleUri;
+use crate::normalize::{
+    canonical_action, canonical_expression, canonical_typed_assignment, canonical_typed_expression,
+    canonical_typed_predicate,
+};
 use crate::type_env::TypeEnv;
 use crate::xml_out::{Element, RodinNameGenerator, attr, in_tag, tag};
 use rossi::formula::Type;
@@ -98,14 +102,13 @@ pub struct InvariantDecl {
     /// Position of this invariant in the *raw* machine's `invariants`
     /// list — see [`super::context_record::AxiomDecl::source_index`].
     pub source_index: usize,
-    /// Enriched predicate AST — the form `predicate_canonical` was rendered
-    /// from. Retained so downstream passes do not need to re-parse the XML
-    /// representation.
+    /// Predicate AST as parsed. Retained so downstream passes do not
+    /// need to re-parse the XML representation.
     pub predicate: Predicate,
     /// The fully typed formula-model form; see
-    /// [`super::context_record::AxiomDecl::typed`].
+    /// [`super::context_record::AxiomDecl::typed`]. The emitted
+    /// predicate attribute is rendered from this.
     pub typed: rossi::formula::Predicate,
-    pub predicate_canonical: String,
     pub is_theorem: bool,
     pub source: HandleUri,
 }
@@ -122,14 +125,13 @@ pub struct VariableDecl {
 #[derive(Debug, Clone)]
 pub struct VariantDecl {
     pub label: &'static str,
-    /// Enriched expression AST — the form `expression_canonical` was rendered
-    /// from. Retained so downstream passes do not need to re-parse the XML
-    /// representation.
+    /// Expression AST as parsed. Retained so downstream passes do not
+    /// need to re-parse the XML representation, and the render-time
+    /// fallback when `typed` is absent.
     pub expression: Expression,
     /// The fully typed formula-model form; `None` when the variant was
     /// kept despite referencing unknown identifiers (`usable = false`).
     pub typed: Option<rossi::formula::Expression>,
-    pub expression_canonical: String,
     pub source: HandleUri,
 }
 
@@ -221,14 +223,13 @@ pub struct GuardDecl {
     /// Position of this guard in the *raw* event's `guards` list — see
     /// [`super::context_record::AxiomDecl::source_index`].
     pub source_index: usize,
-    /// Enriched predicate AST — the form `predicate_canonical` was rendered
-    /// from. Re-read by [`EventDecl::typing_guard_predicates`] to recover
-    /// parameter types for extended events in descendant (M1+) machines.
+    /// Predicate AST as parsed. Re-read by
+    /// [`EventDecl::typing_guard_predicates`] to recover parameter
+    /// types for extended events in descendant (M1+) machines.
     pub predicate: Predicate,
     /// The fully typed formula-model form; see
     /// [`super::context_record::AxiomDecl::typed`].
     pub typed: rossi::formula::Predicate,
-    pub predicate_canonical: String,
     pub is_theorem: bool,
     pub source: HandleUri,
 }
@@ -241,23 +242,24 @@ pub struct ActionDecl {
     pub source_index: usize,
     /// Action AST. Read in `machine/mod.rs` (via `lhs_variables`) to
     /// find the LHS variables an inherited INITIALISATION action
-    /// assigns when deciding extended-event scope.
+    /// assigns when deciding extended-event scope, and the render-time
+    /// fallback when `typed` is absent.
     pub action: Action,
-    pub canonical: String,
+    /// The fully typed formula-model form; `None` for `skip`, which
+    /// has no assignment to rebuild.
+    pub typed: Option<rossi::formula::Assignment>,
     pub source: HandleUri,
 }
 
 #[derive(Debug, Clone)]
 pub struct WitnessDecl {
     pub label: String,
-    /// Enriched predicate AST — the form `predicate_canonical` was rendered
-    /// from. Retained so downstream passes do not need to re-parse the XML
-    /// representation.
+    /// Predicate AST as parsed. Retained so downstream passes do not
+    /// need to re-parse the XML representation.
     pub predicate: Predicate,
     /// The fully typed formula-model form; see
     /// [`super::context_record::AxiomDecl::typed`].
     pub typed: rossi::formula::Predicate,
-    pub predicate_canonical: String,
     pub source: HandleUri,
 }
 
@@ -418,7 +420,7 @@ fn render_invariant(inv: &InvariantDecl, internal_name: String) -> Element {
     Element::new(tag::SC_INVARIANT)
         .attr(attr::NAME, internal_name)
         .attr(attr::LABEL, inv.label.clone())
-        .attr(attr::PREDICATE, inv.predicate_canonical.clone())
+        .attr(attr::PREDICATE, canonical_typed_predicate(&inv.typed))
         .attr(attr::SOURCE, inv.source.as_str())
         .attr_bool(attr::THEOREM, inv.is_theorem)
 }
@@ -433,9 +435,15 @@ fn render_variable(v: &VariableDecl) -> Element {
 }
 
 fn render_variant(va: &VariantDecl, internal_name: String) -> Element {
+    let expression = match &va.typed {
+        Some(typed) => canonical_typed_expression(typed),
+        // An unusable variant (unknown identifier) has no typed form;
+        // its text is a plain rendering of the parse.
+        None => canonical_expression(&va.expression),
+    };
     Element::new(tag::SC_VARIANT)
         .attr(attr::NAME, internal_name)
-        .attr(attr::EXPRESSION, va.expression_canonical.clone())
+        .attr(attr::EXPRESSION, expression)
         .attr(attr::LABEL, va.label)
         .attr(attr::SOURCE, va.source.as_str())
 }
@@ -507,7 +515,7 @@ fn render_guard(g: &GuardDecl, internal_name: String) -> Element {
     Element::new(tag::SC_GUARD)
         .attr(attr::NAME, internal_name)
         .attr(attr::LABEL, g.label.clone())
-        .attr(attr::PREDICATE, g.predicate_canonical.clone())
+        .attr(attr::PREDICATE, canonical_typed_predicate(&g.typed))
         .attr(attr::SOURCE, g.source.as_str())
         .attr_bool(attr::THEOREM, g.is_theorem)
 }
@@ -520,9 +528,14 @@ fn render_parameter(p: &ParameterDecl) -> Element {
 }
 
 fn render_action(a: &ActionDecl, internal_name: String) -> Element {
+    let assignment = match &a.typed {
+        Some(typed) => canonical_typed_assignment(typed),
+        // `skip` has no assignment to rebuild; render the parse.
+        None => canonical_action(&a.action),
+    };
     Element::new(tag::SC_ACTION)
         .attr(attr::NAME, internal_name)
-        .attr(attr::ASSIGNMENT, a.canonical.clone())
+        .attr(attr::ASSIGNMENT, assignment)
         .attr(attr::LABEL, a.label.clone())
         .attr(attr::SOURCE, a.source.as_str())
 }
@@ -531,7 +544,7 @@ fn render_witness(w: &WitnessDecl, internal_name: String) -> Element {
     Element::new(tag::SC_WITNESS)
         .attr(attr::NAME, internal_name)
         .attr(attr::LABEL, w.label.clone())
-        .attr(attr::PREDICATE, w.predicate_canonical.clone())
+        .attr(attr::PREDICATE, canonical_typed_predicate(&w.typed))
         .attr(attr::SOURCE, w.source.as_str())
 }
 
@@ -588,7 +601,6 @@ mod tests {
             source_index: 0,
             typed: rossi::formula::lower::lower_predicate(&rossi::PredicateKind::True.into()),
             predicate: rossi::PredicateKind::True.into(),
-            predicate_canonical: "⊤".into(),
             is_theorem: false,
             source: mk_uri().child("org.eventb.core.invariant", "inv1"),
         });
