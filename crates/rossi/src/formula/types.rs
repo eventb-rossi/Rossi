@@ -95,6 +95,31 @@ impl Type {
         }
     }
 
+    /// The expression denoting this type as a set: `ℤ`, `BOOL`, the
+    /// given set's identifier (typed `ℙ(S)`), `ℙ(·)` and `×` of the
+    /// inner sets. The result is type-checked. Parametric types are not
+    /// spellable until the extension mechanism lands.
+    pub fn to_expression(&self, ff: &super::factory::FormulaFactory) -> super::Expression {
+        use super::tag::{AtomicOp, BinaryExprOp, UnaryExprOp};
+        match self {
+            Type::Bool => ff.atomic_expression(AtomicOp::Bool, None, None),
+            Type::Int => ff.atomic_expression(AtomicOp::Integer, None, None),
+            Type::Given(name) => ff.free_identifier(name, None, Some(Type::pow(self.clone()))),
+            Type::Pow(inner) => {
+                ff.unary_expression(UnaryExprOp::Pow, inner.to_expression(ff), None)
+            }
+            Type::Prod(left, right) => ff.binary_expression(
+                BinaryExprOp::CProd,
+                left.to_expression(ff),
+                right.to_expression(ff),
+                None,
+            ),
+            Type::Parametric { symbol, .. } => {
+                panic!("parametric type {symbol} has no expression form yet")
+            }
+        }
+    }
+
     /// Appends the names of the given sets occurring in this type, in
     /// traversal order and possibly with duplicates.
     pub fn collect_given_sets(&self, out: &mut Vec<String>) {

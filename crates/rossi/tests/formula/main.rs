@@ -7,3 +7,4 @@ mod positions;
 mod rewriting;
 mod synthesis;
 mod typecheck;
+mod wd;
