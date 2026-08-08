@@ -26,7 +26,10 @@
 use rossi::{Action, Expression, LabeledPredicate, Predicate};
 
 use crate::enrich::{enrich_action, enrich_expression, enrich_predicate};
-use crate::normalize::{canonical_action_with_env, canonical_expression, canonical_predicate};
+use crate::normalize::{
+    canonical_action_with_env, canonical_expression, canonical_predicate,
+    canonical_typed_assignment, canonical_typed_expression, canonical_typed_predicate,
+};
 use crate::sc::identifier_walker::{
     free_identifier_in_action_rhs, free_identifier_in_expression, free_identifier_in_predicate,
     usage_span_in_predicate,
@@ -78,6 +81,11 @@ pub struct ActionCheck {
     /// First free identifier on the action's read side. `None` iff
     /// every read identifier is in `env` (or a built-in).
     pub free_identifier: Option<String>,
+    /// The fully typed formula-model rebuild, when the action is an
+    /// assignment that type-checks against `env`. `None` for `skip`
+    /// and for ill-typed assignments; the action gate distinguishes
+    /// the two through the seam.
+    pub typed: Option<rossi::formula::Assignment>,
 }
 
 /// Check a predicate against `env`, producing both the canonical form
@@ -93,10 +101,14 @@ pub struct ActionCheck {
 ///    bound implicitly by the short form are not flagged as free.
 pub fn check_predicate(p: &Predicate, env: &TypeEnv) -> PredicateCheck {
     let enriched = enrich_predicate(p.clone(), env);
+    let typed = crate::sc::typing::typed_predicate(env, &enriched);
     PredicateCheck {
         free_identifier: free_identifier_in_predicate(&enriched, env),
-        canonical: canonical_predicate(&enriched),
-        typed: crate::sc::typing::typed_predicate(env, &enriched),
+        canonical: match &typed {
+            Some(typed) => canonical_typed_predicate(typed),
+            None => canonical_predicate(&enriched),
+        },
+        typed,
         predicate: enriched,
     }
 }
@@ -104,10 +116,14 @@ pub fn check_predicate(p: &Predicate, env: &TypeEnv) -> PredicateCheck {
 /// Check an expression against `env`. Used by the variant.
 pub fn check_expression(e: &Expression, env: &TypeEnv) -> ExpressionCheck {
     let enriched = enrich_expression(e.clone(), env);
+    let typed = crate::sc::typing::typed_expression(env, &enriched);
     ExpressionCheck {
         free_identifier: free_identifier_in_expression(&enriched, env),
-        canonical: canonical_expression(&enriched),
-        typed: crate::sc::typing::typed_expression(env, &enriched),
+        canonical: match &typed {
+            Some(typed) => canonical_typed_expression(typed),
+            None => canonical_expression(&enriched),
+        },
+        typed,
         expression: enriched,
     }
 }
@@ -116,9 +132,14 @@ pub fn check_expression(e: &Expression, env: &TypeEnv) -> ExpressionCheck {
 /// (for `:|`) the becomes-such-that predicate.
 pub fn check_action(a: &Action, env: &TypeEnv) -> ActionCheck {
     let enriched = enrich_action(a.clone(), env);
+    let typed = crate::sc::typing::typed_assignment(env, &enriched);
     ActionCheck {
         free_identifier: free_identifier_in_action_rhs(&enriched, env),
-        canonical: canonical_action_with_env(&enriched, env),
+        canonical: match &typed {
+            Some(typed) => canonical_typed_assignment(typed),
+            None => canonical_action_with_env(&enriched, env),
+        },
+        typed,
         action: enriched,
     }
 }

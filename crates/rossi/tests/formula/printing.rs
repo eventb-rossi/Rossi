@@ -230,6 +230,47 @@ fn comprehension_forms_print_as_spelled() {
 }
 
 #[test]
+fn typed_mode_escalates_short_comprehensions_to_explicit() {
+    let one_decl = || vec![decl_ty("x", Type::Int)];
+    let body = || eq_pred(bid(0), int(1));
+    let printer = canonical().with_typed_decls(true);
+
+    // {x∣x=1} has no spot for the declaration's type: typed printing
+    // switches to the explicit spelling.
+    let ident_list = ff().quantified_expression(
+        QuantExprOp::CSet,
+        one_decl(),
+        body(),
+        bid(0),
+        None,
+        Form::IdentList,
+    );
+    assert_eq!(printer.print_formula_expression(&ident_list), "{x⦂ℤ·x=1∣x}");
+
+    // Same for {E∣P}.
+    let implicit = ff().quantified_expression(
+        QuantExprOp::CSet,
+        one_decl(),
+        body(),
+        plus(vec![bid(0), int(1)]),
+        None,
+        Form::Implicit,
+    );
+    assert_eq!(printer.print_formula_expression(&implicit), "{x⦂ℤ·x=1∣x+1}");
+
+    // The lambda spelling annotates its pattern leaves instead.
+    let lambda = ff().quantified_expression(
+        QuantExprOp::CSet,
+        one_decl(),
+        body(),
+        ff().binary_expression(BinaryExprOp::Mapsto, bid(0), int(2), None),
+        None,
+        Form::Lambda,
+    );
+    assert_eq!(printer.print_formula_expression(&lambda), "λ x⦂ℤ·x=1∣2");
+}
+
+#[test]
 fn lambda_patterns_render_from_declarations() {
     // λ x ↦ y · x = y ∣ x + y
     let pattern = ff().binary_expression(BinaryExprOp::Mapsto, bid(1), bid(0), None);

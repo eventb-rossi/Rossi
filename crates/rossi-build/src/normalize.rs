@@ -6,6 +6,7 @@
 //! static checker introduces.
 
 use rossi::ast::expression::BinaryOp;
+use rossi::formula;
 use rossi::pretty::PrettyPrinter;
 use rossi::{Action, ActionKind, Expression, ExpressionKind, Predicate};
 
@@ -15,6 +16,53 @@ use crate::types::Type;
 /// Canonicalise a predicate to Rodin's tight form.
 pub fn canonical_predicate(p: &Predicate) -> String {
     PrettyPrinter::rodin_canonical().print_predicate(p)
+}
+
+/// Canonicalise a typed predicate: the tight form with every bound
+/// declaration carrying its solved type.
+pub fn canonical_typed_predicate(p: &formula::Predicate) -> String {
+    typed_canonical_printer().print_formula_predicate(p)
+}
+
+/// See [`canonical_typed_predicate`].
+pub fn canonical_typed_expression(e: &formula::Expression) -> String {
+    typed_canonical_printer().print_formula_expression(e)
+}
+
+/// Canonicalise a typed assignment, ascribing any bare empty-set value
+/// with its solved type (`x ≔ ∅` serialises as `x ≔ ∅ ⦂ ℙ(T)`).
+pub fn canonical_typed_assignment(a: &formula::Assignment) -> String {
+    typed_canonical_printer().print_formula_assignment(&ascribe_empty_set_values(a))
+}
+
+fn typed_canonical_printer() -> PrettyPrinter {
+    PrettyPrinter::rodin_canonical().with_typed_decls(true)
+}
+
+fn ascribe_empty_set_values(a: &formula::Assignment) -> formula::Assignment {
+    let formula::AssignmentKind::BecomesEqualTo { idents, values } = a.kind() else {
+        return a.clone();
+    };
+    let is_bare_empty_set = |value: &formula::Expression| {
+        matches!(
+            value.kind(),
+            formula::ExpressionKind::Atomic(formula::tag::AtomicOp::EmptySet)
+        )
+    };
+    if !values.iter().any(is_bare_empty_set) {
+        return a.clone();
+    }
+    let ff = a.factory().clone();
+    let values = values
+        .iter()
+        .map(|value| match value.ty() {
+            Some(ty) if is_bare_empty_set(value) => {
+                ff.ascription(value.clone(), ty.to_expression(&ff), None)
+            }
+            _ => value.clone(),
+        })
+        .collect();
+    ff.becomes_equal_to(idents.clone(), values, None)
 }
 
 /// Canonicalise an expression to Rodin's tight form.
