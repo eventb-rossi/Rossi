@@ -433,7 +433,7 @@ fn resolve_witnesses(
             continue;
         }
         let checked = check_predicate(&w.predicate, &wscope);
-        if crate::wellformed::is_well_typed_enriched_predicate(&wscope, &checked.predicate) {
+        if checked.typed.is_some() {
             required.remove(wl);
             witnesses.push(build_witness_decl(
                 machine.ids,
@@ -1145,7 +1145,7 @@ fn build_event_buckets(
         // `auctions ≔ auctions ∪ {a ↦ i}` where the two operands of `∪`
         // are at different power-set levels. Rodin emits the event
         // `accurate=false` and skips the action.
-        if !crate::wellformed::is_well_typed_enriched_action(scope, &checked.action) {
+        if !crate::sc::typing::action_well_typed(scope, &checked.action) {
             context.diagnostics.push(Diagnostic {
                 severity: Severity::Error,
                 origin: clause_origin(machine.machine_name, label, act.label.as_deref(), "act"),
