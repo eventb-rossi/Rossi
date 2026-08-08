@@ -6,9 +6,22 @@
 //! attached directly to expression nodes. It is built up alongside the
 //! existing AST and is not yet wired into the parser.
 
+pub mod assignment;
+mod caches;
+pub mod decl;
+pub mod expression;
+pub mod factory;
+mod hashing;
+pub mod predicate;
 pub mod tag;
 pub mod typenv;
 pub mod types;
 
+pub use crate::ast::Span;
+pub use assignment::{Assignment, AssignmentKind};
+pub use decl::BoundIdentDecl;
+pub use expression::{Expression, ExpressionKind, Form};
+pub use factory::FormulaFactory;
+pub use predicate::{Predicate, PredicateKind};
 pub use typenv::{SealedTypeEnvironment, TypeEnvironmentBuilder};
 pub use types::Type;
