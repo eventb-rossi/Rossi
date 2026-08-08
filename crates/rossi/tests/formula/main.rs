@@ -3,4 +3,5 @@
 mod common;
 
 mod equality;
+mod rewriting;
 mod synthesis;
