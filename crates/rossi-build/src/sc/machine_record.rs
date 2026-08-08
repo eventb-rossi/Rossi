@@ -28,8 +28,8 @@ use rossi::{Action, EventStatus, Expression, Predicate};
 
 use crate::handles::HandleUri;
 use crate::type_env::TypeEnv;
-use crate::types::Type;
 use crate::xml_out::{Element, RodinNameGenerator, attr, in_tag, tag};
+use rossi::formula::Type;
 
 // ---------------------------------------------------------------------
 // Top-level record
@@ -594,7 +594,7 @@ mod tests {
         });
         r.variables.push(VariableDecl {
             name: "x".into(),
-            ty: Type::Integer,
+            ty: Type::Int,
             source: mk_uri().child("org.eventb.core.variable", "x"),
             is_abstract: false,
             is_concrete: true,

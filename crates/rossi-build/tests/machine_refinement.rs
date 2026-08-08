@@ -635,7 +635,7 @@ mod inherited_param_scope {
         let e = m1.events_by_label.get("E").expect("event E");
         let env = m1.event_env(e);
 
-        let users = Type::GivenSet("USERS".into());
+        let users = Type::Given("USERS".into());
         assert_eq!(env.get("u"), Some(&users), "inherited parameter typed");
         assert_eq!(
             env.get("registered"),

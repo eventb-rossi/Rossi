@@ -17,8 +17,8 @@ use rossi::Predicate;
 
 use crate::handles::HandleUri;
 use crate::type_env::TypeEnv;
-use crate::types::Type;
 use crate::xml_out::{Element, RodinNameGenerator, attr, tag};
+use rossi::formula::Type;
 
 /// The typed record produced by checking one `.buc`.
 #[derive(Debug, Clone)]
@@ -181,7 +181,7 @@ mod tests {
             }],
             constants: vec![ConstantDecl {
                 name: "c".into(),
-                ty: Type::Integer,
+                ty: Type::Int,
                 source: mk_uri().child("org.eventb.core.constant", "c"),
             }],
             axioms: vec![AxiomDecl {

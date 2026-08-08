@@ -302,13 +302,13 @@ mod tests {
     use rossi::{parse_expression_str, parse_predicate_str};
 
     fn env_with(names: &[&str]) -> TypeEnv {
-        use crate::types::Type;
+        use rossi::formula::Type;
         let mut env = TypeEnv::new();
         for n in names {
             env.add_carrier_set(n);
         }
         // Also add an integer constant so tests can reference a non-set name.
-        env.insert("n", Type::Integer);
+        env.insert("n", Type::Int);
         env
     }
 

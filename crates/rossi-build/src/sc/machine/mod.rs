@@ -24,9 +24,9 @@ use crate::project::{Project, ProjectComponent};
 use crate::rodin_ids::{Kind, RodinIds};
 use crate::sc::typing::resolve_identifier_types;
 use crate::type_env::TypeEnv;
-use crate::types::Type;
 use crate::xml_out::{Element, attr, in_tag, tag};
 use crate::{Diagnostic, ScFile, Severity};
+use rossi::formula::Type;
 
 use super::machine_record::{
     EventDecl, InvariantDecl, MachineRecord, RefinesMachineDecl, RenderedMachine, SeesContextDecl,
@@ -581,7 +581,7 @@ fn build_variable_decls(
         .iter()
         .filter(|n| env.contains(n.as_str()))
         .map(|n| {
-            let ty = env.get(n).cloned().unwrap_or(Type::Integer);
+            let ty = env.get(n).cloned().unwrap_or(Type::Int);
             let source =
                 crate::sc::file_child_source(ids, file_root, Kind::Variable, in_tag::VARIABLE, n);
             VariableDecl {

@@ -190,13 +190,13 @@ pub fn check_labeled_predicate(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::types::Type;
+    use rossi::formula::Type;
     use rossi::{parse_action_str, parse_expression_str, parse_predicate_str};
 
     fn env_with_users() -> TypeEnv {
         let mut env = TypeEnv::new();
         env.add_carrier_set("USERS");
-        env.insert("n", Type::Integer);
+        env.insert("n", Type::Int);
         env
     }
 
@@ -230,7 +230,7 @@ mod tests {
     #[test]
     fn action_check_skips_lhs_variable() {
         let mut env = TypeEnv::new();
-        env.insert("x", Type::pow(Type::GivenSet("USERS".into())));
+        env.insert("x", Type::pow(Type::Given("USERS".into())));
         let a = parse_action_str("x ≔ ∅").unwrap();
         let ac = check_action(&a, &env);
         // `x` is the LHS — must not be flagged. `∅` is a literal.
@@ -241,7 +241,7 @@ mod tests {
     #[test]
     fn action_check_flags_unknown_rhs_identifier() {
         let mut env = TypeEnv::new();
-        env.insert("x", Type::Integer);
+        env.insert("x", Type::Int);
         let a = parse_action_str("x ≔ y + 1").unwrap();
         let ac = check_action(&a, &env);
         assert_eq!(ac.free_identifier.as_deref(), Some("y"));
@@ -250,7 +250,7 @@ mod tests {
     #[test]
     fn action_check_flags_unknown_type_ascription_identifier() {
         let mut env = TypeEnv::new();
-        env.insert("x", Type::Integer);
+        env.insert("x", Type::Int);
         let a = parse_action_str("x ≔ card(∅ ⦂ ℙ(UNKNOWN))").unwrap();
         let ac = check_action(&a, &env);
         assert_eq!(ac.free_identifier.as_deref(), Some("UNKNOWN"));
@@ -259,7 +259,7 @@ mod tests {
     #[test]
     fn action_check_binds_primed_becomes_such_that_targets() {
         let mut env = TypeEnv::new();
-        env.insert("x", Type::Integer);
+        env.insert("x", Type::Int);
         let a = parse_action_str("x :∣ x' = x").unwrap();
         let ac = check_action(&a, &env);
         assert_eq!(ac.free_identifier, None);

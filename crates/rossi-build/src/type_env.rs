@@ -7,7 +7,7 @@
 
 use std::collections::BTreeMap;
 
-use crate::types::Type;
+use rossi::formula::Type;
 
 #[derive(Debug, Default, Clone)]
 pub struct TypeEnv {
@@ -142,9 +142,9 @@ mod tests {
     #[test]
     fn insert_if_absent_keeps_first() {
         let mut env = TypeEnv::new();
-        assert!(env.insert_if_absent("x", Type::Integer));
-        assert!(!env.insert_if_absent("x", Type::Boolean));
-        assert_eq!(env.get("x").unwrap(), &Type::Integer);
+        assert!(env.insert_if_absent("x", Type::Int));
+        assert!(!env.insert_if_absent("x", Type::Bool));
+        assert_eq!(env.get("x").unwrap(), &Type::Int);
     }
 
     // ------------------------------------------------------------------
@@ -155,7 +155,7 @@ mod tests {
     fn scoped_insert_if_absent_is_removed_on_pop() {
         let mut env = TypeEnv::new();
         env.push_scope();
-        assert!(env.insert_if_absent("p", Type::Integer));
+        assert!(env.insert_if_absent("p", Type::Int));
         assert!(env.contains("p"));
         env.pop_scope();
         assert!(!env.contains("p"));
@@ -164,19 +164,19 @@ mod tests {
     #[test]
     fn scope_push_and_pop_restores_outer() {
         let mut env = TypeEnv::new();
-        env.insert("x", Type::Integer);
+        env.insert("x", Type::Int);
         env.push_scope();
-        env.insert("x", Type::Boolean); // shadows
-        assert_eq!(env.get("x"), Some(&Type::Boolean));
+        env.insert("x", Type::Bool); // shadows
+        assert_eq!(env.get("x"), Some(&Type::Bool));
         env.pop_scope();
-        assert_eq!(env.get("x"), Some(&Type::Integer));
+        assert_eq!(env.get("x"), Some(&Type::Int));
     }
 
     #[test]
     fn pop_removes_names_introduced_in_scope() {
         let mut env = TypeEnv::new();
         env.push_scope();
-        env.insert("p", Type::Integer);
+        env.insert("p", Type::Int);
         assert!(env.contains("p"));
         env.pop_scope();
         assert!(!env.contains("p"));
@@ -185,40 +185,40 @@ mod tests {
     #[test]
     fn nested_scopes_restore_each_layer() {
         let mut env = TypeEnv::new();
-        env.insert("x", Type::Integer);
+        env.insert("x", Type::Int);
         env.push_scope();
-        env.insert("x", Type::Boolean);
+        env.insert("x", Type::Bool);
         env.push_scope();
         env.insert("x", Type::carrier_set_type("S"));
         assert_eq!(env.get("x"), Some(&Type::carrier_set_type("S")));
         env.pop_scope();
-        assert_eq!(env.get("x"), Some(&Type::Boolean));
+        assert_eq!(env.get("x"), Some(&Type::Bool));
         env.pop_scope();
-        assert_eq!(env.get("x"), Some(&Type::Integer));
+        assert_eq!(env.get("x"), Some(&Type::Int));
     }
 
     #[test]
     fn scoped_guard_runs_body_and_pops_even_on_return() {
         let mut env = TypeEnv::new();
-        env.insert("x", Type::Integer);
+        env.insert("x", Type::Int);
         let seen_inside = env.scoped(|env| {
-            env.insert("x", Type::Boolean);
+            env.insert("x", Type::Bool);
             env.get("x").cloned()
         });
-        assert_eq!(seen_inside, Some(Type::Boolean));
-        assert_eq!(env.get("x"), Some(&Type::Integer));
+        assert_eq!(seen_inside, Some(Type::Bool));
+        assert_eq!(env.get("x"), Some(&Type::Int));
     }
 
     #[test]
     fn scoped_remove_masks_and_restores_outer() {
         let mut env = TypeEnv::new();
-        env.insert("x", Type::Integer);
+        env.insert("x", Type::Int);
         let seen_inside = env.scoped(|env| {
             env.remove("x");
             env.get("x").cloned()
         });
         assert_eq!(seen_inside, None);
-        assert_eq!(env.get("x"), Some(&Type::Integer));
+        assert_eq!(env.get("x"), Some(&Type::Int));
     }
 
     #[test]
