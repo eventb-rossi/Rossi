@@ -17,12 +17,12 @@ use crate::checked_predicate::{
     ActionCheck, PredicateCheck, check_action, check_labeled_predicate, check_predicate,
 };
 use crate::handles::HandleUri;
-use crate::infer::infer_constants;
 use crate::rodin_ids::{Kind, RodinIds, Scope};
 use crate::sc::CheckedMachine;
 use crate::sc::machine_record::{
     ActionDecl, Convergence, EventDecl, GuardDecl, ParameterDecl, RefinesEventDecl, WitnessDecl,
 };
+use crate::sc::typing::resolve_identifier_types;
 use crate::type_env::TypeEnv;
 use crate::types::Type;
 use crate::xml_out::in_tag;
@@ -913,7 +913,7 @@ fn build_event_scope(
         .filter(|p| !invalid_parameter_names.contains(&p.name))
         .map(|p| p.name.clone())
         .collect();
-    let unresolved = infer_constants(&mut scope, &param_names, &axioms);
+    let unresolved = resolve_identifier_types(&mut scope, &param_names, &axioms);
     let mut accurate = true;
     for name in &unresolved {
         context.diagnostics.push(Diagnostic {

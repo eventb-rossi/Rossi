@@ -11,7 +11,6 @@ use rossi::{Context, LabeledPredicate, NamedElement, SetDeclaration};
 
 use crate::checked_predicate::check_labeled_predicate;
 use crate::handles::HandleUri;
-use crate::infer::infer_constants;
 use crate::project::{Project, ProjectComponent};
 use crate::rodin_ids::{Kind, RodinIds};
 use crate::type_env::TypeEnv;
@@ -100,7 +99,8 @@ pub fn check_context(
         .filter(|c| !dup_ids.contains(&c.name))
         .map(|c| c.name.clone())
         .collect();
-    let unresolved = infer_constants(&mut env, &constant_names, &axiom_preds);
+    let unresolved =
+        super::typing::resolve_identifier_types(&mut env, &constant_names, &axiom_preds);
     for name in &unresolved {
         diags.push(Diagnostic {
             severity: Severity::Error,

@@ -21,6 +21,7 @@ pub mod context_record;
 pub mod identifier_walker;
 pub mod machine;
 pub mod machine_record;
+pub(crate) mod typing;
 
 use machine_record::EventDecl;
 

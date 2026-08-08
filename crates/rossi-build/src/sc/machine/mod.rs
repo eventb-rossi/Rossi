@@ -20,9 +20,10 @@ use rossi::{LabeledPredicate, Machine};
 
 use crate::checked_predicate::{check_expression, check_labeled_predicate};
 use crate::handles::HandleUri;
-use crate::infer::{check_expression_type, infer_constants};
+use crate::infer::check_expression_type;
 use crate::project::{Project, ProjectComponent};
 use crate::rodin_ids::{Kind, RodinIds};
+use crate::sc::typing::resolve_identifier_types;
 use crate::type_env::TypeEnv;
 use crate::types::Type;
 use crate::xml_out::{Element, attr, in_tag, tag};
@@ -187,7 +188,7 @@ pub fn check_machine(
         .filter(|inv| !typing_kept.drops(inv.label.as_deref()))
         .map(|i| i.predicate.clone())
         .collect();
-    let unresolved = infer_constants(&mut env, &variable_names, &invariant_preds);
+    let unresolved = resolve_identifier_types(&mut env, &variable_names, &invariant_preds);
     for name in &unresolved {
         // An untyped variable is an error in Rodin (UntypedVariableError,
         // MachineCommitIdentsModule): the variable is dropped from the
