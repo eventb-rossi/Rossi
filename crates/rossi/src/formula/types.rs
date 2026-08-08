@@ -95,6 +95,25 @@ impl Type {
         }
     }
 
+    /// Appends the names of the given sets occurring in this type, in
+    /// traversal order and possibly with duplicates.
+    pub fn collect_given_sets(&self, out: &mut Vec<String>) {
+        match self {
+            Type::Bool | Type::Int => {}
+            Type::Given(name) => out.push(name.clone()),
+            Type::Pow(inner) => inner.collect_given_sets(out),
+            Type::Prod(left, right) => {
+                left.collect_given_sets(out);
+                right.collect_given_sets(out);
+            }
+            Type::Parametric { params, .. } => {
+                for param in params {
+                    param.collect_given_sets(out);
+                }
+            }
+        }
+    }
+
     /// The canonical string, as it appears in the
     /// `org.eventb.core.type="..."` attribute of `.bcc`/`.bcm` elements.
     ///

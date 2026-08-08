@@ -16,6 +16,7 @@ exclude = ["examples/*.zip"]
 [dependencies]
 pest.workspace = true
 pest_derive.workspace = true
+num-bigint.workspace = true
 stacker.workspace = true
 thiserror.workspace = true
 serde = { workspace = true, optional = true }
