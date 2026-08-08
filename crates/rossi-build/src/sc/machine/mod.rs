@@ -22,7 +22,7 @@ use crate::checked_predicate::{check_expression, check_labeled_predicate};
 use crate::handles::HandleUri;
 use crate::project::{Project, ProjectComponent};
 use crate::rodin_ids::{Kind, RodinIds};
-use crate::sc::typing::{expression_well_typed, resolve_identifier_types};
+use crate::sc::typing::resolve_identifier_types;
 use crate::type_env::TypeEnv;
 use crate::types::Type;
 use crate::xml_out::{Element, attr, in_tag, tag};
@@ -620,7 +620,7 @@ fn build_variant_decl(
     let label = "vrn";
     let ec = check_expression(expr, env);
     let usable = ec.free_identifier.is_none();
-    if usable && !expression_well_typed(env, &ec.expression) {
+    if usable && ec.typed.is_none() {
         return Err(Diagnostic {
             severity: Severity::Error,
             origin: format!("{machine_name}.{label}"),

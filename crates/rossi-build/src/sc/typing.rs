@@ -89,9 +89,15 @@ pub(crate) fn typed_expression(env: &TypeEnv, expr: &Expression) -> Option<formu
     })
 }
 
-/// See [`typed_predicate`].
-pub(crate) fn expression_well_typed(env: &TypeEnv, expr: &Expression) -> bool {
-    typed_expression(env, expr).is_some()
+/// See [`typed_predicate`]. `None` also stands for `skip`, which has
+/// no assignment to rebuild (and nothing to check).
+pub(crate) fn typed_assignment(env: &TypeEnv, action: &Action) -> Option<formula::Assignment> {
+    let result = lower_action(action)?.type_check(&seal(env));
+    (result.is_success() && result.inferred.is_empty()).then(|| {
+        result
+            .typed
+            .expect("a successful check produces the rebuild")
+    })
 }
 
 /// See [`typed_predicate`]. `skip` has nothing to check.
@@ -210,7 +216,7 @@ mod tests {
         ] {
             let expression = parse_expression_str(source).unwrap();
             assert!(
-                !expression_well_typed(&env, &expression),
+                typed_expression(&env, &expression).is_none(),
                 "accepted ill-typed arithmetic expression: {source}"
             );
         }
@@ -252,7 +258,7 @@ mod tests {
             }
             .into();
             assert!(
-                !expression_well_typed(&env, &expression),
+                typed_expression(&env, &expression).is_none(),
                 "accepted ill-typed set/relation operator: {op:?}"
             );
         }
@@ -270,7 +276,7 @@ mod tests {
             }
             .into();
             assert!(
-                !expression_well_typed(&env, &expression),
+                typed_expression(&env, &expression).is_none(),
                 "accepted ill-typed unary operator: {op:?}"
             );
         }
@@ -285,7 +291,7 @@ mod tests {
         for source in ["S ∪ dom(TRUE)", "dom(TRUE) ◁ r"] {
             let expression = parse_expression_str(source).unwrap();
             assert!(
-                !expression_well_typed(&env, &expression),
+                typed_expression(&env, &expression).is_none(),
                 "accepted nested ill-typed expression: {source}"
             );
         }
@@ -334,7 +340,7 @@ mod tests {
         ] {
             let expression = parse_expression_str(source).unwrap();
             assert!(
-                !expression_well_typed(&env, &expression),
+                typed_expression(&env, &expression).is_none(),
                 "accepted ill-typed application: {source}"
             );
         }
@@ -381,7 +387,7 @@ mod tests {
         ] {
             let expression = parse_expression_str(source).unwrap();
             assert!(
-                !expression_well_typed(&env, &expression),
+                typed_expression(&env, &expression).is_none(),
                 "accepted ill-typed binder expression: {source}"
             );
         }
@@ -403,7 +409,7 @@ mod tests {
         ] {
             let expression = parse_expression_str(source).unwrap();
             assert!(
-                expression_well_typed(&env, &expression),
+                typed_expression(&env, &expression).is_some(),
                 "rejected well-typed binder expression: {source}"
             );
         }
@@ -458,6 +464,6 @@ mod tests {
         let mut env = TypeEnv::new();
         env.insert("S", Type::pow(Type::Integer));
         let expression = parse_expression_str("S ∪ unknown").unwrap();
-        assert!(!expression_well_typed(&env, &expression));
+        assert!(typed_expression(&env, &expression).is_none());
     }
 }

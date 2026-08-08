@@ -1514,6 +1514,15 @@ impl PrettyPrinter {
                 );
                 let mid = self.op(OperatorId::Dot);
                 let bar = self.op(OperatorId::Bar);
+                // The short comprehension spellings have no place to
+                // carry the declarations' types, so typed printing
+                // escalates them to the explicit form (the lambda
+                // spelling annotates its pattern leaves instead).
+                let form = if self.typed_decls && matches!(form, Form::Implicit | Form::IdentList) {
+                    &Form::Explicit
+                } else {
+                    form
+                };
                 match op {
                     QuantExprOp::CSet => match form {
                         Form::Lambda => {
