@@ -1,10 +1,10 @@
 //! Datatype extension bundles: typing, recursion, and destructor WD.
 
 use rossi::formula::extension::datatype::{Datatype, DatatypeBuilder, DatatypeError};
+
+use crate::common::env;
 use rossi::formula::tag::{QuantPredOp, RelationalOp};
-use rossi::formula::{
-    ExpressionKind, PredicateKind, SealedTypeEnvironment, Type, TypeEnvironmentBuilder,
-};
+use rossi::formula::{ExpressionKind, PredicateKind, Type};
 
 /// `List(T) ::= nil ∥ cons(head: T, tail: List(T))`
 fn list() -> &'static Datatype {
@@ -27,14 +27,6 @@ fn list_int() -> Type {
         symbol: "List".into(),
         params: vec![Type::Int],
     }
-}
-
-fn env(bindings: &[(&str, Type)]) -> SealedTypeEnvironment {
-    let mut builder = TypeEnvironmentBuilder::new();
-    for (name, ty) in bindings {
-        builder.insert(*name, ty.clone());
-    }
-    builder.make_snapshot()
 }
 
 #[test]

@@ -1,17 +1,9 @@
 //! Equality, alpha-equivalence, hashing, and construction invariants.
 
-use std::hash::{DefaultHasher, Hash, Hasher};
-
 use rossi::formula::tag::{AssocExprOp, BinaryExprOp, QuantExprOp, RelationalOp};
 use rossi::formula::{Expression, Form, Type};
 
-use crate::common::{bid, decl, decl_ty, eq_pred, ff, fid, fid_ty, forall, int, span};
-
-fn hash_of(value: &impl Hash) -> u64 {
-    let mut hasher = DefaultHasher::new();
-    value.hash(&mut hasher);
-    hasher.finish()
-}
+use crate::common::{bid, decl, decl_ty, eq_pred, ff, fid, fid_ty, forall, hash_of, int, span};
 
 // --- spans ---
 

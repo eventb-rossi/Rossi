@@ -3,9 +3,14 @@
 //! Thin wrappers over the factory that default the span to `None`, so
 //! tests read as formulas rather than plumbing.
 
+use std::hash::{DefaultHasher, Hash, Hasher};
+
 use rossi::ast::Span;
-use rossi::formula::tag::{QuantPredOp, RelationalOp};
-use rossi::formula::{BoundIdentDecl, Expression, FormulaFactory, Predicate, Type};
+use rossi::formula::tag::{LiteralPredOp, QuantPredOp, RelationalOp};
+use rossi::formula::{
+    BoundIdentDecl, Expression, FormulaFactory, Predicate, SealedTypeEnvironment, Type,
+    TypeEnvironmentBuilder,
+};
 
 /// The core-language factory every test builds with.
 pub fn ff() -> FormulaFactory {
@@ -55,4 +60,32 @@ pub fn eq_pred(left: Expression, right: Expression) -> Predicate {
 /// `∀ decls · pred`.
 pub fn forall(decls: Vec<BoundIdentDecl>, pred: Predicate) -> Predicate {
     ff().quantified_predicate(QuantPredOp::Forall, decls, pred, None)
+}
+
+/// A sealed environment from name/type bindings.
+pub fn env(bindings: &[(&str, Type)]) -> SealedTypeEnvironment {
+    let mut builder = TypeEnvironmentBuilder::new();
+    for (name, ty) in bindings {
+        builder.insert(*name, ty.clone());
+    }
+    builder.make_snapshot()
+}
+
+/// Type-checks and returns the typed predicate.
+pub fn checked(pred: Predicate, environment: &SealedTypeEnvironment) -> Predicate {
+    let result = pred.type_check(environment);
+    assert!(result.is_success(), "problems: {:?}", result.problems);
+    result.typed.expect("typed")
+}
+
+/// `⊤`.
+pub fn btrue() -> Predicate {
+    ff().literal_predicate(LiteralPredOp::BTrue, None)
+}
+
+/// The standard hash of a value, for hash-consistency assertions.
+pub fn hash_of(value: &impl Hash) -> u64 {
+    let mut hasher = DefaultHasher::new();
+    value.hash(&mut hasher);
+    hasher.finish()
 }

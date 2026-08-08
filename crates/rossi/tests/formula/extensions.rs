@@ -9,12 +9,9 @@ use rossi::formula::extension::{
 use rossi::formula::tag::{self, BinaryExprOp, RelationalOp};
 use rossi::formula::typecheck::{TcType, TypeCheckMediator};
 use rossi::formula::wd::WdMediator;
-use rossi::formula::{
-    Expression, ExpressionKind, FactoryError, FormulaFactory, Predicate, SealedTypeEnvironment,
-    Type, TypeEnvironmentBuilder,
-};
+use rossi::formula::{Expression, ExpressionKind, FactoryError, FormulaFactory, Predicate, Type};
 
-use crate::common::int;
+use crate::common::{env, int};
 
 /// `dist(a, b)` — a total binary integer operator.
 struct Dist;
@@ -107,14 +104,6 @@ fn even_ext() -> Arc<dyn PredicateExtension> {
 fn extended_factory() -> FormulaFactory {
     FormulaFactory::with_extensions([Extension::Expr(dist_ext()), Extension::Pred(even_ext())])
         .expect("valid extension set")
-}
-
-fn env(bindings: &[(&str, Type)]) -> SealedTypeEnvironment {
-    let mut builder = TypeEnvironmentBuilder::new();
-    for (name, ty) in bindings {
-        builder.insert(*name, ty.clone());
-    }
-    builder.make_snapshot()
 }
 
 // --- registration ---

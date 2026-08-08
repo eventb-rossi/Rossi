@@ -2,19 +2,9 @@
 //! and problem reporting.
 
 use rossi::formula::tag::{AssocPredOp, AtomicOp, BinaryExprOp, QuantExprOp, RelationalOp};
-use rossi::formula::{
-    Expression, Form, Predicate, ProblemKind, SealedTypeEnvironment, Type, TypeEnvironmentBuilder,
-};
+use rossi::formula::{Expression, Form, Predicate, ProblemKind, Type, TypeEnvironmentBuilder};
 
-use crate::common::{bid, decl, eq_pred, ff, fid, forall, int};
-
-fn env(bindings: &[(&str, Type)]) -> SealedTypeEnvironment {
-    let mut builder = TypeEnvironmentBuilder::new();
-    for (name, ty) in bindings {
-        builder.insert(*name, ty.clone());
-    }
-    builder.make_snapshot()
-}
+use crate::common::{bid, decl, env, eq_pred, ff, fid, forall, int};
 
 fn member(left: Expression, right: Expression) -> Predicate {
     ff().relational_predicate(RelationalOp::In, left, right, None)
