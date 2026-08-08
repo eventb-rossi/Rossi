@@ -7,6 +7,7 @@
 
 mod computer;
 mod fb;
+mod improver;
 
 use super::assignment::{Assignment, AssignmentKind};
 use super::expression::{Expression, ExpressionKind};
@@ -28,6 +29,14 @@ impl Predicate {
         );
         let fb = FormulaBuilder::new(self.factory().clone());
         wd_pred(&fb, self).flatten()
+    }
+
+    /// The well-definedness lemma, with redundant conjuncts removed by
+    /// subsumption. Requires a type-checked formula.
+    #[track_caller]
+    pub fn wd_lemma(&self) -> Predicate {
+        let raw = self.wd_lemma_raw();
+        improver::improve(&FormulaBuilder::new(self.factory().clone()), &raw)
     }
 
     /// Whether this node passes its own well-definedness down to its
@@ -68,6 +77,13 @@ impl Expression {
         wd_expr(&fb, self).flatten()
     }
 
+    /// The subsumption-simplified lemma; see [`Predicate::wd_lemma`].
+    #[track_caller]
+    pub fn wd_lemma(&self) -> Predicate {
+        let raw = self.wd_lemma_raw();
+        improver::improve(&FormulaBuilder::new(self.factory().clone()), &raw)
+    }
+
     /// See [`Predicate::is_wd_strict`].
     pub fn is_wd_strict(&self) -> bool {
         match self.kind() {
@@ -96,6 +112,13 @@ impl Assignment {
         );
         let fb = FormulaBuilder::new(self.factory().clone());
         wd_assign(&fb, self).flatten()
+    }
+
+    /// The subsumption-simplified lemma; see [`Predicate::wd_lemma`].
+    #[track_caller]
+    pub fn wd_lemma(&self) -> Predicate {
+        let raw = self.wd_lemma_raw();
+        improver::improve(&FormulaBuilder::new(self.factory().clone()), &raw)
     }
 
     /// See [`Predicate::is_wd_strict`]. All assignment forms are

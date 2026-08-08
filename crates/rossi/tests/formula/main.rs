@@ -8,3 +8,4 @@ mod rewriting;
 mod synthesis;
 mod typecheck;
 mod wd;
+mod wd_improve;
