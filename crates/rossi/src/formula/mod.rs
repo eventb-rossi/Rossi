@@ -21,6 +21,7 @@ pub mod tag;
 pub mod typecheck;
 pub mod typenv;
 pub mod types;
+pub mod wd;
 
 pub use crate::ast::Span;
 pub use assignment::{Assignment, AssignmentKind};
