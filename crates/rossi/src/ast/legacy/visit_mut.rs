@@ -2,12 +2,12 @@
 //!
 //! Override only the node kinds a transform needs, and call the corresponding
 //! `walk_*` function when the transform should continue into that node's
-//! children. The defaults recurse through the complete AST.
+//! children. The defaults recurse through the component structure only:
+//! formulas are immutable formula-model trees and are not visited.
 
 use super::{
-    Action, ActionKind, ClauseRegion, Component, Context, Event, Expression, ExpressionKind,
-    FileMetadata, Ident, IdentPattern, InitialisationEvent, LabeledAction, LabeledPredicate,
-    Machine, NamedElement, Predicate, PredicateKind, SetDeclaration, Span, TypedIdentifier,
+    ClauseRegion, Component, Context, Event, FileMetadata, InitialisationEvent, LabeledAction,
+    LabeledPredicate, Machine, NamedElement, SetDeclaration, Span,
 };
 
 /// A mutable AST visitor whose methods recurse by default.
@@ -46,30 +46,6 @@ pub trait VisitMut {
 
     fn visit_initialisation(&mut self, initialisation: &mut InitialisationEvent) {
         walk_initialisation(self, initialisation);
-    }
-
-    fn visit_expression(&mut self, expression: &mut Expression) {
-        walk_expression(self, expression);
-    }
-
-    fn visit_predicate(&mut self, predicate: &mut Predicate) {
-        walk_predicate(self, predicate);
-    }
-
-    fn visit_action(&mut self, action: &mut Action) {
-        walk_action(self, action);
-    }
-
-    fn visit_typed_identifier(&mut self, identifier: &mut TypedIdentifier) {
-        walk_typed_identifier(self, identifier);
-    }
-
-    fn visit_ident_pattern(&mut self, pattern: &mut IdentPattern) {
-        walk_ident_pattern(self, pattern);
-    }
-
-    fn visit_ident(&mut self, ident: &mut Ident) {
-        walk_ident(self, ident);
     }
 
     fn visit_clause_region(&mut self, clause: &mut ClauseRegion) {
@@ -198,183 +174,6 @@ pub fn walk_initialisation<V: VisitMut + ?Sized>(
     }
     visit_optional_span(visitor, &mut initialisation.span);
     visit_optional_span(visitor, &mut initialisation.name_span);
-}
-
-pub fn walk_expression<V: VisitMut + ?Sized>(visitor: &mut V, expression: &mut Expression) {
-    visit_optional_span(visitor, &mut expression.span);
-    match &mut expression.kind {
-        ExpressionKind::Integer(_)
-        | ExpressionKind::Identifier(_)
-        | ExpressionKind::AtomicBuiltin(_)
-        | ExpressionKind::True
-        | ExpressionKind::False
-        | ExpressionKind::EmptySet
-        | ExpressionKind::Naturals
-        | ExpressionKind::Naturals1
-        | ExpressionKind::Integers
-        | ExpressionKind::BoolType => {}
-        ExpressionKind::SetEnumeration(expressions) => {
-            for expression in expressions {
-                visitor.visit_expression(expression);
-            }
-        }
-        ExpressionKind::SetComprehension {
-            identifiers,
-            predicate,
-            expression,
-        } => {
-            for identifier in identifiers {
-                visitor.visit_typed_identifier(identifier);
-            }
-            visitor.visit_predicate(predicate);
-            if let Some(expression) = expression {
-                visitor.visit_expression(expression);
-            }
-        }
-        ExpressionKind::SetBuilder {
-            member_expression,
-            predicate,
-        } => {
-            visitor.visit_expression(member_expression);
-            visitor.visit_predicate(predicate);
-        }
-        ExpressionKind::RelationalImage { relation, set } => {
-            visitor.visit_expression(relation);
-            visitor.visit_expression(set);
-        }
-        ExpressionKind::QuantifiedUnion {
-            identifiers,
-            predicate,
-            expression,
-        }
-        | ExpressionKind::QuantifiedInter {
-            identifiers,
-            predicate,
-            expression,
-        } => {
-            for identifier in identifiers {
-                visitor.visit_typed_identifier(identifier);
-            }
-            visitor.visit_predicate(predicate);
-            visitor.visit_expression(expression);
-        }
-        ExpressionKind::Lambda {
-            pattern,
-            predicate,
-            expression,
-        } => {
-            visitor.visit_ident_pattern(pattern);
-            visitor.visit_predicate(predicate);
-            visitor.visit_expression(expression);
-        }
-        ExpressionKind::Binary { left, right, .. } => {
-            visitor.visit_expression(left);
-            visitor.visit_expression(right);
-        }
-        ExpressionKind::Unary { operand, .. } => visitor.visit_expression(operand),
-        ExpressionKind::FunctionApplication { function, argument } => {
-            visitor.visit_expression(function);
-            visitor.visit_expression(argument);
-        }
-        ExpressionKind::BuiltinApplication { argument, .. } => {
-            visitor.visit_expression(argument);
-        }
-        ExpressionKind::Bool(predicate) => visitor.visit_predicate(predicate),
-    }
-}
-
-pub fn walk_predicate<V: VisitMut + ?Sized>(visitor: &mut V, predicate: &mut Predicate) {
-    visit_optional_span(visitor, &mut predicate.span);
-    match &mut predicate.kind {
-        PredicateKind::True | PredicateKind::False => {}
-        PredicateKind::Comparison { left, right, .. } => {
-            visitor.visit_expression(left);
-            visitor.visit_expression(right);
-        }
-        PredicateKind::Not(predicate) => visitor.visit_predicate(predicate),
-        PredicateKind::Logical { left, right, .. } => {
-            visitor.visit_predicate(left);
-            visitor.visit_predicate(right);
-        }
-        PredicateKind::Quantified {
-            identifiers,
-            predicate,
-            ..
-        } => {
-            for identifier in identifiers {
-                visitor.visit_typed_identifier(identifier);
-            }
-            visitor.visit_predicate(predicate);
-        }
-        PredicateKind::Application {
-            function,
-            arguments,
-        } => {
-            visitor.visit_ident(function);
-            for argument in arguments {
-                visitor.visit_expression(argument);
-            }
-        }
-        PredicateKind::BuiltinApplication { arguments, .. } => {
-            for argument in arguments {
-                visitor.visit_expression(argument);
-            }
-        }
-    }
-}
-
-pub fn walk_action<V: VisitMut + ?Sized>(visitor: &mut V, action: &mut Action) {
-    visit_optional_span(visitor, &mut action.span);
-    match &mut action.kind {
-        ActionKind::Skip => {}
-        ActionKind::Assignment { assignments } => {
-            for (variable, _) in assignments.iter_mut() {
-                visitor.visit_ident(variable);
-            }
-            for (_, expression) in assignments {
-                visitor.visit_expression(expression);
-            }
-        }
-        ActionKind::BecomesIn { variables, set } => {
-            for variable in variables {
-                visitor.visit_ident(variable);
-            }
-            visitor.visit_expression(set);
-        }
-        ActionKind::BecomesSuchThat {
-            variables,
-            predicate,
-        } => {
-            for variable in variables {
-                visitor.visit_ident(variable);
-            }
-            visitor.visit_predicate(predicate);
-        }
-    }
-}
-
-pub fn walk_typed_identifier<V: VisitMut + ?Sized>(
-    visitor: &mut V,
-    identifier: &mut TypedIdentifier,
-) {
-    visit_optional_span(visitor, &mut identifier.span);
-    if let Some(expression) = &mut identifier.type_expr {
-        visitor.visit_expression(expression);
-    }
-}
-
-pub fn walk_ident_pattern<V: VisitMut + ?Sized>(visitor: &mut V, pattern: &mut IdentPattern) {
-    match pattern {
-        IdentPattern::Identifier(identifier) => visitor.visit_typed_identifier(identifier),
-        IdentPattern::Maplet(left, right) => {
-            visitor.visit_ident_pattern(left);
-            visitor.visit_ident_pattern(right);
-        }
-    }
-}
-
-pub fn walk_ident<V: VisitMut + ?Sized>(visitor: &mut V, ident: &mut Ident) {
-    visit_optional_span(visitor, &mut ident.span);
 }
 
 pub fn walk_clause_region<V: VisitMut + ?Sized>(visitor: &mut V, clause: &mut ClauseRegion) {

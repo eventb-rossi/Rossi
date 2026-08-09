@@ -541,11 +541,12 @@ mod tests {
     /// drift from the `⊤`/`⊥` the parser accepts as `true`/`false`.
     #[test]
     fn boolean_symbols_render_the_literals() {
-        use rossi::ast::predicate::{Predicate, PredicateKind};
+        use rossi::formula::tag::LiteralPredOp;
+        let ff = rossi::formula::FormulaFactory::default_factory();
         let pp = rossi::pretty::PrettyPrinter::new();
-        let glyph = |kind| pp.print_predicate(&Predicate::from(kind));
-        assert!(BOOLEAN_SYMBOLS.contains(&glyph(PredicateKind::True).as_str()));
-        assert!(BOOLEAN_SYMBOLS.contains(&glyph(PredicateKind::False).as_str()));
+        let glyph = |op| pp.print_formula_predicate(&ff.literal_predicate(op, None));
+        assert!(BOOLEAN_SYMBOLS.contains(&glyph(LiteralPredOp::BTrue).as_str()));
+        assert!(BOOLEAN_SYMBOLS.contains(&glyph(LiteralPredOp::BFalse).as_str()));
         // No extras — every emitted symbol is one of the two literals.
         assert_eq!(BOOLEAN_SYMBOLS.len(), 2);
     }

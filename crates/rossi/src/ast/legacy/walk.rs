@@ -1,11 +1,12 @@
-//! Scope-aware identifier traversal over Event-B formulas.
+//! Scope-aware identifier traversal over the parser's formula IR.
 //!
-//! A single walker threads a binder stack through expressions, predicates, and
-//! actions and reports every identifier occurrence — reads, binder
-//! declarations, action write targets, and predicate-application names — with
-//! its source span and the binders in scope at that point. The static checker,
-//! lint, and the language server all drive this one walker, so identifier
-//! resolution has a single source of truth.
+//! The walker threads a binder stack through expressions and predicates and
+//! reports every identifier occurrence — reads, binder declarations, and
+//! predicate-application names — with the binders in scope at that point.
+//! Its one production consumer is the lowering bridge,
+//! which needs the implicit `{E∣P}` binding rule while translating the IR
+//! onto the formula model; everything downstream resolves identifiers on the
+//! model's occurrence walker instead.
 //!
 //! The walker is policy-free: it reports occurrences verbatim (including the
 //! apostrophe-suffixed after-state form `x'` produced by before-after
@@ -19,8 +20,7 @@
 use std::ops::ControlFlow;
 
 use super::{
-    Action, ActionKind, Expression, ExpressionKind, IdentPattern, Predicate, PredicateKind, Span,
-    TypedIdentifier,
+    Expression, ExpressionKind, IdentPattern, Predicate, PredicateKind, Span, TypedIdentifier,
 };
 
 /// A binder in scope at an occurrence, innermost last.
@@ -28,8 +28,6 @@ use super::{
 pub struct Binder {
     /// The bound variable's name.
     pub name: String,
-    /// Source span of the binder's name token, if known.
-    pub span: Option<Span>,
 }
 
 /// The syntactic role of a reported identifier occurrence.
@@ -39,9 +37,6 @@ pub enum IdentRole {
     Usage,
     /// A binder declaration (quantifier / lambda / set-comprehension parameter).
     Binder,
-    /// An action write target (assignment / `becomes` LHS, or the
-    /// function-override name).
-    WriteTarget,
     /// The name of a user-defined predicate application.
     PredicateCall,
 }
@@ -50,8 +45,6 @@ pub enum IdentRole {
 pub struct IdentOccurrence<'a> {
     /// The identifier text, verbatim (a before-after read keeps its `'`).
     pub name: &'a str,
-    /// Source span of this occurrence, if known.
-    pub span: Option<Span>,
     /// What this occurrence is.
     pub role: IdentRole,
     /// The binders in scope here, innermost last. A binder declaration is *not*
@@ -82,13 +75,11 @@ pub trait IdentVisitor {
 fn emit<V: IdentVisitor>(
     v: &mut V,
     name: &str,
-    span: Option<Span>,
     role: IdentRole,
     binders: &[Binder],
 ) -> ControlFlow<()> {
     v.visit(IdentOccurrence {
         name,
-        span,
         role,
         binders,
     })
@@ -131,13 +122,7 @@ pub fn walk_predicate<V: IdentVisitor>(
             function,
             arguments,
         } => {
-            emit(
-                v,
-                &function.name,
-                function.span,
-                IdentRole::PredicateCall,
-                binders,
-            )?;
+            emit(v, &function.name, IdentRole::PredicateCall, binders)?;
             for a in arguments {
                 walk_expression(a, binders, v)?;
             }
@@ -159,7 +144,7 @@ pub fn walk_expression<V: IdentVisitor>(
     v: &mut V,
 ) -> ControlFlow<()> {
     match &e.kind {
-        ExpressionKind::Identifier(n) => emit(v, n, e.span, IdentRole::Usage, binders),
+        ExpressionKind::Identifier(n) => emit(v, n, IdentRole::Usage, binders),
         // A relational atom is a builtin value, not an identifier usage — it
         // names no user declaration, so it is never reported as a free name.
         ExpressionKind::AtomicBuiltin(_)
@@ -279,47 +264,6 @@ pub fn walk_expression<V: IdentVisitor>(
     }
 }
 
-/// Walk an action, reporting its write targets (as [`IdentRole::WriteTarget`])
-/// and every identifier read on its right-hand side.
-pub fn walk_action<V: IdentVisitor>(
-    a: &Action,
-    binders: &mut Vec<Binder>,
-    v: &mut V,
-) -> ControlFlow<()> {
-    match &a.kind {
-        ActionKind::Skip => ControlFlow::Continue(()),
-        ActionKind::Assignment { assignments } => {
-            write_targets(assignments.iter().map(|(variable, _)| variable), binders, v)?;
-            for (_, expression) in assignments {
-                walk_expression(expression, binders, v)?;
-            }
-            ControlFlow::Continue(())
-        }
-        ActionKind::BecomesIn { variables, set } => {
-            write_targets(variables, binders, v)?;
-            walk_expression(set, binders, v)
-        }
-        ActionKind::BecomesSuchThat {
-            variables,
-            predicate,
-        } => {
-            write_targets(variables, binders, v)?;
-            walk_predicate(predicate, binders, v)
-        }
-    }
-}
-
-fn write_targets<'a, V: IdentVisitor>(
-    variables: impl IntoIterator<Item = &'a super::Ident>,
-    binders: &[Binder],
-    v: &mut V,
-) -> ControlFlow<()> {
-    for var in variables {
-        emit(v, &var.name, var.span, IdentRole::WriteTarget, binders)?;
-    }
-    ControlFlow::Continue(())
-}
-
 /// Report each binder declaration (in the enclosing scope) and walk its type
 /// annotation, also in the enclosing scope.
 fn binder_decls<V: IdentVisitor>(
@@ -328,7 +272,7 @@ fn binder_decls<V: IdentVisitor>(
     v: &mut V,
 ) -> ControlFlow<()> {
     for ti in idents {
-        emit(v, &ti.name, ti.span, IdentRole::Binder, binders)?;
+        emit(v, &ti.name, IdentRole::Binder, binders)?;
         if let Some(t) = &ti.type_expr {
             walk_expression(t, binders, v)?;
         }
@@ -341,7 +285,6 @@ fn binder_frame(idents: &[TypedIdentifier]) -> Vec<Binder> {
         .iter()
         .map(|ti| Binder {
             name: ti.name.clone(),
-            span: ti.span,
         })
         .collect()
 }
@@ -362,7 +305,6 @@ fn implicit_set_builder_frame(member_expression: &Expression, binders: &[Binder]
             {
                 self.frame.push(Binder {
                     name: occ.name.to_string(),
-                    span: occ.span,
                 });
             }
             ControlFlow::Continue(())
@@ -385,7 +327,7 @@ fn pattern_decls<V: IdentVisitor>(
 ) -> ControlFlow<()> {
     match pattern {
         IdentPattern::Identifier(ti) => {
-            emit(v, &ti.name, ti.span, IdentRole::Binder, binders)?;
+            emit(v, &ti.name, IdentRole::Binder, binders)?;
             if let Some(t) = &ti.type_expr {
                 walk_expression(t, binders, v)?;
             }
@@ -402,7 +344,6 @@ fn pattern_frame(pattern: &IdentPattern, out: &mut Vec<Binder>) {
     match pattern {
         IdentPattern::Identifier(ti) => out.push(Binder {
             name: ti.name.clone(),
-            span: ti.span,
         }),
         IdentPattern::Maplet(l, r) => {
             pattern_frame(l, out);

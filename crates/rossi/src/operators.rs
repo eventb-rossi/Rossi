@@ -3,9 +3,233 @@
 //! This module is the shared reference for Unicode and ASCII spellings used by
 //! the parser-facing tools, pretty-printer, and LSP features.
 
-use crate::ast::expression::{BinaryOp, UnaryOp};
-use crate::ast::predicate::{ComparisonOp, LogicalOp, Quantifier};
 use crate::keywords::is_word_char;
+
+/// Binary expression operators of the surface language.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum BinaryOp {
+    // Arithmetic
+    Add,
+    Subtract,
+    Multiply,
+    Divide,
+    Modulo,
+    Exponent,
+    Range,
+
+    // Set operations
+    Union,
+    Intersection,
+    Difference,
+    CartesianProduct,
+
+    // Relation operations
+    Relation,
+    TotalRelation,
+    SurjectiveRelation,
+    TotalSurjectiveRelation,
+    TotalFunction,
+    PartialFunction,
+    TotalInjection,
+    PartialInjection,
+    TotalSurjection,
+    PartialSurjection,
+    Bijection,
+    Composition,
+    Semicolon,
+    DomainRestriction,
+    DomainSubtraction,
+    RangeRestriction,
+    RangeSubtraction,
+    Overwrite,
+    DirectProduct,
+    ParallelProduct,
+
+    // Typing
+    OfType,
+
+    // Other
+    Maplet,
+}
+
+/// Unary expression operators.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum UnaryOp {
+    Minus,
+    PowerSet,
+    PowerSet1,
+    Domain,
+    Range,
+    Inverse,
+}
+
+/// Closed built-in expression functions: words that are only ever meaningful
+/// applied to a parenthesized argument (`card(S)`, `min(S)`, …). Each takes
+/// exactly one argument. The generic relational atoms (`id`/`prj1`/`prj2`/
+/// `pred`/`succ`) are *not* here — they are atomic expressions, modelled by
+/// [`AtomicBuiltinKind`], and "application" of them (`prj1(x)`) is ordinary
+/// function application.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum BuiltinFunction {
+    Card,
+    Min,
+    Max,
+    /// Generalized union `union(S)` (prefix `⋃` over a set of sets).
+    Union,
+    /// Generalized intersection `inter(S)` (prefix `⋂` over a set of sets).
+    Inter,
+}
+
+impl BuiltinFunction {
+    /// Get the canonical name of this built-in function
+    pub fn name(&self) -> &'static str {
+        match self {
+            BuiltinFunction::Card => "card",
+            BuiltinFunction::Min => "min",
+            BuiltinFunction::Max => "max",
+            BuiltinFunction::Union => "union",
+            BuiltinFunction::Inter => "inter",
+        }
+    }
+
+    /// Look up a built-in function by name
+    pub fn from_name(name: &str) -> Option<Self> {
+        match name {
+            "card" => Some(BuiltinFunction::Card),
+            "min" => Some(BuiltinFunction::Min),
+            "max" => Some(BuiltinFunction::Max),
+            "union" => Some(BuiltinFunction::Union),
+            "inter" => Some(BuiltinFunction::Inter),
+            _ => None,
+        }
+    }
+}
+
+/// The generic relational atoms of the Event-B mathematical language: bare
+/// words that denote a built-in relation whose type the static checker
+/// infers, plus the monomorphic integer relations `pred`/`succ`. They are
+/// *atoms* — a bare `prj1` is a value, and `prj1(x)` is function application
+/// of that value, never a closed builtin call. These are reserved atom words
+/// (see [`crate::builtins::RESERVED_ATOM_WORDS`]): legal bare, un-namable.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum AtomicBuiltinKind {
+    /// Generic identity relation `id` (`ℙ(α × α)`).
+    Id,
+    /// First projection `prj1` (`ℙ((α × β) × α)`).
+    Prj1,
+    /// Second projection `prj2` (`ℙ((α × β) × β)`).
+    Prj2,
+    /// Predecessor relation `pred` (`ℙ(ℤ × ℤ)`).
+    Pred,
+    /// Successor relation `succ` (`ℙ(ℤ × ℤ)`).
+    Succ,
+}
+
+impl AtomicBuiltinKind {
+    /// Every relational atom, the canonical variant list. `name` is the single
+    /// source of spellings; `from_name` and callers that need to enumerate the
+    /// atoms derive from this array rather than re-listing the variants.
+    pub const ALL: [AtomicBuiltinKind; 5] = [
+        AtomicBuiltinKind::Id,
+        AtomicBuiltinKind::Prj1,
+        AtomicBuiltinKind::Prj2,
+        AtomicBuiltinKind::Pred,
+        AtomicBuiltinKind::Succ,
+    ];
+
+    /// Get the canonical name of this relational atom.
+    pub fn name(&self) -> &'static str {
+        match self {
+            AtomicBuiltinKind::Id => "id",
+            AtomicBuiltinKind::Prj1 => "prj1",
+            AtomicBuiltinKind::Prj2 => "prj2",
+            AtomicBuiltinKind::Pred => "pred",
+            AtomicBuiltinKind::Succ => "succ",
+        }
+    }
+
+    /// Look up a relational atom by name (derived from [`Self::name`], so the
+    /// spellings can never drift between the two directions).
+    pub fn from_name(name: &str) -> Option<Self> {
+        Self::ALL.into_iter().find(|k| k.name() == name)
+    }
+}
+
+/// Comparison operators
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ComparisonOp {
+    Equal,
+    NotEqual,
+    LessThan,
+    LessEqual,
+    GreaterThan,
+    GreaterEqual,
+    In,
+    NotIn,
+    Subset,
+    SubsetStrict,
+    NotSubset,
+    NotSubsetStrict,
+}
+
+/// Logical operators
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum LogicalOp {
+    And,
+    Or,
+    Implies,
+    Equivalent,
+}
+
+/// Quantifiers
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Quantifier {
+    ForAll,
+    Exists,
+}
+
+/// Built-in predicate functions recognized by the parser
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum BuiltinPredicate {
+    Finite,
+    Partition,
+}
+
+impl BuiltinPredicate {
+    /// Get the canonical name of this built-in predicate
+    pub fn name(&self) -> &'static str {
+        match self {
+            BuiltinPredicate::Finite => "finite",
+            BuiltinPredicate::Partition => "partition",
+        }
+    }
+
+    /// Get the minimum number of arguments for this built-in predicate
+    pub fn min_arity(&self) -> usize {
+        match self {
+            BuiltinPredicate::Finite => 1,
+            BuiltinPredicate::Partition => 2,
+        }
+    }
+
+    /// Check whether the given argument count is valid for this built-in predicate
+    pub fn check_arity(&self, n: usize) -> bool {
+        match self {
+            BuiltinPredicate::Finite => n == 1,
+            // partition(S, A, B, ...) requires the set plus at least one block
+            BuiltinPredicate::Partition => n >= 2,
+        }
+    }
+
+    /// Look up a built-in predicate by name
+    pub fn from_name(name: &str) -> Option<Self> {
+        match name {
+            "finite" => Some(BuiltinPredicate::Finite),
+            "partition" => Some(BuiltinPredicate::Partition),
+            _ => None,
+        }
+    }
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum OperatorCategory {

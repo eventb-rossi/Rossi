@@ -128,8 +128,8 @@ pub(crate) fn action_well_typed(env: &TypeEnv, action: &ActionBody) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use rossi::ast::expression::{BinaryOp, UnaryOp};
     use rossi::formula::Type;
+    use rossi::formula::tag::{AssocExprOp, AtomicOp, BinaryExprOp, UnaryExprOp};
     use rossi::{parse_action_str, parse_expression_str, parse_predicate_str};
 
     fn carrier_elem(name: &str) -> Type {
@@ -204,40 +204,33 @@ mod tests {
 
     #[test]
     fn rejects_invalid_set_and_relation_operands() {
+        let ff = rossi::formula::FormulaFactory::default_factory();
+        let tru = || ff.atomic_expression(AtomicOp::True, None, None);
+        let fls = || ff.atomic_expression(AtomicOp::False, None, None);
         let env = TypeEnv::new();
+
         for op in [
-            BinaryOp::Union,
-            BinaryOp::Intersection,
-            BinaryOp::Difference,
-            BinaryOp::CartesianProduct,
-            BinaryOp::Relation,
-            BinaryOp::TotalRelation,
-            BinaryOp::SurjectiveRelation,
-            BinaryOp::TotalSurjectiveRelation,
-            BinaryOp::TotalFunction,
-            BinaryOp::PartialFunction,
-            BinaryOp::TotalInjection,
-            BinaryOp::PartialInjection,
-            BinaryOp::TotalSurjection,
-            BinaryOp::PartialSurjection,
-            BinaryOp::Bijection,
-            BinaryOp::Composition,
-            BinaryOp::Semicolon,
-            BinaryOp::DomainRestriction,
-            BinaryOp::DomainSubtraction,
-            BinaryOp::RangeRestriction,
-            BinaryOp::RangeSubtraction,
-            BinaryOp::Overwrite,
-            BinaryOp::DirectProduct,
-            BinaryOp::ParallelProduct,
+            BinaryExprOp::SetMinus,
+            BinaryExprOp::CProd,
+            BinaryExprOp::Rel,
+            BinaryExprOp::TRel,
+            BinaryExprOp::SRel,
+            BinaryExprOp::STRel,
+            BinaryExprOp::TFun,
+            BinaryExprOp::PFun,
+            BinaryExprOp::TInj,
+            BinaryExprOp::PInj,
+            BinaryExprOp::TSur,
+            BinaryExprOp::PSur,
+            BinaryExprOp::TBij,
+            BinaryExprOp::DomRes,
+            BinaryExprOp::DomSub,
+            BinaryExprOp::RanRes,
+            BinaryExprOp::RanSub,
+            BinaryExprOp::DProd,
+            BinaryExprOp::PProd,
         ] {
-            let legacy: rossi::ast::Expression = rossi::ast::ExpressionKind::Binary {
-                op,
-                left: Box::new(rossi::ast::ExpressionKind::True.into()),
-                right: Box::new(rossi::ast::ExpressionKind::False.into()),
-            }
-            .into();
-            let expression = rossi::formula::lower::lower_expression(&legacy);
+            let expression = ff.binary_expression(op, tru(), fls(), None);
             assert!(
                 typed_expression(&env, &expression).is_none(),
                 "accepted ill-typed set/relation operator: {op:?}"
@@ -245,18 +238,27 @@ mod tests {
         }
 
         for op in [
-            UnaryOp::PowerSet,
-            UnaryOp::PowerSet1,
-            UnaryOp::Domain,
-            UnaryOp::Range,
-            UnaryOp::Inverse,
+            AssocExprOp::BUnion,
+            AssocExprOp::BInter,
+            AssocExprOp::Ovr,
+            AssocExprOp::FComp,
+            AssocExprOp::BComp,
         ] {
-            let legacy: rossi::ast::Expression = rossi::ast::ExpressionKind::Unary {
-                op,
-                operand: Box::new(rossi::ast::ExpressionKind::True.into()),
-            }
-            .into();
-            let expression = rossi::formula::lower::lower_expression(&legacy);
+            let expression = ff.associative_expression(op, vec![tru(), fls()], None);
+            assert!(
+                typed_expression(&env, &expression).is_none(),
+                "accepted ill-typed set/relation operator: {op:?}"
+            );
+        }
+
+        for op in [
+            UnaryExprOp::Pow,
+            UnaryExprOp::Pow1,
+            UnaryExprOp::KDom,
+            UnaryExprOp::KRan,
+            UnaryExprOp::Converse,
+        ] {
+            let expression = ff.unary_expression(op, tru(), None);
             assert!(
                 typed_expression(&env, &expression).is_none(),
                 "accepted ill-typed unary operator: {op:?}"
