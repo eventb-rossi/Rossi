@@ -890,16 +890,12 @@ fn build_event_scope(
         }
     }
 
-    // Inherited typing axioms (when extended) + own guard predicates.
-    // `typing_guard_predicates` already walks the parent chain
-    // root-first and includes parent's own guards, gated on parent's
-    // own `extended` flag.
+    // Own guard predicates only: inherited parameters arrive with their
+    // solved types on the chain's declarations above, so the parent's
+    // guards have nothing left to type — an inherited guard was checked
+    // in the parent's scope and cannot reference a name this event
+    // introduces.
     let mut axioms: Vec<rossi::Predicate> = Vec::new();
-    if let Some(pe) = inherited.decl {
-        for p in pe.typing_guard_predicates() {
-            axioms.push(p.clone());
-        }
-    }
     // 2nd+ occurrences of a duplicated guard label are dropped from the
     // event (see `build_event_buckets`), so they must not contribute typing
     // either; the kept first occurrence still types its parameters.
