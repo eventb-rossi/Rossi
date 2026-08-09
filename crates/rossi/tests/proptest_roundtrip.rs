@@ -290,8 +290,7 @@ fn arb_expression_impl(depth: u32, desired_size: u32) -> impl Strategy<Value = E
                 ff().binary_expression(BinaryExprOp::RelImage, relation, set, None)
             }),
             // Type ascription e ⦂ T.
-            (inner.clone(), inner.clone())
-                .prop_map(|(expr, ty)| ff().ascription(expr, ty, None)),
+            (inner.clone(), inner.clone()).prop_map(|(expr, ty)| ff().ascription(expr, ty, None)),
             // Ident-list comprehension {ids ∣ P}: the value is the binder
             // chain in declaration order.
             (

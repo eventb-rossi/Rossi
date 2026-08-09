@@ -18,7 +18,5 @@ pub use super::{
     LabeledAction, LabeledPredicate, Machine, NamedElement, SetDeclaration, Span, TypedIdentifier,
 };
 pub use action::{Action, ActionKind};
-pub use expression::{
-    AtomicBuiltinKind, BuiltinFunction, Expression, ExpressionKind, IdentPattern,
-};
+pub use expression::{BuiltinFunction, Expression, ExpressionKind, IdentPattern};
 pub use predicate::{BuiltinPredicate, Predicate, PredicateKind};

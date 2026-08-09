@@ -6,8 +6,8 @@
 //! rejection. The accept/reject decisions and the exact set-operator pairs are
 //! the Rodin formula parser's.
 
-use rossi::ast::expression::BinaryOp;
 use rossi::op_info::set_ops_acceptable;
+use rossi::operators::BinaryOp;
 use rossi::{parse_expression_str, parse_predicate_str};
 use test_case::test_case;
 

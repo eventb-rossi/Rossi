@@ -62,7 +62,7 @@ pub mod xml;
 // typed model; the legacy tree is internal to the parser (`ast::legacy`).
 pub use ast::{
     ActionBody, Component, Context, Event, EventStatus, FileMetadata, Ident, InitialisationEvent,
-    LabeledAction, LabeledPredicate, Machine, NamedElement, SetDeclaration, TypedIdentifier,
+    LabeledAction, LabeledPredicate, Machine, NamedElement, SetDeclaration,
 };
 pub use deps::{ComponentId, ComponentKind, DependencyGraph, EdgeKind, RefinementAncestry};
 pub use error::{ParseError, ParseResult, Result};

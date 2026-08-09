@@ -4,24 +4,22 @@
 
 pub mod context;
 pub mod event;
-pub mod legacy;
+pub(crate) mod legacy;
 pub mod machine;
 
-// The formula types live in `legacy` while the typed formula model
-// replaces them; the historical paths stay valid through these
-// re-exports.
-pub use legacy::{action, expression, predicate, visit_mut, walk};
+// The formula types live in `legacy` while the parser still builds its
+// IR on them; the historical crate-internal paths stay valid through
+// these re-exports. None of this is public API — the public formula
+// types are `crate::formula`'s.
+pub(crate) use legacy::{action, expression, predicate, visit_mut};
 
-pub use action::{Action, ActionKind};
+pub(crate) use action::{Action, ActionKind};
 pub use context::{Context, SetDeclaration};
 pub use event::{Event, EventStatus, InitialisationEvent};
-pub use expression::{
-    AtomicBuiltinKind, BuiltinFunction, Expression, ExpressionKind, IdentPattern,
-};
+pub(crate) use expression::{Expression, ExpressionKind, IdentPattern};
 pub use machine::Machine;
-pub use predicate::{BuiltinPredicate, Predicate, PredicateKind};
-pub use visit_mut::VisitMut;
-pub use walk::{Binder, IdentOccurrence, IdentRole, IdentVisitor};
+pub(crate) use predicate::{Predicate, PredicateKind};
+pub(crate) use visit_mut::VisitMut;
 
 use crate::keywords::KeywordId;
 

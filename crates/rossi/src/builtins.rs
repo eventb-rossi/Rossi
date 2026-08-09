@@ -11,9 +11,10 @@
 //! The non-ASCII symbol atoms (`ℕ ℕ1 ℙ ℙ1 ℤ` …) are operator spellings handled by
 //! [`crate::operators`]; only identifier-shaped words live here.
 //!
-//! [`crate::ast::BuiltinFunction`] and [`crate::ast::BuiltinPredicate`] remain the
-//! sources used during parsing; the `builtins_cover_parsed_vocabulary` test keeps
-//! this list from drifting away from them and from the operator words.
+//! [`crate::operators::BuiltinFunction`] and
+//! [`crate::operators::BuiltinPredicate`] remain the sources used during
+//! parsing; the `builtins_cover_parsed_vocabulary` test keeps this list from
+//! drifting away from them and from the operator words.
 
 /// Built-in identifier-shaped vocabulary, lowercase; membership is
 /// case-insensitive. This is the *vocabulary* list (editor-grammar generator,
@@ -83,7 +84,7 @@ pub const RESERVED_OPERATOR_WORDS: &[&str] = &[
 
 /// The remaining kernel_lang §2.2 reserved words (exact case): generic atoms
 /// and literals that are legal *in formulas* (`id`, `prj1`, `prj2`, `pred`,
-/// `succ` parse as bare atoms — the [`crate::ast::AtomicBuiltinKind`] relational
+/// `succ` parse as bare atoms — the [`crate::operators::AtomicBuiltinKind`] relational
 /// atoms; `TRUE`/`FALSE`/`BOOL`/`bool` lex as keyword tokens there) but can
 /// never *name* a user identifier. Together with [`RESERVED_OPERATOR_WORDS`]
 /// this forms the full §2.2 list.
@@ -146,7 +147,7 @@ pub fn is_reserved_name(word: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::ast::{AtomicBuiltinKind, BuiltinFunction, BuiltinPredicate};
+    use crate::operators::{AtomicBuiltinKind, BuiltinFunction, BuiltinPredicate};
 
     #[test]
     fn is_builtin_is_case_insensitive() {

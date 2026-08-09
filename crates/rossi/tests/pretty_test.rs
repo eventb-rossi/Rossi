@@ -134,122 +134,150 @@ fn test_pretty_print_parallel_assignment_keeps_all_pairs() {
 
 #[test]
 fn rodin_canonical_binary_spacing_is_exhaustive() {
-    use rossi::ast::expression::BinaryOp;
+    use rossi::formula::tag::{AssocExprOp, BinaryExprOp};
+    use rossi::operators::OperatorId;
 
-    let cases = [
-        (BinaryOp::Add, true),
-        (BinaryOp::Subtract, false),
-        (BinaryOp::Multiply, true),
-        (BinaryOp::Divide, false),
-        (BinaryOp::Modulo, false),
-        (BinaryOp::Exponent, false),
-        (BinaryOp::Range, false),
-        (BinaryOp::Union, true),
-        (BinaryOp::Intersection, true),
-        (BinaryOp::Difference, false),
-        (BinaryOp::CartesianProduct, true),
-        (BinaryOp::Relation, false),
-        (BinaryOp::TotalRelation, false),
-        (BinaryOp::SurjectiveRelation, false),
-        (BinaryOp::TotalSurjectiveRelation, false),
-        (BinaryOp::TotalFunction, false),
-        (BinaryOp::PartialFunction, false),
-        (BinaryOp::TotalInjection, false),
-        (BinaryOp::PartialInjection, false),
-        (BinaryOp::TotalSurjection, false),
-        (BinaryOp::PartialSurjection, false),
-        (BinaryOp::Bijection, false),
-        (BinaryOp::Composition, false),
-        (BinaryOp::Semicolon, false),
-        (BinaryOp::DomainRestriction, false),
-        (BinaryOp::DomainSubtraction, false),
-        (BinaryOp::RangeRestriction, false),
-        (BinaryOp::RangeSubtraction, false),
-        (BinaryOp::Overwrite, true),
-        (BinaryOp::DirectProduct, false),
-        (BinaryOp::ParallelProduct, false),
-        (BinaryOp::OfType, false),
-        (BinaryOp::Maplet, false),
+    // Every infix expression operator, keyed by the operator table's id so
+    // the expected spelling cannot drift from the table. FunImage/RelImage
+    // print as application forms, not infix, so they have no row.
+    let assoc_cases = [
+        (AssocExprOp::Plus, OperatorId::Add, true),
+        (AssocExprOp::Mul, OperatorId::Multiply, true),
+        (AssocExprOp::BUnion, OperatorId::Union, true),
+        (AssocExprOp::BInter, OperatorId::Intersection, true),
+        (AssocExprOp::Ovr, OperatorId::Overwrite, true),
+        (AssocExprOp::FComp, OperatorId::Semicolon, false),
+        (AssocExprOp::BComp, OperatorId::Composition, false),
+    ];
+    let binary_cases = [
+        (BinaryExprOp::Minus, OperatorId::Subtract, false),
+        (BinaryExprOp::Div, OperatorId::Divide, false),
+        (BinaryExprOp::Mod, OperatorId::Modulo, false),
+        (BinaryExprOp::Expn, OperatorId::Exponent, false),
+        (BinaryExprOp::UpTo, OperatorId::Range, false),
+        (BinaryExprOp::SetMinus, OperatorId::Difference, false),
+        (BinaryExprOp::CProd, OperatorId::CartesianProduct, true),
+        (BinaryExprOp::Rel, OperatorId::Relation, false),
+        (BinaryExprOp::TRel, OperatorId::TotalRelation, false),
+        (BinaryExprOp::SRel, OperatorId::SurjectiveRelation, false),
+        (
+            BinaryExprOp::STRel,
+            OperatorId::TotalSurjectiveRelation,
+            false,
+        ),
+        (BinaryExprOp::TFun, OperatorId::TotalFunction, false),
+        (BinaryExprOp::PFun, OperatorId::PartialFunction, false),
+        (BinaryExprOp::TInj, OperatorId::TotalInjection, false),
+        (BinaryExprOp::PInj, OperatorId::PartialInjection, false),
+        (BinaryExprOp::TSur, OperatorId::TotalSurjection, false),
+        (BinaryExprOp::PSur, OperatorId::PartialSurjection, false),
+        (BinaryExprOp::TBij, OperatorId::Bijection, false),
+        (BinaryExprOp::DomRes, OperatorId::DomainRestriction, false),
+        (BinaryExprOp::DomSub, OperatorId::DomainSubtraction, false),
+        (BinaryExprOp::RanRes, OperatorId::RangeRestriction, false),
+        (BinaryExprOp::RanSub, OperatorId::RangeSubtraction, false),
+        (BinaryExprOp::DProd, OperatorId::DirectProduct, false),
+        (BinaryExprOp::PProd, OperatorId::ParallelProduct, false),
+        (BinaryExprOp::Mapsto, OperatorId::Maplet, false),
     ];
     let printer = PrettyPrinter::rodin_canonical();
-
-    for (op, tight) in cases {
-        let expression: rossi::ast::Expression = rossi::ast::ExpressionKind::Binary {
-            op,
-            left: Box::new(rossi::ast::ExpressionKind::Identifier("a".into()).into()),
-            right: Box::new(rossi::ast::ExpressionKind::Identifier("b".into()).into()),
-        }
-        .into();
-        let operator = operators::spell(operators::binary_op_id(op), true);
+    let check = |expression: Expression, op_id: OperatorId, tight: bool| {
+        let operator = operators::spell(op_id, true);
         let separator = if tight { "" } else { " " };
         assert_eq!(
-            printer.print_expression(&expression),
+            printer.print_formula_expression(&expression),
             format!("a{separator}{operator}{separator}b"),
-            "wrong Rodin spacing for {op:?}"
+            "wrong Rodin spacing for {op_id:?}"
         );
+    };
+
+    for (op, op_id, tight) in assoc_cases {
+        check(assoc(op, vec![id("a"), id("b")]), op_id, tight);
     }
+    for (op, op_id, tight) in binary_cases {
+        check(bin(op, id("a"), id("b")), op_id, tight);
+    }
+    check(
+        mff().ascription(id("a"), id("b"), None),
+        OperatorId::OfType,
+        false,
+    );
 }
 
 #[test]
 fn rodin_canonical_tightens_comparisons_and_logical_operators() {
-    use rossi::ast::predicate::{ComparisonOp, LogicalOp};
+    use rossi::formula::tag::{AssocPredOp, BinaryPredOp, RelationalOp};
+    use rossi::operators::OperatorId;
 
-    let comparison_ops = [
-        ComparisonOp::Equal,
-        ComparisonOp::NotEqual,
-        ComparisonOp::LessThan,
-        ComparisonOp::LessEqual,
-        ComparisonOp::GreaterThan,
-        ComparisonOp::GreaterEqual,
-        ComparisonOp::In,
-        ComparisonOp::NotIn,
-        ComparisonOp::Subset,
-        ComparisonOp::SubsetStrict,
-        ComparisonOp::NotSubset,
-        ComparisonOp::NotSubsetStrict,
+    let comparison_cases = [
+        (RelationalOp::Equal, OperatorId::Equal),
+        (RelationalOp::NotEqual, OperatorId::NotEqual),
+        (RelationalOp::Lt, OperatorId::LessThan),
+        (RelationalOp::Le, OperatorId::LessEqual),
+        (RelationalOp::Gt, OperatorId::GreaterThan),
+        (RelationalOp::Ge, OperatorId::GreaterEqual),
+        (RelationalOp::In, OperatorId::In),
+        (RelationalOp::NotIn, OperatorId::NotIn),
+        (RelationalOp::SubsetEq, OperatorId::Subset),
+        (RelationalOp::Subset, OperatorId::SubsetStrict),
+        (RelationalOp::NotSubsetEq, OperatorId::NotSubset),
+        (RelationalOp::NotSubset, OperatorId::NotSubsetStrict),
     ];
     let printer = PrettyPrinter::rodin_canonical();
 
-    for op in comparison_ops {
-        let predicate: rossi::ast::Predicate = rossi::ast::PredicateKind::Comparison {
-            op,
-            left: rossi::ast::ExpressionKind::Identifier("a".into()).into(),
-            right: rossi::ast::ExpressionKind::Identifier("b".into()).into(),
-        }
-        .into();
-        let operator = operators::spell(operators::comparison_op_id(op), true);
+    for (op, op_id) in comparison_cases {
+        let predicate = mff().relational_predicate(op, id("a"), id("b"), None);
+        let operator = operators::spell(op_id, true);
         assert_eq!(
-            printer.print_predicate(&predicate),
+            printer.print_formula_predicate(&predicate),
             format!("a{operator}b"),
-            "wrong Rodin spacing for {op:?}"
+            "wrong Rodin spacing for {op_id:?}"
         );
     }
 
-    let comparison = |left: &str, right: &str| -> rossi::ast::Predicate {
-        rossi::ast::PredicateKind::Comparison {
-            op: ComparisonOp::Equal,
-            left: rossi::ast::ExpressionKind::Identifier(left.into()).into(),
-            right: rossi::ast::ExpressionKind::Identifier(right.into()).into(),
-        }
-        .into()
+    let comparison = |left: &str, right: &str| {
+        mff().relational_predicate(RelationalOp::Equal, id(left), id(right), None)
     };
-    for op in [
-        LogicalOp::And,
-        LogicalOp::Or,
-        LogicalOp::Implies,
-        LogicalOp::Equivalent,
-    ] {
-        let predicate: rossi::ast::Predicate = rossi::ast::PredicateKind::Logical {
-            op,
-            left: Box::new(comparison("a", "b")),
-            right: Box::new(comparison("c", "d")),
-        }
-        .into();
-        let operator = operators::spell(operators::logical_op_id(op), true);
+    let logical_cases = [
+        (
+            passoc(
+                AssocPredOp::LAnd,
+                vec![comparison("a", "b"), comparison("c", "d")],
+            ),
+            OperatorId::And,
+        ),
+        (
+            passoc(
+                AssocPredOp::LOr,
+                vec![comparison("a", "b"), comparison("c", "d")],
+            ),
+            OperatorId::Or,
+        ),
+        (
+            mff().binary_predicate(
+                BinaryPredOp::LImp,
+                comparison("a", "b"),
+                comparison("c", "d"),
+                None,
+            ),
+            OperatorId::Implies,
+        ),
+        (
+            mff().binary_predicate(
+                BinaryPredOp::LEqv,
+                comparison("a", "b"),
+                comparison("c", "d"),
+                None,
+            ),
+            OperatorId::Equivalent,
+        ),
+    ];
+    for (predicate, op_id) in logical_cases {
+        let operator = operators::spell(op_id, true);
         assert_eq!(
-            printer.print_predicate(&predicate),
+            printer.print_formula_predicate(&predicate),
             format!("a=b{operator}c=d"),
-            "wrong Rodin spacing for {op:?}"
+            "wrong Rodin spacing for {op_id:?}"
         );
     }
 }
@@ -567,10 +595,7 @@ fn test_single_argument_application_ast_roundtrips() {
     for (application, expected) in applications {
         let printed = PrettyPrinter::new().print_formula_expression(&application);
         assert_eq!(printed, expected);
-        assert_eq!(
-            rossi::parse_expression_str(&printed).unwrap(),
-            application
-        );
+        assert_eq!(rossi::parse_expression_str(&printed).unwrap(), application);
     }
 }
 
