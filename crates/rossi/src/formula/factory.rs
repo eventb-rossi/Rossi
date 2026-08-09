@@ -506,6 +506,22 @@ impl FormulaFactory {
         )
     }
 
+    /// The canonical left-nested maplet chain over the `count` innermost
+    /// bound identifiers, in declaration order:
+    /// `bid(count−1) ↦ … ↦ bid(0)`. This is the value shape the
+    /// ident-list comprehension form and the lambda pattern require
+    /// (see `Form` filtering).
+    #[track_caller]
+    pub fn bound_ident_chain(&self, count: usize) -> Expression {
+        assert!(count > 0, "a chain needs at least one identifier");
+        let mut chain = self.bound_identifier(count as u32 - 1, None, None);
+        for index in (0..count - 1).rev() {
+            let right = self.bound_identifier(index as u32, None, None);
+            chain = self.binary_expression(BinaryExprOp::Mapsto, chain, right, None);
+        }
+        chain
+    }
+
     /// A type ascription `E ⦂ T`, with the type kept in its source
     /// spelling.
     pub fn ascription(

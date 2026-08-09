@@ -1,7 +1,5 @@
 mod common;
 
-use rossi::ast::expression::{AtomicBuiltinKind, BinaryOp, UnaryOp};
-use rossi::ast::predicate::{ComparisonOp, LogicalOp};
 use rossi::*;
 use test_case::test_case;
 
@@ -357,105 +355,96 @@ END
 // every canonical form is also proven parser-stable.
 // ============================================================================
 
-// The rows build legacy parser trees (the printer's own input); reparse
-// stability is asserted against the lowered model form.
-type LExpr = rossi::ast::Expression;
-type LPred = rossi::ast::Predicate;
+// The rows build formula-model trees through the factory — the shapes the
+// parser itself produces (same-operator chains are one n-ary node, so the
+// legacy "right-nested same operator keeps parens" cases have no model
+// equivalent). The shared body reparses the printed form and compares the
+// trees directly.
 
-fn id(name: &str) -> LExpr {
-    LExpr::identifier(name)
+fn mff() -> rossi::formula::FormulaFactory {
+    rossi::formula::FormulaFactory::default_factory()
 }
 
-fn bin(op: BinaryOp, left: LExpr, right: LExpr) -> LExpr {
-    rossi::ast::ExpressionKind::Binary {
-        op,
-        left: Box::new(left),
-        right: Box::new(right),
-    }
-    .into()
+fn id(name: &str) -> Expression {
+    mff().free_identifier(name, None, None)
 }
 
-fn un(op: UnaryOp, operand: LExpr) -> LExpr {
-    rossi::ast::ExpressionKind::Unary {
-        op,
-        operand: Box::new(operand),
-    }
-    .into()
+fn bin(op: rossi::formula::tag::BinaryExprOp, left: Expression, right: Expression) -> Expression {
+    mff().binary_expression(op, left, right, None)
+}
+
+fn un(op: rossi::formula::tag::UnaryExprOp, child: Expression) -> Expression {
+    mff().unary_expression(op, child, None)
+}
+
+fn assoc(op: rossi::formula::tag::AssocExprOp, children: Vec<Expression>) -> Expression {
+    mff().associative_expression(op, children, None)
 }
 
 /// `<name> > 0` — comparison leaf for the logical-operator rows.
-fn gt0(name: &str) -> LPred {
-    rossi::ast::PredicateKind::Comparison {
-        op: ComparisonOp::GreaterThan,
-        left: id(name),
-        right: rossi::ast::ExpressionKind::Integer(0).into(),
-    }
-    .into()
+fn gt0(name: &str) -> Predicate {
+    mff().relational_predicate(
+        rossi::formula::tag::RelationalOp::Gt,
+        id(name),
+        mff().integer_literal(0, None),
+        None,
+    )
 }
 
-fn logic(op: LogicalOp, left: LPred, right: LPred) -> LPred {
-    rossi::ast::PredicateKind::Logical {
-        op,
-        left: Box::new(left),
-        right: Box::new(right),
-    }
-    .into()
+fn passoc(op: rossi::formula::tag::AssocPredOp, children: Vec<Predicate>) -> Predicate {
+    mff().associative_predicate(op, children, None)
 }
 
-// (a + b) + c prints flat: left child, same precedence, left-associative.
+use rossi::formula::tag::{AssocExprOp as AOp, AssocPredOp as POp, BinaryExprOp as BOp};
+
+// a + b + c — one n-ary sum prints flat.
 #[test_case(
-    bin(BinaryOp::Add, bin(BinaryOp::Add, id("a"), id("b")), id("c")),
+    assoc(AOp::Plus, vec![id("a"), id("b"), id("c")]),
     "a + b + c";
-    "same_prec_left_assoc_no_parens"
-)]
-// a + (b + c) keeps parens: right child of a left-associative operator.
-#[test_case(
-    bin(BinaryOp::Add, id("a"), bin(BinaryOp::Add, id("b"), id("c"))),
-    "a + (b + c)";
-    "same_prec_right_child_parens"
+    "assoc_chain_prints_flat"
 )]
 // a + b ∗ c prints flat: multiply is higher precedence. (∗ ASTERISK OPERATOR)
 #[test_case(
-    bin(BinaryOp::Add, id("a"), bin(BinaryOp::Multiply, id("b"), id("c"))),
+    assoc(AOp::Plus, vec![id("a"), assoc(AOp::Mul, vec![id("b"), id("c")])]),
     "a + b \u{2217} c";
     "higher_prec_child_no_parens"
 )]
 // (a + b) ∗ c keeps parens: add is lower precedence than multiply.
 #[test_case(
-    bin(BinaryOp::Multiply, bin(BinaryOp::Add, id("a"), id("b")), id("c")),
+    assoc(AOp::Mul, vec![assoc(AOp::Plus, vec![id("a"), id("b")]), id("c")]),
     "(a + b) \u{2217} c";
     "lower_prec_child_parens"
 )]
-// a − b + c prints flat: left child, same precedence, left-assoc. (− MINUS SIGN)
+// a − b + c prints flat: leading subtraction, same precedence. (− MINUS SIGN)
 #[test_case(
-    bin(BinaryOp::Add, bin(BinaryOp::Subtract, id("a"), id("b")), id("c")),
+    assoc(AOp::Plus, vec![bin(BOp::Minus, id("a"), id("b")), id("c")]),
     "a \u{2212} b + c";
     "mixed_same_prec_left_child"
 )]
-// a + (b − c) keeps parens: right child, same precedence, left-assoc.
+// a + (b − c) keeps parens: a same-precedence non-first operand.
 #[test_case(
-    bin(BinaryOp::Add, id("a"), bin(BinaryOp::Subtract, id("b"), id("c"))),
+    assoc(AOp::Plus, vec![id("a"), bin(BOp::Minus, id("b"), id("c"))]),
     "a + (b \u{2212} c)";
     "mixed_same_prec_right_child"
 )]
 // a ↦ (b ↦ c): right child is itself a Maplet, so keep parens
 // (left-associative — same-level Maplet on the right is non-default grouping).
 #[test_case(
-    bin(BinaryOp::Maplet, id("a"), bin(BinaryOp::Maplet, id("b"), id("c"))),
+    bin(BOp::Mapsto, id("a"), bin(BOp::Mapsto, id("b"), id("c"))),
     "a \u{21A6} (b \u{21A6} c)";
     "maplet_right_grouped_parens"
 )]
 // (a ↦ b) ↦ c: the natural left-associative grouping
 // (`a ↦ b ↦ c = (a ↦ b) ↦ c` per spec p.18), so emit flat.
 #[test_case(
-    bin(BinaryOp::Maplet, bin(BinaryOp::Maplet, id("a"), id("b")), id("c")),
+    bin(BOp::Mapsto, bin(BOp::Mapsto, id("a"), id("b")), id("c")),
     "a \u{21A6} b \u{21A6} c";
     "maplet_left_grouped_no_parens"
 )]
 // a ↦ (b ↔ c): arrows bind tighter than maplet (kernel_lang Table 3.1;
 // regression context: c3e3cae), so this is the natural grouping — emit flat.
 #[test_case(
-    bin(BinaryOp::Maplet, id("a"), bin(BinaryOp::Relation, id("b"), id("c"))),
+    bin(BOp::Mapsto, id("a"), bin(BOp::Rel, id("b"), id("c"))),
     "a \u{21A6} b \u{2194} c";
     "arrow_inside_maplet_no_parens"
 )]
@@ -463,55 +452,51 @@ fn logic(op: LogicalOp, left: LPred, right: LPred) -> LPred {
 // regression context: c3e3cae) — dropping the parens would re-bind as
 // a ↦ (b ↔ c), a different AST.
 #[test_case(
-    bin(BinaryOp::Relation, bin(BinaryOp::Maplet, id("a"), id("b")), id("c")),
+    bin(BOp::Rel, bin(BOp::Mapsto, id("a"), id("b")), id("c")),
     "(a \u{21A6} b) \u{2194} c";
     "maplet_inside_arrow_parens"
 )]
 // (S ∪ T) ∖ U — Union and Difference are in different Camille compatibility
 // classes, so parens are required.
 #[test_case(
-    bin(BinaryOp::Difference, bin(BinaryOp::Union, id("S"), id("T")), id("U")),
+    bin(
+        BOp::SetMinus,
+        assoc(AOp::BUnion, vec![id("S"), id("T")]),
+        id("U")
+    ),
     "(S ∪ T) ∖ U";
     "union_difference_incompatible"
 )]
 // S ∖ (T ∖ U) — Difference is Camille class 0, incompatible even with itself.
 #[test_case(
-    bin(
-        BinaryOp::Difference,
-        id("S"),
-        bin(BinaryOp::Difference, id("T"), id("U"))
-    ),
+    bin(BOp::SetMinus, id("S"), bin(BOp::SetMinus, id("T"), id("U"))),
     "S ∖ (T ∖ U)";
     "difference_self_incompatible"
 )]
 // (S ∖ T) ∖ U — per Table 3.2 the ∖ row is completely empty, so parens are
 // always required, even for the left child.
 #[test_case(
-    bin(
-        BinaryOp::Difference,
-        bin(BinaryOp::Difference, id("S"), id("T")),
-        id("U")
-    ),
+    bin(BOp::SetMinus, bin(BOp::SetMinus, id("S"), id("T")), id("U")),
     "(S ∖ T) ∖ U";
     "difference_left_child_parens"
 )]
-// prj1∼, not (prj1)∼: a bare relational atom (an atomic builtin per a8bbd8d)
-// is a primary expression, so postfix inverse needs no parens. It would
-// round-trip either way, but the canonical form must match the minimal one.
+// prj1∼, not (prj1)∼: a bare relational atom is a primary expression, so
+// postfix inverse needs no parens. It would round-trip either way, but the
+// canonical form must match the minimal one.
 #[test_case(
     un(
-        UnaryOp::Inverse,
-        rossi::ast::ExpressionKind::AtomicBuiltin(AtomicBuiltinKind::Prj1).into()
+        rossi::formula::tag::UnaryExprOp::Converse,
+        mff().atomic_expression(rossi::formula::tag::AtomicOp::KPrj1Gen, None, None)
     ),
     "prj1\u{223C}";
     "inverse_of_atomic_builtin_no_parens"
 )]
-fn test_pretty_print_canonical_expression(expr: LExpr, expected: &str) {
-    let printed = PrettyPrinter::new().print_expression(&expr);
+fn test_pretty_print_canonical_expression(expr: Expression, expected: &str) {
+    let printed = PrettyPrinter::new().print_formula_expression(&expr);
     assert_eq!(printed, expected);
     assert_eq!(
         parse_expression_str(&printed).expect("canonical form reparses"),
-        rossi::formula::lower::lower_expression(&expr),
+        expr,
         "reparsing the canonical form changed the AST"
     );
 }
@@ -519,29 +504,34 @@ fn test_pretty_print_canonical_expression(expr: LExpr, expected: &str) {
 // (a > 0 ∧ b > 0) ∨ c > 0 — And inside Or keeps parens (different Camille
 // compatibility classes).
 #[test_case(
-    logic(LogicalOp::Or, logic(LogicalOp::And, gt0("a"), gt0("b")), gt0("c")),
+    passoc(
+        POp::LOr,
+        vec![passoc(POp::LAnd, vec![gt0("a"), gt0("b")]), gt0("c")]
+    ),
     "(a > 0 ∧ b > 0) ∨ c > 0";
     "and_or_left_child"
 )]
 // a > 0 ∧ (b > 0 ∨ c > 0) — Or inside And keeps parens.
 #[test_case(
-    logic(LogicalOp::And, gt0("a"), logic(LogicalOp::Or, gt0("b"), gt0("c"))),
+    passoc(
+        POp::LAnd,
+        vec![gt0("a"), passoc(POp::LOr, vec![gt0("b"), gt0("c")])]
+    ),
     "a > 0 ∧ (b > 0 ∨ c > 0)";
     "or_inside_and"
 )]
-// a > 0 ∧ b > 0 ∧ c > 0 — same class, left-assoc: left child prints flat,
-// only a right child would need parens.
+// a > 0 ∧ b > 0 ∧ c > 0 — one n-ary conjunction prints flat.
 #[test_case(
-    logic(LogicalOp::And, logic(LogicalOp::And, gt0("a"), gt0("b")), gt0("c")),
+    passoc(POp::LAnd, vec![gt0("a"), gt0("b"), gt0("c")]),
     "a > 0 ∧ b > 0 ∧ c > 0";
     "and_chain_same_class"
 )]
-fn test_pretty_print_canonical_predicate(pred: LPred, expected: &str) {
-    let printed = PrettyPrinter::new().print_predicate(&pred);
+fn test_pretty_print_canonical_predicate(pred: Predicate, expected: &str) {
+    let printed = PrettyPrinter::new().print_formula_predicate(&pred);
     assert_eq!(printed, expected);
     assert_eq!(
         parse_predicate_str(&printed).expect("canonical form reparses"),
-        rossi::formula::lower::lower_predicate(&pred),
+        pred,
         "reparsing the canonical form changed the AST"
     );
 }
@@ -551,54 +541,35 @@ fn test_pretty_print_function_application_binary_function_keeps_parens() {
     // (mapping ◁ prj1)(x): the function side is a Binary, so
     // dropping the parens would re-bind as `mapping ◁ prj1(x)`,
     // a different AST. Regression seen on a real-world corpus model.
-    use rossi::ast::expression::{AtomicBuiltinKind, BinaryOp};
-    let expr: LExpr = rossi::ast::ExpressionKind::FunctionApplication {
-        function: Box::new(
-            rossi::ast::ExpressionKind::Binary {
-                op: BinaryOp::DomainRestriction,
-                left: Box::new(rossi::ast::ExpressionKind::Identifier("mapping".into()).into()),
-                right: Box::new(
-                    rossi::ast::ExpressionKind::AtomicBuiltin(AtomicBuiltinKind::Prj1).into(),
-                ),
-            }
-            .into(),
+    let expr = bin(
+        BOp::FunImage,
+        bin(
+            BOp::DomRes,
+            id("mapping"),
+            mff().atomic_expression(rossi::formula::tag::AtomicOp::KPrj1Gen, None, None),
         ),
-        argument: Box::new(rossi::ast::ExpressionKind::Identifier("x".into()).into()),
-    }
-    .into();
-    let output = PrettyPrinter::new().print_expression(&expr);
+        id("x"),
+    );
+    let output = PrettyPrinter::new().print_formula_expression(&expr);
     assert_eq!(output, "(mapping \u{25C1} prj1)(x)");
 }
 
 #[test]
 fn test_single_argument_application_ast_roundtrips() {
-    use rossi::ast::expression::BuiltinFunction;
-
-    let applications: [(LExpr, &str); 2] = [
+    let applications: [(Expression, &str); 2] = [
+        (bin(BOp::FunImage, id("f"), id("x")), "f(x)"),
         (
-            rossi::ast::ExpressionKind::FunctionApplication {
-                function: Box::new(LExpr::identifier("f")),
-                argument: Box::new(LExpr::identifier("x")),
-            }
-            .into(),
-            "f(x)",
-        ),
-        (
-            rossi::ast::ExpressionKind::BuiltinApplication {
-                function: BuiltinFunction::Card,
-                argument: Box::new(LExpr::identifier("x")),
-            }
-            .into(),
+            un(rossi::formula::tag::UnaryExprOp::KCard, id("x")),
             "card(x)",
         ),
     ];
 
     for (application, expected) in applications {
-        let printed = PrettyPrinter::new().print_expression(&application);
+        let printed = PrettyPrinter::new().print_formula_expression(&application);
         assert_eq!(printed, expected);
         assert_eq!(
             rossi::parse_expression_str(&printed).unwrap(),
-            rossi::formula::lower::lower_expression(&application)
+            application
         );
     }
 }
