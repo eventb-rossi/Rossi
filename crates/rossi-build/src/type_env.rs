@@ -5,9 +5,10 @@
 //! quantifier binders — and revert them cleanly. See
 //! [`TypeEnv::push_scope`] / [`TypeEnv::pop_scope`] / [`TypeEnv::scoped`].
 
+use std::cell::RefCell;
 use std::collections::BTreeMap;
 
-use rossi::formula::Type;
+use rossi::formula::{SealedTypeEnvironment, Type, TypeEnvironmentBuilder};
 
 #[derive(Debug, Default, Clone)]
 pub struct TypeEnv {
@@ -17,6 +18,10 @@ pub struct TypeEnv {
     /// pop. `None` means "name was absent before the scope opened; delete
     /// on pop". `Some(t)` means "restore to this value on pop".
     scopes: Vec<BTreeMap<String, Option<Type>>>,
+    /// Cached checker-facing snapshot, dropped on every mutation. The
+    /// static checker seals the environment once per formula check;
+    /// without the cache each check re-copies the whole map twice.
+    sealed: RefCell<Option<SealedTypeEnvironment>>,
 }
 
 impl TypeEnv {
@@ -38,6 +43,7 @@ impl TypeEnv {
                 .or_insert_with(|| self.by_name.get(&name).cloned());
         }
         self.by_name.insert(name, ty);
+        self.sealed.replace(None);
     }
 
     /// Hide any binding of `name` for the duration of the current scope,
@@ -52,6 +58,7 @@ impl TypeEnv {
                 .or_insert_with(|| self.by_name.get(name).cloned());
         }
         self.by_name.remove(name);
+        self.sealed.replace(None);
     }
 
     /// Insert only if the name is not yet present. Returns `true` if this
@@ -86,6 +93,22 @@ impl TypeEnv {
         self.by_name.iter().map(|(k, v)| (k.as_str(), v))
     }
 
+    /// The checker-facing snapshot of this environment, cached until
+    /// the next mutation. The returned handle is an O(1) clone of the
+    /// shared snapshot.
+    pub fn sealed(&self) -> SealedTypeEnvironment {
+        self.sealed
+            .borrow_mut()
+            .get_or_insert_with(|| {
+                let mut builder = TypeEnvironmentBuilder::new();
+                for (name, ty) in self.by_name.iter() {
+                    builder.insert(name, ty.clone());
+                }
+                builder.make_snapshot()
+            })
+            .clone()
+    }
+
     /// Open a new scope. Subsequent `insert` calls can be reverted by
     /// [`TypeEnv::pop_scope`].
     pub fn push_scope(&mut self) {
@@ -114,6 +137,7 @@ impl TypeEnv {
                 }
             }
         }
+        self.sealed.replace(None);
     }
 
     /// Run `body` with a fresh scope automatically popped on exit.

@@ -625,7 +625,7 @@ fn build_variant_decl(
             origin: format!("{machine_name}.{label}"),
             message: "variant expression is ill-typed".to_string(),
             rule_id: Some(crate::RuleId::TypeError),
-            span: expr.span,
+            span: expr.span(),
         });
     }
     let source =

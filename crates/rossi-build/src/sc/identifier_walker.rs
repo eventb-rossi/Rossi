@@ -4,10 +4,11 @@
 //! every identifier it references is either:
 //!
 //! - declared in the environment (a carrier set, constant, variable, parameter),
-//! - bound locally by a quantifier / lambda / set-comprehension, or
+//! - bound locally by a quantifier / lambda / comprehension (including a
+//!   such-that assignment's primed declarations), or
 //! - a recognised built-in function name (`dom`, `ran`, `card`, …).
 //!
-//! Two flavours of traversal share the same AST walker:
+//! Two flavours of traversal share the formula model's occurrence walker:
 //!
 //! 1. **Find-first** — [`free_identifier_in_predicate`] /
 //!    [`free_identifier_in_expression`] / [`free_identifier_in_action_rhs`],
@@ -19,143 +20,151 @@
 //!    [`collect_referenced_in_action_rhs`]. Walks the whole tree and inserts
 //!    every free identifier into a [`BTreeSet`]. Used by the lint module.
 //!
-//! Both flavours implement [`rossi::ast::walk::IdentVisitor`] over the shared
-//! AST walker in the core crate (so the static checker, lint, and the language
-//! server resolve identifiers through one traversal). The walker threads a
-//! binder stack through the tree, so callers only need to provide the *outer*
-//! type environment. The env is used for membership checks only; binder types
-//! coming from quantifiers / lambdas don't need to be inferred to answer "is
-//! this name bound?".
+//! Bound occurrences resolve by de Bruijn index in the model, so the walker
+//! answers "is this name bound?" structurally. Event parameters and other
+//! outer locals are *free* identifiers to the model; the `with_locals`
+//! variants treat those names as in scope by filtering on them.
 //!
-//! The shared walker reports every identifier occurrence — reads, binder
-//! declarations, write targets, and predicate-call names. These read-side
-//! consumers act only on [`IdentRole::Usage`] occurrences, preserving the
-//! original "free identifiers on the read side" semantics: write targets and
-//! binder names are ignored, and `x'` is canonicalised to `x` by the collector.
-//!
-//! Identifiers in binder type annotations (`∀x⦂T·…`) are reported in the
-//! enclosing scope (before the binder is pushed), so a carrier set or constant
-//! used only as a bound-variable type is correctly recorded.
+//! These read-side consumers act only on [`Role::Usage`] occurrences —
+//! binder declarations, write targets, and predicate-call names are ignored,
+//! preserving the "free identifiers on the read side" semantics. `x'` is
+//! canonicalised to `x` by the collector.
 
 use std::collections::BTreeSet;
 use std::ops::ControlFlow;
 
 use rossi::ast::Span;
-use rossi::ast::walk::{self, Binder, IdentOccurrence, IdentRole, IdentVisitor};
-use rossi::{Action, Expression, Predicate};
+use rossi::formula::occurrences::{self, Occurrence, Resolution, Role};
+use rossi::{ActionBody, Expression, Predicate};
 
 use crate::type_env::TypeEnv;
 
-/// Binder frame for the shared walker built from event-parameter names; these
-/// outer locals carry no span (they come from declarations, not the formula).
-fn locals_from(names: &[&str]) -> Vec<Binder> {
-    names
-        .iter()
-        .map(|n| Binder {
-            name: (*n).to_string(),
-            span: None,
-        })
-        .collect()
-}
-
 // ---------- Public API: find-first variants --------------------------------
+
+/// Whether the formula's cached free-name superset is fully covered by
+/// `env` and the built-ins. The cache includes every name a find-first
+/// walk could flag (plus write targets and application names, which it
+/// wouldn't), so a covered cache proves the walk would find nothing and
+/// the traversal can be skipped — the common case for well-formed
+/// models.
+fn cache_covered(free_names: &[String], env: &TypeEnv) -> bool {
+    free_names
+        .iter()
+        .all(|name| env.contains(name) || is_builtin_ident(name))
+}
 
 /// Locate the first free identifier in `pred`, considering `env` plus
 /// locally-bound quantifier variables.
 pub fn free_identifier_in_predicate(pred: &Predicate, env: &TypeEnv) -> Option<String> {
+    if cache_covered(pred.free_identifiers(), env) {
+        return None;
+    }
     let mut v = FreeFinder { env, found: None };
-    let _ = walk::walk_predicate(pred, &mut Vec::new(), &mut v);
+    let _ = occurrences::walk_predicate(pred, &mut Vec::new(), &mut v);
     v.found
 }
 
 /// Locate the first free identifier in `expr`.
 pub fn free_identifier_in_expression(expr: &Expression, env: &TypeEnv) -> Option<String> {
+    if cache_covered(expr.free_identifiers(), env) {
+        return None;
+    }
     let mut v = FreeFinder { env, found: None };
-    let _ = walk::walk_expression(expr, &mut Vec::new(), &mut v);
+    let _ = occurrences::walk_expression(expr, &mut Vec::new(), &mut v);
     v.found
 }
 
 /// First free identifier on an action's read side, considering `env`
-/// plus locally-bound quantifier variables.
-pub fn free_identifier_in_action_rhs(a: &Action, env: &TypeEnv) -> Option<String> {
-    let mut binders = match &a.kind {
-        rossi::ActionKind::BecomesSuchThat { variables, .. } => variables
-            .iter()
-            .map(|variable| Binder {
-                name: format!("{}'", variable.as_str()),
-                span: variable.span,
-            })
-            .collect(),
-        _ => Vec::new(),
-    };
+/// plus locally-bound variables (a such-that assignment binds its primed
+/// declarations in the model, so `x'` reads resolve there).
+pub fn free_identifier_in_action_rhs(body: &ActionBody, env: &TypeEnv) -> Option<String> {
+    let assignment = body.assignment()?;
+    if cache_covered(assignment.free_identifiers(), env) {
+        return None;
+    }
     let mut v = FreeFinder { env, found: None };
-    let _ = walk::walk_action(a, &mut binders, &mut v);
+    let _ = occurrences::walk_assignment(assignment, &mut Vec::new(), &mut v);
     v.found
 }
 
 /// Locate the first identifier in `pred` that appears in `forbidden` and
-/// isn't shadowed by a local binder. Used to drop guards / action RHS
-/// expressions that reference variables which vanished to abstract-only
-/// in this refinement (Group R).
+/// isn't bound locally. Used to drop guards / action RHS expressions that
+/// reference variables which vanished to abstract-only in this refinement
+/// (Group R).
 pub fn first_forbidden_identifier_in_predicate(
     pred: &Predicate,
     forbidden: &BTreeSet<String>,
 ) -> Option<String> {
+    if !pred
+        .free_identifiers()
+        .iter()
+        .any(|n| forbidden.contains(n))
+    {
+        return None;
+    }
     let mut v = ForbiddenFinder {
         forbidden,
         found: None,
     };
-    let _ = walk::walk_predicate(pred, &mut Vec::new(), &mut v);
+    let _ = occurrences::walk_predicate(pred, &mut Vec::new(), &mut v);
     v.found
 }
 
-/// First identifier on an action's read side that's in `forbidden`
-/// and not shadowed by a local binder (Group R).
+/// First identifier on an action's read side that's in `forbidden` and
+/// not bound locally (Group R).
 pub fn first_forbidden_identifier_in_action_rhs(
-    a: &Action,
+    body: &ActionBody,
     forbidden: &BTreeSet<String>,
 ) -> Option<String> {
+    let assignment = body.assignment()?;
+    if !assignment
+        .free_identifiers()
+        .iter()
+        .any(|n| forbidden.contains(n))
+    {
+        return None;
+    }
     let mut v = ForbiddenFinder {
         forbidden,
         found: None,
     };
-    let _ = walk::walk_action(a, &mut Vec::new(), &mut v);
+    let _ = occurrences::walk_assignment(assignment, &mut Vec::new(), &mut v);
     v.found
 }
 
-/// Source span of the first unshadowed `Usage` of `name` in `pred`, for
-/// anchoring a diagnostic (e.g. "unknown identifier") on the exact occurrence.
-/// Uses the same shadowing rule as [`free_identifier_in_predicate`], so it
-/// lands on the very occurrence that scan flagged. `None` if `name` does not
-/// occur free (or the occurrence carries no span, as for Rodin-XML imports).
+/// Source span of the first free `Usage` of `name` in `pred`, for
+/// anchoring a diagnostic (e.g. "unknown identifier") on the exact
+/// occurrence. Uses the same resolution rule as
+/// [`free_identifier_in_predicate`], so it lands on the very occurrence
+/// that scan flagged. `None` if `name` does not occur free (or the
+/// occurrence carries no span, as for Rodin-XML imports).
 pub fn usage_span_in_predicate(pred: &Predicate, name: &str) -> Option<Span> {
     let mut v = UsageSpanFinder { name, span: None };
-    let _ = walk::walk_predicate(pred, &mut Vec::new(), &mut v);
+    let _ = occurrences::walk_predicate(pred, &mut Vec::new(), &mut v);
     v.span
 }
 
 // ---------- Public API: collect-all variants -------------------------------
 
 /// Insert every free identifier in `pred` into `acc`. Apostrophe-suffixed
-/// names (`x'` from BeforeAfter predicates) are canonicalised to the
-/// unprimed form before insertion, so `x'` counts as a use of `x`.
+/// names (`x'` read free, as in a witness predicate) are canonicalised to
+/// the unprimed form before insertion, so `x'` counts as a use of `x`.
 pub fn collect_referenced_in_predicate(pred: &Predicate, acc: &mut BTreeSet<String>) {
-    let mut v = IdentifierCollector { acc };
-    let _ = walk::walk_predicate(pred, &mut Vec::new(), &mut v);
+    collect_referenced_in_predicate_with_locals(pred, &[], acc);
 }
 
 /// Insert every free identifier in `expr` into `acc`. Same
 /// canonicalisation as [`collect_referenced_in_predicate`].
 pub fn collect_referenced_in_expression(expr: &Expression, acc: &mut BTreeSet<String>) {
-    let mut v = IdentifierCollector { acc };
-    let _ = walk::walk_expression(expr, &mut Vec::new(), &mut v);
+    let mut v = IdentifierCollector { locals: &[], acc };
+    let _ = occurrences::walk_expression(expr, &mut Vec::new(), &mut v);
 }
 
 /// Insert every free identifier on an action's read side into `acc`.
-/// For `f ≔ f\u{E103}{(x ↦ E)}` (function override lowered by the parser),
-/// the `f` on the Overwrite RHS is emitted as a Usage and collected here.
-pub fn collect_referenced_in_action_rhs(a: &Action, acc: &mut BTreeSet<String>) {
-    collect_referenced_in_action_rhs_with_locals(a, &[], acc);
+/// For a function override lowered by the parser, the function name on
+/// the Overwrite RHS is a usage and collected here.
+pub fn collect_referenced_in_action_rhs(body: &ActionBody, acc: &mut BTreeSet<String>) {
+    collect_referenced_in_action_rhs_with_locals(body, &[], acc);
 }
 
 /// Same as [`collect_referenced_in_predicate`] but treats `initial_locals`
@@ -167,46 +176,49 @@ pub fn collect_referenced_in_predicate_with_locals(
     initial_locals: &[&str],
     acc: &mut BTreeSet<String>,
 ) {
-    let mut locals = locals_from(initial_locals);
-    let mut v = IdentifierCollector { acc };
-    let _ = walk::walk_predicate(pred, &mut locals, &mut v);
+    let mut v = IdentifierCollector {
+        locals: initial_locals,
+        acc,
+    };
+    let _ = occurrences::walk_predicate(pred, &mut Vec::new(), &mut v);
 }
 
 /// Same as [`collect_referenced_in_action_rhs`] with initial bound
 /// identifiers (event parameters).
 pub fn collect_referenced_in_action_rhs_with_locals(
-    a: &Action,
+    body: &ActionBody,
     initial_locals: &[&str],
     acc: &mut BTreeSet<String>,
 ) {
-    let mut locals = locals_from(initial_locals);
-    let mut v = IdentifierCollector { acc };
-    let _ = walk::walk_action(a, &mut locals, &mut v);
+    let Some(assignment) = body.assignment() else {
+        return;
+    };
+    let mut v = IdentifierCollector {
+        locals: initial_locals,
+        acc,
+    };
+    let _ = occurrences::walk_assignment(assignment, &mut Vec::new(), &mut v);
 }
 
 /// Event-B built-in function names that are always "in scope" even though
 /// they aren't declared in any context or machine. The relational atoms
-/// (`id`/`prj1`/`prj2`/`pred`/`succ`) are no longer here: they parse as
-/// [`rossi::ExpressionKind::AtomicBuiltin`], which the walker never reports as
-/// an identifier usage. `closure`/`closure1` are deliberately absent: core
-/// Event-B has no closure operator (Rodin models axiomatise their own as a
-/// declared constant), so treating them as built-ins would hide every use
-/// of such a constant from the reference sets and exempt an undeclared
+/// (`id`/`prj1`/`prj2`/`pred`/`succ`) are not here: they parse as atomic
+/// operators, which the walker never reports as an identifier usage.
+/// `closure`/`closure1` are deliberately absent: core Event-B has no
+/// closure operator (Rodin models axiomatise their own as a declared
+/// constant), so treating them as built-ins would hide every use of such
+/// a constant from the reference sets and exempt an undeclared
 /// `closure(x)` from the free-identifier scan.
 pub fn is_builtin_ident(name: &str) -> bool {
     matches!(name, "dom" | "ran" | "card" | "min" | "max")
 }
 
 // ---------- Visitor implementations ----------------------------------------
-//
-// These read-side consumers act only on `IdentRole::Usage`. Binder
-// declarations, write targets, and predicate-call names reported by the shared
-// walker are ignored here, which keeps the "free identifiers on the read side"
-// semantics these callers have always relied on.
 
-/// Is this name bound by an enclosing binder?
-fn shadowed(name: &str, binders: &[Binder]) -> bool {
-    binders.iter().any(|b| b.name == name)
+/// Is this occurrence a free read (not resolved by an enclosing
+/// declaration)?
+fn free_usage(occ: &Occurrence<'_>) -> bool {
+    occ.role == Role::Usage && occ.resolution == Resolution::Free
 }
 
 struct FreeFinder<'a> {
@@ -214,16 +226,15 @@ struct FreeFinder<'a> {
     found: Option<String>,
 }
 
-impl IdentVisitor for FreeFinder<'_> {
-    fn visit(&mut self, occ: IdentOccurrence<'_>) -> ControlFlow<()> {
-        if occ.role != IdentRole::Usage {
+impl occurrences::OccurrenceVisitor for FreeFinder<'_> {
+    fn visit(&mut self, occ: Occurrence<'_>) -> ControlFlow<()> {
+        if !free_usage(&occ) {
             return ControlFlow::Continue(());
         }
-        let name = occ.name;
-        if shadowed(name, occ.binders) || self.env.contains(name) || is_builtin_ident(name) {
+        if self.env.contains(occ.name) || is_builtin_ident(occ.name) {
             ControlFlow::Continue(())
         } else {
-            self.found = Some(name.to_string());
+            self.found = Some(occ.name.to_string());
             ControlFlow::Break(())
         }
     }
@@ -234,16 +245,13 @@ struct ForbiddenFinder<'a> {
     found: Option<String>,
 }
 
-impl IdentVisitor for ForbiddenFinder<'_> {
-    fn visit(&mut self, occ: IdentOccurrence<'_>) -> ControlFlow<()> {
-        if occ.role != IdentRole::Usage {
+impl occurrences::OccurrenceVisitor for ForbiddenFinder<'_> {
+    fn visit(&mut self, occ: Occurrence<'_>) -> ControlFlow<()> {
+        if !free_usage(&occ) {
             return ControlFlow::Continue(());
         }
-        let name = occ.name;
-        if shadowed(name, occ.binders) {
-            ControlFlow::Continue(())
-        } else if self.forbidden.contains(name) {
-            self.found = Some(name.to_string());
+        if self.forbidden.contains(occ.name) {
+            self.found = Some(occ.name.to_string());
             ControlFlow::Break(())
         } else {
             ControlFlow::Continue(())
@@ -251,20 +259,17 @@ impl IdentVisitor for ForbiddenFinder<'_> {
     }
 }
 
-/// Captures the span of the first unshadowed `Usage` of a specific name.
+/// Captures the span of the first free `Usage` of a specific name.
 struct UsageSpanFinder<'a> {
     name: &'a str,
     span: Option<Span>,
 }
 
-impl IdentVisitor for UsageSpanFinder<'_> {
-    fn visit(&mut self, occ: IdentOccurrence<'_>) -> ControlFlow<()> {
-        if occ.role != IdentRole::Usage {
-            return ControlFlow::Continue(());
-        }
+impl occurrences::OccurrenceVisitor for UsageSpanFinder<'_> {
+    fn visit(&mut self, occ: Occurrence<'_>) -> ControlFlow<()> {
         // Match the raw occurrence text, mirroring `FreeFinder` (which reports
         // the unstripped name), so we anchor on the same occurrence it flagged.
-        if occ.name == self.name && !shadowed(occ.name, occ.binders) {
+        if free_usage(&occ) && occ.name == self.name {
             self.span = occ.span;
             return ControlFlow::Break(());
         }
@@ -273,24 +278,33 @@ impl IdentVisitor for UsageSpanFinder<'_> {
 }
 
 struct IdentifierCollector<'a> {
+    /// Outer local names (event parameters) that count as in scope.
+    locals: &'a [&'a str],
     acc: &'a mut BTreeSet<String>,
 }
 
-impl IdentVisitor for IdentifierCollector<'_> {
-    fn visit(&mut self, occ: IdentOccurrence<'_>) -> ControlFlow<()> {
-        if occ.role != IdentRole::Usage {
+impl occurrences::OccurrenceVisitor for IdentifierCollector<'_> {
+    fn visit(&mut self, occ: Occurrence<'_>) -> ControlFlow<()> {
+        // A read counts when it is free, or when it is an after-state
+        // read bound by a such-that assignment's primed declaration —
+        // `x'` in the condition is a use of the variable `x`.
+        let after_state_read = occ.role == Role::Usage && occ.is_after_state_read();
+        if !(free_usage(&occ) || after_state_read)
+            || is_builtin_ident(occ.name)
+            || self.locals.contains(&occ.name)
+        {
             return ControlFlow::Continue(());
         }
-        let name = occ.name;
-        if shadowed(name, occ.binders) || is_builtin_ident(name) {
+        // Strip the trailing apostrophe so an after-state read (bound
+        // here, or free as in a witness predicate) is recorded as a use
+        // of the unprimed name. Primes only ever appear on after-state
+        // reads, so unconditional stripping is safe; a local also
+        // shadows its primed spelling, matching the previous
+        // binder-stack behaviour.
+        let canonical = occ.name.strip_suffix('\'').unwrap_or(occ.name);
+        if self.locals.contains(&canonical) {
             return ControlFlow::Continue(());
         }
-        // Strip the trailing apostrophe so `x'` in a BecomesSuchThat
-        // before-after predicate is recorded as a use of `x`. The grammar
-        // (rossi/src/grammar.pest:12) parses `x'` as a single identifier;
-        // primes only ever appear in BeforeAfter predicates, so
-        // unconditional stripping is safe.
-        let canonical = name.strip_suffix('\'').unwrap_or(name);
         self.acc.insert(canonical.to_string());
         ControlFlow::Continue(())
     }
@@ -351,7 +365,7 @@ mod tests {
 
     #[test]
     fn quantifier_scope_restored_after_body() {
-        // `alice` is bound inside ∀ but free in the RHS of the ⇒.
+        // `alice` is bound inside ∀ but free in the RHS of the ∧.
         let env = env_with(&["USERS"]);
         let p = parse_predicate_str("(∀alice · alice ∈ USERS) ∧ (alice ∈ USERS)").unwrap();
         assert_eq!(
@@ -375,6 +389,14 @@ mod tests {
     }
 
     #[test]
+    fn set_builder_binds_its_member_identifiers() {
+        // `{E ∣ P}` binds every identifier free in E over both sides.
+        let env = env_with(&["USERS"]);
+        let e = parse_expression_str("{x ∣ x ∈ USERS}").unwrap();
+        assert_eq!(free_identifier_in_expression(&e, &env), None);
+    }
+
+    #[test]
     fn nested_quantifiers_stack_correctly() {
         let env = env_with(&["USERS"]);
         let p = parse_predicate_str("∀a · (∀b · a ∈ USERS ∧ b ∈ USERS)").unwrap();
@@ -393,7 +415,7 @@ mod tests {
         for name in ["dom", "ran", "card", "min", "max"] {
             assert!(is_builtin_ident(name), "{name} should be builtin");
         }
-        // Relational atoms are AtomicBuiltin nodes, never identifiers — so
+        // Relational atoms are atomic operators, never identifiers — so
         // is_builtin_ident (an identifier-name check) deliberately excludes
         // them. `closure`/`closure1` are not core Event-B: models declare
         // their own closure constant, which must count as an identifier.
@@ -435,8 +457,8 @@ mod tests {
 
     #[test]
     fn collector_strips_primed_apostrophe() {
-        // `x' = 0` in a BSU before-after predicate. Collector canonicalises
-        // `x'` to `x` so it counts as a use of the unprimed variable.
+        // A free `x'` (as in a witness predicate) is canonicalised to `x`
+        // so it counts as a use of the unprimed variable.
         let p = parse_predicate_str("x' = 0").unwrap();
         let mut refs = BTreeSet::new();
         collect_referenced_in_predicate(&p, &mut refs);

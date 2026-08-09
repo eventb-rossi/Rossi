@@ -1,11 +1,15 @@
-//! Source-span coverage for expression / predicate / action AST nodes.
+//! Source-span coverage for expression / predicate / assignment nodes.
 //!
-//! The parser records a byte span on every expression and predicate node it
-//! builds (issue #68). These tests pin the spans of identifier leaves and a few
-//! structural nodes so navigation features can rely on them.
+//! The parser records a byte span on every node it builds (issue #68), and
+//! the lowering carries them onto the formula model. These tests pin the
+//! spans of identifier leaves and a few structural nodes so navigation
+//! features can rely on them.
 
-use rossi::ast::{ActionKind, ExpressionKind, PredicateKind, Span};
-use rossi::{parse_action_str, parse_expression_str, parse_predicate_str};
+use rossi::ast::Span;
+use rossi::{
+    AssignmentKind, ExpressionKind, PredicateKind, parse_action_str, parse_expression_str,
+    parse_predicate_str,
+};
 
 /// The source slice a span points at.
 fn slice(src: &str, span: Span) -> &str {
@@ -15,9 +19,9 @@ fn slice(src: &str, span: Span) -> &str {
 #[test]
 fn recovered_component_has_absolute_formula_spans() {
     // A broken first component forces multi-component error recovery; the later
-    // component is parsed from a region slice and then shifted to absolute
-    // document coordinates. The inner formula identifier spans must be shifted
-    // too, not left relative to the region.
+    // component is parsed from a region slice and its formula spans are lifted
+    // to absolute document coordinates by the lowering. The inner identifier
+    // spans must be absolute, not left relative to the region.
     let src = "CONTEXT C0\nAXIOMS\n@a xxxxx ∈\nEND\n\nMACHINE M0\nVARIABLES\ncount\nINVARIANTS\n@i1 count > 0\nEND\n";
     let parsed = rossi::parse_components_with_recovery(src);
     let components = parsed.component.expect("recovers components");
@@ -28,34 +32,33 @@ fn recovered_component_has_absolute_formula_spans() {
             _ => None,
         })
         .expect("machine recovered");
-    let PredicateKind::Comparison { left, .. } = &machine.invariants[0].predicate.kind else {
+    let PredicateKind::Relational { left, .. } = machine.invariants[0].predicate.kind() else {
         panic!("expected comparison invariant");
     };
-    let span = left.span.expect("count span");
+    let span = left.span().expect("count span");
     assert_eq!(
-        &src[span.start..span.end],
+        slice(src, span),
         "count",
-        "inner formula span must be absolute after recovery"
+        "invariant identifier span must be absolute after multi-component recovery"
     );
 }
 
 #[test]
-fn recovered_labeled_predicate_has_absolute_inner_spans() {
-    // A single component with one broken axiom triggers clause-level recovery,
-    // which re-parses each labeled predicate from its own text segment. The
-    // recovered (healthy) predicate's inner identifier spans must be lifted to
-    // absolute document coordinates, not left relative to the segment.
-    let src = "CONTEXT c\nCONSTANTS\nk\nAXIOMS\n@a1 +++ broken\n@a2 k ∈ ℕ\nEND\n";
-    let parsed = rossi::parse_components_with_recovery(src);
-    let components = parsed.component.expect("recovers components");
-    let rossi::Component::Context(ctx) = &components[0] else {
+fn recovered_clause_has_absolute_formula_spans() {
+    // A broken axiom inside an otherwise-parsable context triggers clause
+    // recovery: the surviving axiom is re-parsed from its segment, and its
+    // formula spans must land on the document, not the segment.
+    let src = "CONTEXT C0\nCONSTANTS\nk\nAXIOMS\n@a1 xxxxx ∈\n@a2 k = 1\nEND\n";
+    let parsed = rossi::parse_with_recovery(src);
+    let component = parsed.component.expect("recovers the context");
+    let rossi::Component::Context(ctx) = &component else {
         panic!("expected a context");
     };
     let recovered = ctx
         .axioms
         .iter()
-        .find_map(|ax| match &ax.predicate.kind {
-            PredicateKind::Comparison { left, .. } => left.span,
+        .find_map(|ax| match ax.predicate.kind() {
+            PredicateKind::Relational { left, .. } => left.span(),
             _ => None,
         })
         .expect("recovered @a2 with a spanned identifier");
@@ -70,13 +73,13 @@ fn recovered_labeled_predicate_has_absolute_inner_spans() {
 fn comparison_identifier_leaves_are_spanned() {
     let src = "x ∈ S";
     let pred = parse_predicate_str(src).expect("parses");
-    let PredicateKind::Comparison { left, right, .. } = &pred.kind else {
-        panic!("expected comparison, got {:?}", pred.kind);
+    let PredicateKind::Relational { left, right, .. } = pred.kind() else {
+        panic!("expected comparison, got {:?}", pred.kind());
     };
-    assert_eq!(slice(src, left.span.expect("left span")), "x");
-    assert_eq!(slice(src, right.span.expect("right span")), "S");
+    assert_eq!(slice(src, left.span().expect("left span")), "x");
+    assert_eq!(slice(src, right.span().expect("right span")), "S");
     // The whole predicate spans the entire comparison.
-    assert_eq!(slice(src, pred.span.expect("pred span")), "x ∈ S");
+    assert_eq!(slice(src, pred.span().expect("pred span")), "x ∈ S");
 }
 
 #[test]
@@ -84,42 +87,46 @@ fn nested_identifier_usages_point_at_each_occurrence() {
     // Two uses of `count` at distinct offsets must carry distinct spans.
     let src = "count = count + 1";
     let pred = parse_predicate_str(src).expect("parses");
-    let PredicateKind::Comparison { left, right, .. } = &pred.kind else {
+    let PredicateKind::Relational { left, right, .. } = pred.kind() else {
         panic!("expected comparison");
     };
-    assert_eq!(slice(src, left.span.unwrap()), "count");
-    assert_eq!(left.span.unwrap().start, 0);
-
-    // right is `count + 1`; its left operand is the second `count`.
-    let ExpressionKind::Binary { left: inner, .. } = &right.kind else {
-        panic!("expected binary on the right");
+    assert_eq!(slice(src, left.span().unwrap()), "count");
+    assert_eq!(left.span().unwrap().start, 0);
+    let ExpressionKind::Associative { children, .. } = right.kind() else {
+        panic!("expected sum");
     };
-    assert_eq!(slice(src, inner.span.unwrap()), "count");
-    assert_eq!(inner.span.unwrap().start, 8);
+    assert_eq!(slice(src, children[0].span().unwrap()), "count");
+    assert!(children[0].span().unwrap().start > 0);
 }
 
 #[test]
-fn binary_fold_span_covers_both_operands() {
+fn associative_fold_span_covers_every_operand() {
     let src = "a + b + c";
     let expr = parse_expression_str(src).expect("parses");
-    // Left-associative: ((a + b) + c). The outer node spans the whole input.
-    let ExpressionKind::Binary { left, right, .. } = &expr.kind else {
-        panic!("expected binary");
+    // Same-operator chains flatten into one n-ary node spanning the input.
+    let ExpressionKind::Associative { children, .. } = expr.kind() else {
+        panic!("expected an associative sum");
     };
-    assert_eq!(slice(src, expr.span.unwrap()), "a + b + c");
-    assert_eq!(slice(src, left.span.unwrap()), "a + b");
-    assert_eq!(slice(src, right.span.unwrap()), "c");
+    assert_eq!(slice(src, expr.span().unwrap()), "a + b + c");
+    assert_eq!(slice(src, children[0].span().unwrap()), "a");
+    assert_eq!(slice(src, children[1].span().unwrap()), "b");
+    assert_eq!(slice(src, children[2].span().unwrap()), "c");
 }
 
 #[test]
 fn function_application_identifier_is_spanned() {
     let src = "f(x)";
     let expr = parse_expression_str(src).expect("parses");
-    let ExpressionKind::FunctionApplication { function, argument } = &expr.kind else {
+    let ExpressionKind::Binary {
+        left: function,
+        right: argument,
+        ..
+    } = expr.kind()
+    else {
         panic!("expected function application");
     };
-    assert_eq!(slice(src, function.span.unwrap()), "f");
-    assert_eq!(slice(src, argument.span.unwrap()), "x");
+    assert_eq!(slice(src, function.span().unwrap()), "f");
+    assert_eq!(slice(src, argument.span().unwrap()), "x");
 }
 
 #[test]
@@ -127,117 +134,112 @@ fn predicate_application_name_is_spanned() {
     let src = "myPred(x)";
     let pred = parse_predicate_str(src).expect("parses");
     let PredicateKind::Application {
-        function,
-        arguments,
-    } = &pred.kind
+        function_span,
+        args,
+        ..
+    } = pred.kind()
     else {
-        panic!("expected application, got {:?}", pred.kind);
+        panic!("expected application, got {:?}", pred.kind());
     };
-    assert_eq!(slice(src, function.span.expect("function span")), "myPred");
-    assert_eq!(function.span.unwrap().start, 0);
-    assert_eq!(slice(src, arguments[0].span.unwrap()), "x");
+    assert_eq!(slice(src, function_span.expect("function span")), "myPred");
+    assert_eq!(function_span.unwrap().start, 0);
+    assert_eq!(slice(src, args[0].span().unwrap()), "x");
 }
 
 #[test]
 fn quantifier_binder_is_spanned() {
     let src = "∀ x · x ∈ S";
     let pred = parse_predicate_str(src).expect("parses");
-    let PredicateKind::Quantified { identifiers, .. } = &pred.kind else {
+    let PredicateKind::Quantified { decls, .. } = pred.kind() else {
         panic!("expected quantified");
     };
     // The binder declaration `x` (after the ∀) carries its own span.
-    let binder = &identifiers[0];
-    assert_eq!(slice(src, binder.span.expect("binder span")), "x");
+    let binder = &decls[0];
+    assert_eq!(slice(src, binder.span().expect("binder span")), "x");
     // ∀ is 3 bytes + space, so the binder starts at byte 4.
-    assert_eq!(binder.span.unwrap().start, 4);
+    assert_eq!(binder.span().unwrap().start, 4);
 }
 
 #[test]
 fn lambda_pattern_binders_are_spanned() {
-    use rossi::ast::IdentPattern;
     let src = "λ x ↦ y · x ∈ ℤ ∧ y ∈ ℤ ∣ x";
     let expr = parse_expression_str(src).expect("parses");
-    let ExpressionKind::Lambda { pattern, .. } = &expr.kind else {
+    let ExpressionKind::Quantified { decls, .. } = expr.kind() else {
         panic!("expected lambda");
     };
-    let IdentPattern::Maplet(l, r) = pattern else {
-        panic!("expected maplet pattern");
-    };
-    let (IdentPattern::Identifier(lx), IdentPattern::Identifier(ry)) = (l.as_ref(), r.as_ref())
-    else {
-        panic!("expected identifier leaves");
-    };
-    assert_eq!(slice(src, lx.span.expect("x binder span")), "x");
-    assert_eq!(slice(src, ry.span.expect("y binder span")), "y");
+    assert_eq!(decls.len(), 2);
+    assert_eq!(slice(src, decls[0].span().expect("x binder span")), "x");
+    assert_eq!(slice(src, decls[1].span().expect("y binder span")), "y");
 }
 
 #[test]
 fn quantified_body_usage_is_spanned() {
     let src = "∀ x · x ∈ S";
     let pred = parse_predicate_str(src).expect("parses");
-    let PredicateKind::Quantified { predicate, .. } = &pred.kind else {
+    let PredicateKind::Quantified { pred: body, .. } = pred.kind() else {
         panic!("expected quantified");
     };
-    let PredicateKind::Comparison { left, .. } = &predicate.kind else {
+    let PredicateKind::Relational { left, .. } = body.kind() else {
         panic!("expected comparison body");
     };
     // The bound usage `x` in the body points at the second `x`, not the binder.
-    assert_eq!(slice(src, left.span.unwrap()), "x");
-    assert!(left.span.unwrap().start > 0);
+    assert_eq!(slice(src, left.span().unwrap()), "x");
+    assert!(left.span().unwrap().start > 0);
 }
 
 // ============================================================================
-// Action spans — source-span coverage for action AST nodes and their write
-// targets.
+// Assignment spans — coverage for assignment nodes and their write targets.
 // ============================================================================
 
 #[test]
 fn assignment_target_is_spanned() {
     let src = "count := count + 1";
-    let action = parse_action_str(src).expect("parses");
-    let ActionKind::Assignment { assignments } = &action.kind else {
-        panic!("expected assignment, got {:?}", action.kind);
+    let body = parse_action_str(src).expect("parses");
+    let assignment = body.assignment().expect("an assignment");
+    let AssignmentKind::BecomesEqualTo { idents, values } = assignment.kind() else {
+        panic!("expected becomes-equal-to");
     };
     // The write target `count` carries its own exact span (offset 0), distinct
     // from the read `count` on the right-hand side.
-    let (target, expression) = &assignments[0];
-    assert_eq!(slice(src, target.span.expect("target span")), "count");
-    assert_eq!(target.span.unwrap().start, 0);
-    assert_eq!(slice(src, expression.span.unwrap()), "count + 1");
-    assert_eq!(slice(src, action.span.expect("action span")), src);
+    assert_eq!(slice(src, idents[0].span().expect("target span")), "count");
+    assert_eq!(idents[0].span().unwrap().start, 0);
+    assert_eq!(slice(src, values[0].span().unwrap()), "count + 1");
+    assert_eq!(slice(src, assignment.span().expect("assignment span")), src);
 }
 
 #[test]
 fn parallel_assignment_targets_each_spanned() {
     let src = "x, y := 1, 2";
-    let action = parse_action_str(src).expect("parses");
-    let ActionKind::Assignment { assignments } = &action.kind else {
-        panic!("expected assignment");
+    let body = parse_action_str(src).expect("parses");
+    let assignment = body.assignment().expect("an assignment");
+    let AssignmentKind::BecomesEqualTo { idents, .. } = assignment.kind() else {
+        panic!("expected becomes-equal-to");
     };
-    assert_eq!(slice(src, assignments[0].0.span.unwrap()), "x");
-    assert_eq!(slice(src, assignments[1].0.span.unwrap()), "y");
-    assert_eq!(assignments[1].0.span.unwrap().start, 3);
+    assert_eq!(slice(src, idents[0].span().unwrap()), "x");
+    assert_eq!(slice(src, idents[1].span().unwrap()), "y");
+    assert_eq!(idents[1].span().unwrap().start, 3);
 }
 
 #[test]
 fn function_override_target_is_spanned() {
     // `f(x) := y` is lowered by the parser to `f ≔ f\u{E103}{x ↦ y}`.
     let src = "f(x) := y";
-    let action = parse_action_str(src).expect("parses");
-    let ActionKind::Assignment { assignments } = &action.kind else {
-        panic!("expected assignment, got {:?}", action.kind);
+    let body = parse_action_str(src).expect("parses");
+    let assignment = body.assignment().expect("an assignment");
+    let AssignmentKind::BecomesEqualTo { idents, .. } = assignment.kind() else {
+        panic!("expected becomes-equal-to, got {assignment:?}");
     };
-    let target = &assignments[0].0;
-    assert_eq!(slice(src, target.span.expect("target span")), "f");
-    assert_eq!(target.span.unwrap().start, 0);
+    assert_eq!(slice(src, idents[0].span().expect("target span")), "f");
+    assert_eq!(idents[0].span().unwrap().start, 0);
 }
 
 #[test]
 fn becomes_such_that_target_is_spanned() {
     let src = "x :| x' = x + 1";
-    let action = parse_action_str(src).expect("parses");
-    let ActionKind::BecomesSuchThat { variables, .. } = &action.kind else {
+    let body = parse_action_str(src).expect("parses");
+    let assignment = body.assignment().expect("an assignment");
+    let AssignmentKind::BecomesSuchThat { idents, .. } = assignment.kind() else {
         panic!("expected becomes-such-that");
     };
-    assert_eq!(slice(src, variables[0].span.unwrap()), "x");
+    assert_eq!(slice(src, idents[0].span().unwrap()), "x");
 }

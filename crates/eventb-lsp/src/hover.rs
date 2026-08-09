@@ -378,7 +378,7 @@ fn collect_constraints(predicates: &[LabeledPredicate], id: &str) -> Vec<String>
         .filter(|lp| formula_walk::predicate_mentions(&lp.predicate, id))
         .take(5)
         .map(|lp| {
-            let text = printer.print_predicate(&lp.predicate);
+            let text = printer.print_formula_predicate(&lp.predicate);
             match &lp.label {
                 Some(label) => format!("{}: {}", label, text),
                 None => text,
@@ -399,7 +399,7 @@ fn variants_mentioning(variants: &[Expression], id: &str) -> Vec<String> {
     let mut out: Vec<String> = Vec::new();
     for variant in variants {
         if formula_walk::expression_mentions(variant, id) {
-            let text = printer.print_expression(variant);
+            let text = printer.print_formula_expression(variant);
             if !out.contains(&text) {
                 out.push(text);
             }
@@ -1005,7 +1005,6 @@ const BUILTIN_OPERATOR_DOCS: &[DocEntry] = &[
 mod tests {
     use super::*;
     use crate::lsp_types::{Position, Range, Url};
-    use rossi::{ExpressionKind, Predicate};
 
     fn word_at(text: &str, position: Position) -> Option<String> {
         word_at_position(text, position).map(|(word, _)| word)
@@ -1839,39 +1838,25 @@ mod tests {
 
     #[test]
     fn test_collect_constraints() {
-        use rossi::ast::predicate::ComparisonOp;
-
         let predicates = vec![
             LabeledPredicate {
                 label: Some("axm1".into()),
                 is_theorem: false,
-                predicate: Predicate::comparison(
-                    ComparisonOp::In,
-                    ExpressionKind::Identifier("max_value".into()).into(),
-                    ExpressionKind::Naturals.into(),
-                ),
+                predicate: rossi::parse_predicate_str("max_value ∈ ℕ").unwrap(),
                 span: None,
                 comment: None,
             },
             LabeledPredicate {
                 label: Some("axm2".into()),
                 is_theorem: false,
-                predicate: Predicate::comparison(
-                    ComparisonOp::Equal,
-                    ExpressionKind::Identifier("max_value".into()).into(),
-                    ExpressionKind::Integer(100).into(),
-                ),
+                predicate: rossi::parse_predicate_str("max_value = 100").unwrap(),
                 span: None,
                 comment: None,
             },
             LabeledPredicate {
                 label: Some("axm3".into()),
                 is_theorem: false,
-                predicate: Predicate::comparison(
-                    ComparisonOp::In,
-                    ExpressionKind::Identifier("other".into()).into(),
-                    ExpressionKind::Integers.into(),
-                ),
+                predicate: rossi::parse_predicate_str("other ∈ ℤ").unwrap(),
                 span: None,
                 comment: None,
             },

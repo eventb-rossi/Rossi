@@ -124,8 +124,14 @@ END
 #[test]
 fn test_pretty_print_parallel_assignment_keeps_all_pairs() {
     let action = parse_action_str("x, y := 1, 2").expect("parallel assignment parses");
-    assert_eq!(PrettyPrinter::new().print_action(&action), "x, y ≔ 1, 2");
-    assert_eq!(PrettyPrinter::ascii().print_action(&action), "x, y := 1, 2");
+    assert_eq!(
+        PrettyPrinter::new().print_action_body(&action),
+        "x, y ≔ 1, 2"
+    );
+    assert_eq!(
+        PrettyPrinter::ascii().print_action_body(&action),
+        "x, y := 1, 2"
+    );
 }
 
 #[test]
@@ -170,10 +176,10 @@ fn rodin_canonical_binary_spacing_is_exhaustive() {
     let printer = PrettyPrinter::rodin_canonical();
 
     for (op, tight) in cases {
-        let expression: Expression = ExpressionKind::Binary {
+        let expression: rossi::ast::Expression = rossi::ast::ExpressionKind::Binary {
             op,
-            left: Box::new(ExpressionKind::Identifier("a".into()).into()),
-            right: Box::new(ExpressionKind::Identifier("b".into()).into()),
+            left: Box::new(rossi::ast::ExpressionKind::Identifier("a".into()).into()),
+            right: Box::new(rossi::ast::ExpressionKind::Identifier("b".into()).into()),
         }
         .into();
         let operator = operators::spell(operators::binary_op_id(op), true);
@@ -207,10 +213,10 @@ fn rodin_canonical_tightens_comparisons_and_logical_operators() {
     let printer = PrettyPrinter::rodin_canonical();
 
     for op in comparison_ops {
-        let predicate: Predicate = PredicateKind::Comparison {
+        let predicate: rossi::ast::Predicate = rossi::ast::PredicateKind::Comparison {
             op,
-            left: ExpressionKind::Identifier("a".into()).into(),
-            right: ExpressionKind::Identifier("b".into()).into(),
+            left: rossi::ast::ExpressionKind::Identifier("a".into()).into(),
+            right: rossi::ast::ExpressionKind::Identifier("b".into()).into(),
         }
         .into();
         let operator = operators::spell(operators::comparison_op_id(op), true);
@@ -221,11 +227,11 @@ fn rodin_canonical_tightens_comparisons_and_logical_operators() {
         );
     }
 
-    let comparison = |left: &str, right: &str| -> Predicate {
-        PredicateKind::Comparison {
+    let comparison = |left: &str, right: &str| -> rossi::ast::Predicate {
+        rossi::ast::PredicateKind::Comparison {
             op: ComparisonOp::Equal,
-            left: ExpressionKind::Identifier(left.into()).into(),
-            right: ExpressionKind::Identifier(right.into()).into(),
+            left: rossi::ast::ExpressionKind::Identifier(left.into()).into(),
+            right: rossi::ast::ExpressionKind::Identifier(right.into()).into(),
         }
         .into()
     };
@@ -235,7 +241,7 @@ fn rodin_canonical_tightens_comparisons_and_logical_operators() {
         LogicalOp::Implies,
         LogicalOp::Equivalent,
     ] {
-        let predicate: Predicate = PredicateKind::Logical {
+        let predicate: rossi::ast::Predicate = rossi::ast::PredicateKind::Logical {
             op,
             left: Box::new(comparison("a", "b")),
             right: Box::new(comparison("c", "d")),
@@ -254,7 +260,7 @@ fn rodin_canonical_tightens_comparisons_and_logical_operators() {
 fn rodin_canonical_ascii_keeps_word_operator_boundaries() {
     let predicate = parse_predicate_str("a = b or c = d").expect("predicate parses");
     let printer = PrettyPrinter::ascii().with_formula_spacing(FormulaSpacing::RodinCanonical);
-    let printed = printer.print_predicate(&predicate);
+    let printed = printer.print_formula_predicate(&predicate);
 
     assert_eq!(printed, "a=b or c=d");
     assert_eq!(
@@ -271,10 +277,13 @@ fn rodin_canonical_preserves_root_specific_type_ascription_spacing() {
     let bool_expression = parse_expression_str("bool(a ⦂ b = c)").expect("bool parses");
     let action = parse_action_str("x ≔ a ⦂ b").expect("action parses");
 
-    assert_eq!(printer.print_expression(&expression), "a ⦂ b");
-    assert_eq!(printer.print_predicate(&predicate), "a⦂b=c");
-    assert_eq!(printer.print_expression(&bool_expression), "bool(a ⦂ b=c)");
-    assert_eq!(printer.print_action(&action), "x ≔ a ⦂ b");
+    assert_eq!(printer.print_formula_expression(&expression), "a ⦂ b");
+    assert_eq!(printer.print_formula_predicate(&predicate), "a⦂b=c");
+    assert_eq!(
+        printer.print_formula_expression(&bool_expression),
+        "bool(a ⦂ b=c)"
+    );
+    assert_eq!(printer.print_action_body(&action), "x ≔ a ⦂ b");
 }
 
 #[test]
@@ -284,15 +293,21 @@ fn rodin_canonical_tightens_comma_separated_formula_lists() {
     let predicate = parse_predicate_str("∀x⦂ℤ, y⦂ℤ · p(x, y)").expect("predicate parses");
     let action = parse_action_str("x, y ≔ 1, 2").expect("action parses");
 
-    assert_eq!(printer.print_expression(&expression), "{1,2,3}");
-    assert_eq!(printer.print_predicate(&predicate), "∀x⦂ℤ,y⦂ℤ·p(x,y)");
-    assert_eq!(printer.print_action(&action), "x,y ≔ 1,2");
+    assert_eq!(printer.print_formula_expression(&expression), "{1,2,3}");
+    assert_eq!(
+        printer.print_formula_predicate(&predicate),
+        "∀x⦂ℤ,y⦂ℤ·p(x,y)"
+    );
+    assert_eq!(printer.print_action_body(&action), "x,y ≔ 1,2");
 
     assert_eq!(
-        PrettyPrinter::new().print_expression(&expression),
+        PrettyPrinter::new().print_formula_expression(&expression),
         "{1, 2, 3}"
     );
-    assert_eq!(PrettyPrinter::new().print_action(&action), "x, y ≔ 1, 2");
+    assert_eq!(
+        PrettyPrinter::new().print_action_body(&action),
+        "x, y ≔ 1, 2"
+    );
 }
 
 #[test]
@@ -342,12 +357,17 @@ END
 // every canonical form is also proven parser-stable.
 // ============================================================================
 
-fn id(name: &str) -> Expression {
-    Expression::identifier(name)
+// The rows build legacy parser trees (the printer's own input); reparse
+// stability is asserted against the lowered model form.
+type LExpr = rossi::ast::Expression;
+type LPred = rossi::ast::Predicate;
+
+fn id(name: &str) -> LExpr {
+    LExpr::identifier(name)
 }
 
-fn bin(op: BinaryOp, left: Expression, right: Expression) -> Expression {
-    ExpressionKind::Binary {
+fn bin(op: BinaryOp, left: LExpr, right: LExpr) -> LExpr {
+    rossi::ast::ExpressionKind::Binary {
         op,
         left: Box::new(left),
         right: Box::new(right),
@@ -355,8 +375,8 @@ fn bin(op: BinaryOp, left: Expression, right: Expression) -> Expression {
     .into()
 }
 
-fn un(op: UnaryOp, operand: Expression) -> Expression {
-    ExpressionKind::Unary {
+fn un(op: UnaryOp, operand: LExpr) -> LExpr {
+    rossi::ast::ExpressionKind::Unary {
         op,
         operand: Box::new(operand),
     }
@@ -364,17 +384,17 @@ fn un(op: UnaryOp, operand: Expression) -> Expression {
 }
 
 /// `<name> > 0` — comparison leaf for the logical-operator rows.
-fn gt0(name: &str) -> Predicate {
-    PredicateKind::Comparison {
+fn gt0(name: &str) -> LPred {
+    rossi::ast::PredicateKind::Comparison {
         op: ComparisonOp::GreaterThan,
         left: id(name),
-        right: ExpressionKind::Integer(0).into(),
+        right: rossi::ast::ExpressionKind::Integer(0).into(),
     }
     .into()
 }
 
-fn logic(op: LogicalOp, left: Predicate, right: Predicate) -> Predicate {
-    PredicateKind::Logical {
+fn logic(op: LogicalOp, left: LPred, right: LPred) -> LPred {
+    rossi::ast::PredicateKind::Logical {
         op,
         left: Box::new(left),
         right: Box::new(right),
@@ -481,17 +501,17 @@ fn logic(op: LogicalOp, left: Predicate, right: Predicate) -> Predicate {
 #[test_case(
     un(
         UnaryOp::Inverse,
-        ExpressionKind::AtomicBuiltin(AtomicBuiltinKind::Prj1).into()
+        rossi::ast::ExpressionKind::AtomicBuiltin(AtomicBuiltinKind::Prj1).into()
     ),
     "prj1\u{223C}";
     "inverse_of_atomic_builtin_no_parens"
 )]
-fn test_pretty_print_canonical_expression(expr: Expression, expected: &str) {
+fn test_pretty_print_canonical_expression(expr: LExpr, expected: &str) {
     let printed = PrettyPrinter::new().print_expression(&expr);
     assert_eq!(printed, expected);
     assert_eq!(
         parse_expression_str(&printed).expect("canonical form reparses"),
-        expr,
+        rossi::formula::lower::lower_expression(&expr),
         "reparsing the canonical form changed the AST"
     );
 }
@@ -516,12 +536,12 @@ fn test_pretty_print_canonical_expression(expr: Expression, expected: &str) {
     "a > 0 ∧ b > 0 ∧ c > 0";
     "and_chain_same_class"
 )]
-fn test_pretty_print_canonical_predicate(pred: Predicate, expected: &str) {
+fn test_pretty_print_canonical_predicate(pred: LPred, expected: &str) {
     let printed = PrettyPrinter::new().print_predicate(&pred);
     assert_eq!(printed, expected);
     assert_eq!(
         parse_predicate_str(&printed).expect("canonical form reparses"),
-        pred,
+        rossi::formula::lower::lower_predicate(&pred),
         "reparsing the canonical form changed the AST"
     );
 }
@@ -532,16 +552,18 @@ fn test_pretty_print_function_application_binary_function_keeps_parens() {
     // dropping the parens would re-bind as `mapping ◁ prj1(x)`,
     // a different AST. Regression seen on a real-world corpus model.
     use rossi::ast::expression::{AtomicBuiltinKind, BinaryOp};
-    let expr: Expression = ExpressionKind::FunctionApplication {
+    let expr: LExpr = rossi::ast::ExpressionKind::FunctionApplication {
         function: Box::new(
-            ExpressionKind::Binary {
+            rossi::ast::ExpressionKind::Binary {
                 op: BinaryOp::DomainRestriction,
-                left: Box::new(ExpressionKind::Identifier("mapping".into()).into()),
-                right: Box::new(ExpressionKind::AtomicBuiltin(AtomicBuiltinKind::Prj1).into()),
+                left: Box::new(rossi::ast::ExpressionKind::Identifier("mapping".into()).into()),
+                right: Box::new(
+                    rossi::ast::ExpressionKind::AtomicBuiltin(AtomicBuiltinKind::Prj1).into(),
+                ),
             }
             .into(),
         ),
-        argument: Box::new(ExpressionKind::Identifier("x".into()).into()),
+        argument: Box::new(rossi::ast::ExpressionKind::Identifier("x".into()).into()),
     }
     .into();
     let output = PrettyPrinter::new().print_expression(&expr);
@@ -552,19 +574,19 @@ fn test_pretty_print_function_application_binary_function_keeps_parens() {
 fn test_single_argument_application_ast_roundtrips() {
     use rossi::ast::expression::BuiltinFunction;
 
-    let applications: [(Expression, &str); 2] = [
+    let applications: [(LExpr, &str); 2] = [
         (
-            ExpressionKind::FunctionApplication {
-                function: Box::new(Expression::identifier("f")),
-                argument: Box::new(Expression::identifier("x")),
+            rossi::ast::ExpressionKind::FunctionApplication {
+                function: Box::new(LExpr::identifier("f")),
+                argument: Box::new(LExpr::identifier("x")),
             }
             .into(),
             "f(x)",
         ),
         (
-            ExpressionKind::BuiltinApplication {
+            rossi::ast::ExpressionKind::BuiltinApplication {
                 function: BuiltinFunction::Card,
-                argument: Box::new(Expression::identifier("x")),
+                argument: Box::new(LExpr::identifier("x")),
             }
             .into(),
             "card(x)",
@@ -574,7 +596,10 @@ fn test_single_argument_application_ast_roundtrips() {
     for (application, expected) in applications {
         let printed = PrettyPrinter::new().print_expression(&application);
         assert_eq!(printed, expected);
-        assert_eq!(rossi::parse_expression_str(&printed).unwrap(), application);
+        assert_eq!(
+            rossi::parse_expression_str(&printed).unwrap(),
+            rossi::formula::lower::lower_expression(&application)
+        );
     }
 }
 
@@ -747,7 +772,7 @@ fn private_use_glyphs_flag_controls_relation_and_override_spelling() {
     let pred = parse_predicate_str("r ∈ A <<-> B ∧ s = f <+ g").expect("parses");
 
     // Default printer is portable: the private-use operators emit ASCII.
-    let portable = PrettyPrinter::new().print_predicate(&pred);
+    let portable = PrettyPrinter::new().print_formula_predicate(&pred);
     assert!(
         portable.contains("<<->") && portable.contains("<+"),
         "default printer should emit ASCII for private-use operators, got: {portable}"
@@ -760,7 +785,7 @@ fn private_use_glyphs_flag_controls_relation_and_override_spelling() {
     // Opting in reproduces Rodin's internal spelling (the raw glyphs).
     let glyphs = PrettyPrinter::new()
         .with_private_use_glyphs(true)
-        .print_predicate(&pred);
+        .print_formula_predicate(&pred);
     assert!(
         glyphs.contains('\u{E100}') && glyphs.contains('\u{E103}'),
         "with_private_use_glyphs(true) should emit the glyphs, got: {glyphs}"

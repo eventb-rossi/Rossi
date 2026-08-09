@@ -17,7 +17,7 @@
 //! are the write targets, and the SC validates them via the variable
 //! table.
 
-use rossi::{Action, Expression, LabeledPredicate, Predicate};
+use rossi::{ActionBody, Expression, LabeledPredicate, Predicate};
 
 use crate::sc::identifier_walker::{
     free_identifier_in_action_rhs, free_identifier_in_expression, free_identifier_in_predicate,
@@ -56,7 +56,7 @@ pub struct ExpressionCheck {
 #[derive(Debug, Clone)]
 pub struct ActionCheck {
     /// The action the check ran on (see [`PredicateCheck::predicate`]).
-    pub action: Action,
+    pub action: ActionBody,
     /// First free identifier on the action's read side. `None` iff
     /// every read identifier is in `env` (or a built-in).
     pub free_identifier: Option<String>,
@@ -68,30 +68,43 @@ pub struct ActionCheck {
 }
 
 /// Check a predicate against `env`: the free-identifier scan and the
-/// typed rebuild.
+/// typed rebuild. An unknown identifier makes the formula unverifiable,
+/// so the typed rebuild is not attempted (it could only fail).
 pub fn check_predicate(p: &Predicate, env: &TypeEnv) -> PredicateCheck {
+    let free_identifier = free_identifier_in_predicate(p, env);
     PredicateCheck {
-        free_identifier: free_identifier_in_predicate(p, env),
-        typed: crate::sc::typing::typed_predicate(env, p),
+        typed: free_identifier
+            .is_none()
+            .then(|| crate::sc::typing::typed_predicate(env, p))
+            .flatten(),
+        free_identifier,
         predicate: p.clone(),
     }
 }
 
 /// Check an expression against `env`. Used by the variant.
 pub fn check_expression(e: &Expression, env: &TypeEnv) -> ExpressionCheck {
+    let free_identifier = free_identifier_in_expression(e, env);
     ExpressionCheck {
-        free_identifier: free_identifier_in_expression(e, env),
-        typed: crate::sc::typing::typed_expression(env, e),
+        typed: free_identifier
+            .is_none()
+            .then(|| crate::sc::typing::typed_expression(env, e))
+            .flatten(),
+        free_identifier,
         expression: e.clone(),
     }
 }
 
 /// Check an action against `env`. Walks every read-side expression and
 /// (for `:|`) the becomes-such-that predicate.
-pub fn check_action(a: &Action, env: &TypeEnv) -> ActionCheck {
+pub fn check_action(a: &ActionBody, env: &TypeEnv) -> ActionCheck {
+    let free_identifier = free_identifier_in_action_rhs(a, env);
     ActionCheck {
-        free_identifier: free_identifier_in_action_rhs(a, env),
-        typed: crate::sc::typing::typed_assignment(env, a),
+        typed: free_identifier
+            .is_none()
+            .then(|| crate::sc::typing::typed_assignment(env, a))
+            .flatten(),
+        free_identifier,
         action: a.clone(),
     }
 }

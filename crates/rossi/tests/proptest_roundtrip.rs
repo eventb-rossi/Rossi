@@ -11,7 +11,12 @@ use proptest::strategy::BoxedStrategy;
 use rossi::ast::TypedIdentifier;
 use rossi::ast::expression::*;
 use rossi::ast::predicate::*;
-use rossi::*;
+use rossi::ast::{Action, ActionKind, Expression, ExpressionKind, Predicate, PredicateKind};
+use rossi::formula::lower::{lower_action_body, lower_expression, lower_predicate};
+use rossi::{
+    Component, Context, Event, EventStatus, InitialisationEvent, LabeledAction, LabeledPredicate,
+    Machine, NamedElement, PrettyPrinter, SetDeclaration, parse,
+};
 
 // =============================================================================
 // Identifier strategies — fixed pools of safe names (no keyword collisions)
@@ -614,7 +619,7 @@ fn arb_axiom() -> impl Strategy<Value = LabeledPredicate> {
     (arb_label(), arb_leaf_predicate()).prop_map(|(label, predicate)| LabeledPredicate {
         label,
         is_theorem: false,
-        predicate,
+        predicate: lower_predicate(&predicate),
         span: None,
         comment: None,
     })
@@ -624,7 +629,7 @@ fn arb_theorem() -> impl Strategy<Value = LabeledPredicate> {
     (arb_label(), arb_leaf_predicate()).prop_map(|(label, predicate)| LabeledPredicate {
         label,
         is_theorem: true,
-        predicate,
+        predicate: lower_predicate(&predicate),
         span: None,
         comment: None,
     })
@@ -633,7 +638,7 @@ fn arb_theorem() -> impl Strategy<Value = LabeledPredicate> {
 fn arb_labeled_action() -> impl Strategy<Value = LabeledAction> {
     (arb_label(), arb_action()).prop_map(|(label, (action, _vars))| LabeledAction {
         label,
-        action,
+        action: lower_action_body(&action),
         span: None,
         comment: None,
     })
@@ -663,7 +668,7 @@ fn arb_witness_predicate() -> impl Strategy<Value = LabeledPredicate> {
     (arb_label(), arb_leaf_predicate()).prop_map(|(label, predicate)| LabeledPredicate {
         label,
         is_theorem: false,
-        predicate,
+        predicate: lower_predicate(&predicate),
         span: None,
         comment: None,
     })
@@ -766,7 +771,7 @@ fn arb_machine() -> impl Strategy<Value = Component> {
                 machine.variables = variables.into_iter().map(NamedElement::new).collect();
                 invariants.extend(theorems);
                 machine.invariants = invariants;
-                machine.variant = variant;
+                machine.variant = variant.map(|v| lower_expression(&v));
                 machine.initialisation = initialisation;
                 machine.events = events;
                 Component::Machine(machine)
@@ -782,15 +787,16 @@ fn arb_machine() -> impl Strategy<Value = Component> {
 fn wrap_expression_in_context(expr: &Expression) -> Component {
     let mut ctx = Context::new("proptest".into());
     ctx.constants = vec![NamedElement::new("propvar".to_string())];
+    let axiom: Predicate = PredicateKind::Comparison {
+        op: ComparisonOp::Equal,
+        left: ExpressionKind::Identifier("propvar".into()).into(),
+        right: expr.clone(),
+    }
+    .into();
     ctx.axioms = vec![LabeledPredicate {
         label: Some("axm1".into()),
         is_theorem: false,
-        predicate: PredicateKind::Comparison {
-            op: ComparisonOp::Equal,
-            left: ExpressionKind::Identifier("propvar".into()).into(),
-            right: expr.clone(),
-        }
-        .into(),
+        predicate: lower_predicate(&axiom),
         span: None,
         comment: None,
     }];
@@ -803,7 +809,7 @@ fn wrap_predicate_in_context(pred: &Predicate) -> Component {
     ctx.axioms = vec![LabeledPredicate {
         label: Some("axm1".into()),
         is_theorem: false,
-        predicate: pred.clone(),
+        predicate: lower_predicate(pred),
         span: None,
         comment: None,
     }];
@@ -820,7 +826,7 @@ fn wrap_action_in_machine(action: &Action, variables: &[String]) -> Component {
     machine.events = vec![Event::new("test_event".into())];
     machine.events[0].actions = vec![LabeledAction {
         label: Some("act1".into()),
-        action: action.clone(),
+        action: lower_action_body(action),
         span: None,
         comment: None,
     }];
@@ -962,7 +968,8 @@ fn action_roundtrip_standalone() {
             )
         });
         assert_eq!(
-            action, &reparsed,
+            lower_action_body(action),
+            reparsed,
             "standalone roundtrip mismatch.\nPrinted:\n{printed}"
         );
     });

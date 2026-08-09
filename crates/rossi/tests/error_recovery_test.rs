@@ -1676,7 +1676,9 @@ fn recovery_formula_identifier_spans_are_absolute() {
     // tokens rely on to colour identifiers; an off-by-prefix shift would colour
     // the wrong bytes. A label prefix (`@grd1 `, `@act1 `) must not skew the
     // action body's spans.
-    use rossi::ast::walk::{IdentOccurrence, IdentVisitor, walk_action, walk_predicate};
+    use rossi::formula::occurrences::{
+        Occurrence, OccurrenceVisitor, walk_assignment, walk_predicate,
+    };
     use std::ops::ControlFlow;
 
     let source = "\
@@ -1706,8 +1708,8 @@ END
         source: &'s str,
         seen: Vec<String>,
     }
-    impl IdentVisitor for SpanCheck<'_> {
-        fn visit(&mut self, occ: IdentOccurrence<'_>) -> ControlFlow<()> {
+    impl OccurrenceVisitor for SpanCheck<'_> {
+        fn visit(&mut self, occ: Occurrence<'_>) -> ControlFlow<()> {
             if let Some(span) = occ.span {
                 assert_eq!(
                     &self.source[span.start..span.end],
@@ -1731,7 +1733,9 @@ END
         let _ = walk_predicate(&guard.predicate, &mut binders, &mut check);
     }
     for action in &event.actions {
-        let _ = walk_action(&action.action, &mut binders, &mut check);
+        if let Some(assignment) = action.action.assignment() {
+            let _ = walk_assignment(assignment, &mut binders, &mut check);
+        }
     }
 
     // The guard reads `amount`; the action writes `counter` from `amount`.

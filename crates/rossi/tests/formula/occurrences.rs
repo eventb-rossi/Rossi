@@ -205,3 +205,27 @@ fn breaking_stops_the_walk() {
     assert_eq!(flow, ControlFlow::Break(()));
     assert_eq!(recorder.rows.len(), 1);
 }
+
+// ---------------------------------------------------------------------
+// Parsed comprehension scoping
+// ---------------------------------------------------------------------
+
+#[test]
+fn implicit_set_builder_leaves_outer_bound_names_free() {
+    use rossi::{ExpressionKind, PredicateKind, parse_predicate_str};
+
+    // In `∀x·{x + y∣y < x} ⊆ s`, the member expression's `x` reads the
+    // enclosing binder; only `y` is free within it and gets bound.
+    let parsed = parse_predicate_str("∀x·{x + y∣y < x} ⊆ s").unwrap();
+    let PredicateKind::Quantified { pred, .. } = parsed.kind() else {
+        panic!("expected the universal quantifier");
+    };
+    let PredicateKind::Relational { left, .. } = pred.kind() else {
+        panic!("expected the subset comparison");
+    };
+    let ExpressionKind::Quantified { decls, .. } = left.kind() else {
+        panic!("expected the comprehension");
+    };
+    let names: Vec<&str> = decls.iter().map(|d| d.name()).collect();
+    assert_eq!(names, ["y"]);
+}

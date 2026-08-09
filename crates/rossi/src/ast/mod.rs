@@ -250,23 +250,46 @@ pub struct FileMetadata {
 
 /// A labeled predicate with an optional label identifier
 #[derive(Debug, Clone, PartialEq, Eq)]
-#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct LabeledPredicate {
     pub label: Option<String>,
     pub is_theorem: bool,
-    pub predicate: Predicate,
+    pub predicate: crate::formula::Predicate,
     /// Source location of the entire labeled predicate
     pub span: Option<Span>,
     /// Comment from Rodin XML
     pub comment: Option<String>,
 }
 
+/// An action's body: either the explicit no-op or an assignment.
+///
+/// `skip` is a surface-language construct with no assignment to model,
+/// so it lives here rather than in the formula layer.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ActionBody {
+    Skip,
+    Assignment(crate::formula::Assignment),
+}
+
+impl ActionBody {
+    /// The assignment, unless this is `skip`.
+    pub fn assignment(&self) -> Option<&crate::formula::Assignment> {
+        match self {
+            ActionBody::Skip => None,
+            ActionBody::Assignment(assignment) => Some(assignment),
+        }
+    }
+
+    /// `true` iff this is the explicit no-op.
+    pub fn is_skip(&self) -> bool {
+        matches!(self, ActionBody::Skip)
+    }
+}
+
 /// A labeled action with an optional label identifier
 #[derive(Debug, Clone, PartialEq, Eq)]
-#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct LabeledAction {
     pub label: Option<String>,
-    pub action: Action,
+    pub action: ActionBody,
     /// Source location of the entire labeled action
     pub span: Option<Span>,
     /// Comment from Rodin XML
@@ -281,7 +304,6 @@ pub struct LabeledAction {
 /// `Machine` variant would add an allocation and a layer of indirection to every
 /// component for a heuristic size delta, so the lint is allowed here.
 #[derive(Debug, Clone, PartialEq, Eq)]
-#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 #[allow(clippy::large_enum_variant)]
 pub enum Component {
     Context(Context),

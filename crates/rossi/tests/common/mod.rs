@@ -139,7 +139,7 @@ pub fn parse_machine(source: &str) -> Machine {
 /// Parse a Context source and return the RHS expression of the first axiom's comparison.
 pub fn parse_axiom_rhs(source: &str) -> Expression {
     let ctx = parse_context(source);
-    if let PredicateKind::Comparison { right, .. } = &ctx.axioms[0].predicate.kind {
+    if let PredicateKind::Relational { right, .. } = ctx.axioms[0].predicate.kind() {
         return right.clone();
     }
     panic!("Expected Context with comparison axiom");
@@ -148,7 +148,7 @@ pub fn parse_axiom_rhs(source: &str) -> Expression {
 /// Parse a Context source and return the LHS expression of the first axiom's comparison.
 pub fn parse_expr_axiom(source: &str) -> Expression {
     let ctx = parse_context(source);
-    if let PredicateKind::Comparison { left, .. } = &ctx.axioms[0].predicate.kind {
+    if let PredicateKind::Relational { left, .. } = ctx.axioms[0].predicate.kind() {
         return left.clone();
     }
     panic!("Expected Context with comparison axiom");

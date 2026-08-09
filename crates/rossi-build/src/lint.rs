@@ -28,7 +28,7 @@
 use std::collections::{BTreeSet, HashMap};
 
 use rossi::ast::Span;
-use rossi::ast::predicate::{ComparisonOp, LogicalOp};
+use rossi::formula::tag::{AssocPredOp, RelationalOp};
 use rossi::{
     Component, ComponentId, Context, DependencyGraph, Event, ExpressionKind, InitialisationEvent,
     Machine, Predicate, PredicateKind,
@@ -388,20 +388,20 @@ fn lint_shadowed_names_machine(m: &Machine) -> Vec<Diagnostic> {
 /// real uses, even though the type checker can also read a type out of
 /// them. `vars` is the owning machine's variable set.
 fn collect_non_typing_refs(pred: &Predicate, vars: &BTreeSet<&str>, acc: &mut BTreeSet<String>) {
-    match &pred.kind {
-        PredicateKind::Logical {
-            op: LogicalOp::And,
-            left,
-            right,
+    match pred.kind() {
+        PredicateKind::Associative {
+            op: AssocPredOp::LAnd,
+            children,
         } => {
-            collect_non_typing_refs(left, vars, acc);
-            collect_non_typing_refs(right, vars, acc);
+            for child in children {
+                collect_non_typing_refs(child, vars, acc);
+            }
         }
-        PredicateKind::Comparison {
-            op: ComparisonOp::In | ComparisonOp::Subset,
+        PredicateKind::Relational {
+            op: RelationalOp::In | RelationalOp::SubsetEq,
             left,
             right,
-        } if matches!(&left.kind, ExpressionKind::Identifier(_)) => {
+        } if matches!(left.kind(), ExpressionKind::FreeIdentifier(_)) => {
             let mut bound_refs = BTreeSet::new();
             collect_referenced_in_expression(right, &mut bound_refs);
             let bound_is_static = bound_refs.iter().all(|r| !vars.contains(r.as_str()));
@@ -867,11 +867,9 @@ impl<'a> ProjectIndex<'a> {
 mod tests {
     use super::*;
     use crate::Severity;
-    use rossi::ast::expression::BinaryOp;
     use rossi::{
-        Action, ActionKind, Component, Context, Event, Expression, ExpressionKind,
-        InitialisationEvent, LabeledAction, LabeledPredicate, Machine, NamedElement, Predicate,
-        PredicateKind,
+        ActionBody, Component, Context, Event, InitialisationEvent, LabeledAction,
+        LabeledPredicate, Machine, NamedElement, Predicate,
     };
 
     use crate::project::ProjectComponent;
@@ -903,7 +901,7 @@ mod tests {
         }
     }
 
-    fn la(action: Action) -> LabeledAction {
+    fn la(action: ActionBody) -> LabeledAction {
         LabeledAction {
             label: None,
             action,
@@ -912,21 +910,14 @@ mod tests {
         }
     }
 
-    fn ident(n: &str) -> Expression {
-        ExpressionKind::Identifier(n.into()).into()
+    /// Parse a predicate fixture.
+    fn pred(src: &str) -> Predicate {
+        rossi::parse_predicate_str(src).unwrap()
     }
 
-    fn cmp_pred(op: ComparisonOp, lhs: Expression, rhs: Expression) -> Predicate {
-        PredicateKind::Comparison {
-            op,
-            left: lhs,
-            right: rhs,
-        }
-        .into()
-    }
-
-    fn eq_pred(lhs: Expression, rhs: Expression) -> Predicate {
-        cmp_pred(ComparisonOp::Equal, lhs, rhs)
+    /// Parse an action fixture.
+    fn act(src: &str) -> ActionBody {
+        rossi::parse_action_str(src).unwrap()
     }
 
     fn nv(n: &str) -> NamedElement {
@@ -937,15 +928,9 @@ mod tests {
     fn dead_variable_is_flagged() {
         let mut m = Machine::new("M".into());
         m.variables = vec![nv("x"), nv("y")];
-        m.invariants = vec![lp(
-            "inv1",
-            eq_pred(ident("x"), ExpressionKind::Integer(0).into()),
-        )];
+        m.invariants = vec![lp("inv1", pred("x = 0"))];
         m.initialisation = Some(InitialisationEvent {
-            actions: vec![
-                la(Action::assignment("x", ExpressionKind::Integer(0).into())),
-                la(Action::assignment("y", ExpressionKind::Integer(0).into())),
-            ],
+            actions: vec![la(act("x ≔ 0")), la(act("y ≔ 0"))],
             comment: None,
             extended: false,
             with: Vec::new(),
@@ -974,10 +959,7 @@ mod tests {
         // event ever modifies it — a constant in disguise.
         let mut m = Machine::new("M".into());
         m.variables = vec![nv("x")];
-        m.invariants = vec![lp(
-            "inv1",
-            eq_pred(ident("x"), ExpressionKind::Integer(0).into()),
-        )];
+        m.invariants = vec![lp("inv1", pred("x = 0"))];
         m.initialisation = Some(init_event(&["x"], false));
 
         let diags = run(&proj(vec![pc("M.bum", Component::Machine(m))]));
@@ -1009,10 +991,7 @@ mod tests {
             comment: None,
             span: None,
         }];
-        c.axioms = vec![lp(
-            "ax1",
-            eq_pred(ident("price"), ExpressionKind::Integer(0).into()),
-        )];
+        c.axioms = vec![lp("ax1", pred("price = 0"))];
 
         let diags = run(&proj(vec![pc("C.buc", Component::Context(c))]));
         let shadowed: Vec<_> = diags
@@ -1077,28 +1056,11 @@ mod tests {
     fn quantifier_binder_does_not_count_as_use() {
         // ∀x · TRUE — the `x` binder shouldn't count as a use of the machine
         // variable named `x`, so the variable should still be flagged dead.
-        use rossi::TypedIdentifier;
-        use rossi::ast::predicate::Quantifier;
         let mut m = Machine::new("M".into());
         m.variables = vec![nv("x")];
-        m.invariants = vec![lp(
-            "inv1",
-            PredicateKind::Quantified {
-                quantifier: Quantifier::ForAll,
-                identifiers: vec![TypedIdentifier {
-                    name: "x".into(),
-                    type_expr: None,
-                    span: None,
-                }],
-                predicate: Box::new(PredicateKind::True.into()),
-            }
-            .into(),
-        )];
+        m.invariants = vec![lp("inv1", pred("∀x · ⊤"))];
         m.initialisation = Some(InitialisationEvent {
-            actions: vec![la(Action::assignment(
-                "x",
-                ExpressionKind::Integer(0).into(),
-            ))],
+            actions: vec![la(act("x ≔ 0"))],
             comment: None,
             extended: false,
             with: Vec::new(),
@@ -1124,10 +1086,7 @@ mod tests {
         let mut m = Machine::new("M".into());
         m.variables = vec![nv("x"), nv("y")];
         m.initialisation = Some(InitialisationEvent {
-            actions: vec![la(Action::assignment(
-                "x",
-                ExpressionKind::Integer(0).into(),
-            ))],
+            actions: vec![la(act("x ≔ 0"))],
             comment: None,
             extended: false,
             with: Vec::new(),
@@ -1152,11 +1111,7 @@ mod tests {
         let mut m = Machine::new("M".into());
         m.variables = vec![nv("x")];
         m.initialisation = Some(InitialisationEvent {
-            actions: vec![la(ActionKind::BecomesSuchThat {
-                variables: vec!["x".into()],
-                predicate: eq_pred(ident("x'"), ExpressionKind::Integer(0).into()),
-            }
-            .into())],
+            actions: vec![la(act("x :∣ x' = 0"))],
             comment: None,
             extended: false,
             with: Vec::new(),
@@ -1184,17 +1139,7 @@ mod tests {
         let mut m = Machine::new("M".into());
         m.variables = vec![nv("closure"), nv("v")];
         let mut e = Event::new("e".into());
-        e.guards = vec![lp(
-            "grd1",
-            eq_pred(
-                ExpressionKind::FunctionApplication {
-                    function: Box::new(ident("closure")),
-                    argument: Box::new(ident("v")),
-                }
-                .into(),
-                ident("v"),
-            ),
-        )];
+        e.guards = vec![lp("grd1", pred("closure(v) = v"))];
         m.events = vec![e];
         m.initialisation = Some(init_event(&["closure", "v"], false));
 
@@ -1209,10 +1154,7 @@ mod tests {
         let mut m1 = Machine::new("M1".into());
         m1.variables = vec![nv("v")];
         m1.initialisation = Some(InitialisationEvent {
-            actions: vec![la(Action::assignment(
-                "v",
-                ExpressionKind::Integer(0).into(),
-            ))],
+            actions: vec![la(act("v ≔ 0"))],
             comment: None,
             extended: false,
             with: Vec::new(),
@@ -1222,10 +1164,7 @@ mod tests {
         });
         let mut m2 = Machine::new("M2".into());
         m2.refines = Some("M1".into());
-        m2.invariants = vec![lp(
-            "inv1",
-            eq_pred(ident("v"), ExpressionKind::Integer(0).into()),
-        )];
+        m2.invariants = vec![lp("inv1", pred("v = 0"))];
 
         let project = proj(vec![
             pc("M1.bum", Component::Machine(m1)),
@@ -1248,10 +1187,7 @@ mod tests {
         // false constant-like verdict.
         let mut m1 = Machine::new("M1".into());
         m1.variables = vec![nv("v")];
-        m1.invariants = vec![lp(
-            "inv1",
-            eq_pred(ident("v"), ExpressionKind::Integer(0).into()),
-        )];
+        m1.invariants = vec![lp("inv1", pred("v = 0"))];
         m1.initialisation = Some(init_event(&["v"], false));
         let mut m2 = Machine::new("M2".into());
         m2.refines = Some("M1".into());
@@ -1263,10 +1199,7 @@ mod tests {
             guards: Vec::new(),
             with: Vec::new(),
             witnesses: Vec::new(),
-            actions: vec![la(Action::assignment(
-                "v",
-                ExpressionKind::Integer(1).into(),
-            ))],
+            actions: vec![la(act("v ≔ 1"))],
             span: None,
             name_span: None,
             refines_span: None,
@@ -1307,10 +1240,7 @@ mod tests {
     /// An event named `name` whose sole guard is `var = 0`.
     fn guarded_event(name: &str, var: &str) -> Event {
         let mut e = Event::new(name.into());
-        e.guards = vec![lp(
-            "grd1",
-            eq_pred(ident(var), ExpressionKind::Integer(0).into()),
-        )];
+        e.guards = vec![lp("grd1", pred(&format!("{var} = 0")))];
         e
     }
 
@@ -1319,7 +1249,7 @@ mod tests {
         InitialisationEvent {
             actions: assigns
                 .iter()
-                .map(|v| la(Action::assignment(*v, ExpressionKind::Integer(0).into())))
+                .map(|v| la(act(&format!("{v} ≔ 0"))))
                 .collect(),
             comment: None,
             extended,
@@ -1392,10 +1322,7 @@ mod tests {
         let mut m0 = Machine::new("M0".into());
         let mut e = Event::new("e".into());
         e.parameters = vec![nv("p")];
-        e.guards = vec![lp(
-            "grd1",
-            eq_pred(ident("p"), ExpressionKind::Integer(0).into()),
-        )];
+        e.guards = vec![lp("grd1", pred("p = 0"))];
         m0.events = vec![e];
         let mut m1 = Machine::new("M1".into());
         m1.refines = Some("M0".into());
@@ -1527,10 +1454,7 @@ mod tests {
         // M0's INIT: the constant-like verdict fires once, at the declaring
         // machine — the kept copy at M1 inherits it and stays silent.
         let mut m0 = abstract_machine("M0", "v");
-        m0.invariants = vec![lp(
-            "inv1",
-            eq_pred(ident("v"), ExpressionKind::Integer(0).into()),
-        )];
+        m0.invariants = vec![lp("inv1", pred("v = 0"))];
         let mut m1 = Machine::new("M1".into());
         m1.refines = Some("M0".into());
         m1.variables = vec![nv("v")];
@@ -1560,10 +1484,7 @@ mod tests {
         // INIT assignment, x is not constant-like — EB012 must not fire.
         let mut m = Machine::new("M".into());
         m.variables = vec![nv("x")];
-        m.invariants = vec![lp(
-            "inv1",
-            eq_pred(ident("x"), ExpressionKind::Integer(0).into()),
-        )];
+        m.invariants = vec![lp("inv1", pred("x = 0"))];
         m.initialisation = Some(init_event(&["x"], false));
         m.events = vec![Event {
             name: "evt".into(),
@@ -1573,11 +1494,7 @@ mod tests {
             guards: Vec::new(),
             with: Vec::new(),
             witnesses: Vec::new(),
-            actions: vec![la(ActionKind::BecomesIn {
-                variables: vec!["x".into()],
-                set: ExpressionKind::Naturals.into(),
-            }
-            .into())],
+            actions: vec![la(act("x :∈ ℕ"))],
             span: None,
             name_span: None,
             refines_span: None,
@@ -1600,27 +1517,8 @@ mod tests {
         // modification of f, so f is not constant-like.
         let mut m = Machine::new("M".into());
         m.variables = vec![nv("f")];
-        m.invariants = vec![lp(
-            "inv1",
-            eq_pred(ident("f"), ExpressionKind::Integer(0).into()),
-        )];
+        m.invariants = vec![lp("inv1", pred("f = 0"))];
         m.initialisation = Some(init_event(&["f"], false));
-        let overwrite_rhs: Expression = ExpressionKind::Binary {
-            op: BinaryOp::Overwrite,
-            left: Box::new(ExpressionKind::Identifier("f".into()).into()),
-            right: Box::new(
-                ExpressionKind::SetEnumeration(vec![
-                    ExpressionKind::Binary {
-                        op: BinaryOp::Maplet,
-                        left: Box::new(ExpressionKind::Integer(1).into()),
-                        right: Box::new(ExpressionKind::Integer(0).into()),
-                    }
-                    .into(),
-                ])
-                .into(),
-            ),
-        }
-        .into();
         m.events = vec![Event {
             name: "evt".into(),
             status: None,
@@ -1629,10 +1527,7 @@ mod tests {
             guards: Vec::new(),
             with: Vec::new(),
             witnesses: Vec::new(),
-            actions: vec![la(ActionKind::Assignment {
-                assignments: vec![("f".into(), overwrite_rhs)],
-            }
-            .into())],
+            actions: vec![la(act("f ≔ f <+ {1 ↦ 0}"))],
             span: None,
             name_span: None,
             refines_span: None,
@@ -1654,29 +1549,11 @@ mod tests {
         // The only mention of machine variable `x` is as a lambda parameter.
         // The lambda introduces a fresh binder, so the machine variable
         // should still be flagged dead.
-        use rossi::IdentPattern;
-        use rossi::TypedIdentifier;
-
         let mut m = Machine::new("M".into());
         m.variables = vec![nv("x")];
-        let lambda = Expression::from(ExpressionKind::Lambda {
-            pattern: IdentPattern::Identifier(TypedIdentifier {
-                name: "x".into(),
-                type_expr: None,
-                span: None,
-            }),
-            predicate: Box::new(PredicateKind::True.into()),
-            expression: Box::new(ident("x")),
-        });
-        m.invariants = vec![lp(
-            "inv1",
-            eq_pred(lambda, ExpressionKind::Integer(0).into()),
-        )];
+        m.invariants = vec![lp("inv1", pred("(λx · ⊤ ∣ x) = 0"))];
         m.initialisation = Some(InitialisationEvent {
-            actions: vec![la(Action::assignment(
-                "x",
-                ExpressionKind::Integer(0).into(),
-            ))],
+            actions: vec![la(act("x ≔ 0"))],
             comment: None,
             extended: false,
             with: Vec::new(),
@@ -1725,10 +1602,7 @@ mod tests {
             status: None,
             refines: None,
             parameters: vec![nv("x")],
-            guards: vec![lp(
-                "g1",
-                eq_pred(ident("x"), ExpressionKind::Integer(0).into()),
-            )],
+            guards: vec![lp("g1", pred("x = 0"))],
             with: Vec::new(),
             witnesses: Vec::new(),
             actions: Vec::new(),
@@ -1763,10 +1637,7 @@ mod tests {
     /// A new (non-refining) event named `name` whose sole action assigns `var`.
     fn assigning_event(name: &str, var: &str) -> Event {
         let mut e = Event::new(name.into());
-        e.actions = vec![la(Action::assignment(
-            var,
-            ExpressionKind::Integer(1).into(),
-        ))];
+        e.actions = vec![la(act(&format!("{var} ≔ 1")))];
         e
     }
 
@@ -1862,10 +1733,7 @@ mod tests {
         m2.refines = Some("M1".into());
         m2.variables = vec![nv("v")];
         m2.initialisation = Some(InitialisationEvent {
-            actions: vec![la(Action::assignment(
-                "v",
-                ExpressionKind::Integer(0).into(),
-            ))],
+            actions: vec![la(act("v ≔ 0"))],
             comment: None,
             extended: false,
             with: Vec::new(),
@@ -1956,10 +1824,7 @@ mod tests {
     /// text: declared, referenced by an invariant, and initialised.
     fn self_contained_machine(name: &str, var: &str) -> Machine {
         let mut m = abstract_machine(name, var);
-        m.invariants = vec![lp(
-            "inv1",
-            eq_pred(ident(var), ExpressionKind::Integer(0).into()),
-        )];
+        m.invariants = vec![lp("inv1", pred(&format!("{var} = 0")))];
         m
     }
 
@@ -2053,10 +1918,7 @@ mod tests {
         let mut m = Machine::new("M".into());
         m.refines = Some("Absent".into());
         m.variables = vec![nv("d"), nv("u")];
-        m.invariants = vec![lp(
-            "inv1",
-            eq_pred(ident("u"), ExpressionKind::Integer(0).into()),
-        )];
+        m.invariants = vec![lp("inv1", pred("u = 0"))];
         m.initialisation = Some(init_event(&[], false));
 
         let diags = run(&proj(vec![pc("M.bum", Component::Machine(m))]));
@@ -2193,9 +2055,9 @@ mod tests {
 
     // ---------- EB011/EB012 repartition: typing shapes, constant-like -------
 
-    /// A typing invariant `var ∈ set` for the machine's own variable.
-    fn typing_inv(var: &str, set: Expression) -> LabeledPredicate {
-        lp("typ", cmp_pred(ComparisonOp::In, ident(var), set))
+    /// A typing invariant `var ∈ ℤ` for the machine's own variable.
+    fn typing_inv(var: &str) -> LabeledPredicate {
+        lp("typ", pred(&format!("{var} ∈ ℤ")))
     }
 
     fn eb012_on<'d>(diags: &'d [Diagnostic], origin: &str) -> Vec<&'d Diagnostic> {
@@ -2207,7 +2069,7 @@ mod tests {
         // `x ∈ ℤ` merely types x; nothing else mentions or assigns it.
         let mut m = Machine::new("M".into());
         m.variables = vec![nv("x")];
-        m.invariants = vec![typing_inv("x", ExpressionKind::Integers.into())];
+        m.invariants = vec![typing_inv("x")];
         m.initialisation = Some(init_event(&[], false));
 
         let diags = run(&proj(vec![pc("M.bum", Component::Machine(m))]));
@@ -2221,7 +2083,7 @@ mod tests {
         // Each variable draws at most one of the two advisories.
         let mut m = Machine::new("M".into());
         m.variables = vec![nv("x")];
-        m.invariants = vec![typing_inv("x", ExpressionKind::Integers.into())];
+        m.invariants = vec![typing_inv("x")];
         m.initialisation = Some(init_event(&["x"], false));
 
         let diags = run(&proj(vec![pc("M.bum", Component::Machine(m))]));
@@ -2233,20 +2095,7 @@ mod tests {
     fn non_typing_conjunct_keeps_variable_alive() {
         // `x ∈ ℤ ∧ x > 0`: the second conjunct constrains the value — a
         // real use. Being INIT-only, x is constant-like rather than dead.
-        let conj: Predicate = PredicateKind::Logical {
-            op: LogicalOp::And,
-            left: Box::new(cmp_pred(
-                ComparisonOp::In,
-                ident("x"),
-                ExpressionKind::Integers.into(),
-            )),
-            right: Box::new(cmp_pred(
-                ComparisonOp::GreaterThan,
-                ident("x"),
-                ExpressionKind::Integer(0).into(),
-            )),
-        }
-        .into();
+        let conj: Predicate = pred("x ∈ ℤ ∧ x > 0");
         let mut m = Machine::new("M".into());
         m.variables = vec![nv("x")];
         m.invariants = vec![lp("inv1", conj)];
@@ -2263,10 +2112,7 @@ mod tests {
         // typing: BOTH variables count as used.
         let mut m = Machine::new("M".into());
         m.variables = vec![nv("x"), nv("y")];
-        m.invariants = vec![lp(
-            "inv1",
-            cmp_pred(ComparisonOp::Subset, ident("y"), ident("x")),
-        )];
+        m.invariants = vec![lp("inv1", pred("y ⊆ x"))];
         m.initialisation = Some(init_event(&["x", "y"], false));
 
         let diags = run(&proj(vec![pc("M.bum", Component::Machine(m))]));
@@ -2281,10 +2127,7 @@ mod tests {
         // not — y is dead.
         let mut m = Machine::new("M".into());
         m.variables = vec![nv("y")];
-        m.invariants = vec![lp(
-            "inv1",
-            cmp_pred(ComparisonOp::Subset, ident("y"), ident("s")),
-        )];
+        m.invariants = vec![lp("inv1", pred("y ⊆ s"))];
         m.initialisation = Some(init_event(&["y"], false));
 
         let diags = run(&proj(vec![pc("M.bum", Component::Machine(m))]));
@@ -2295,18 +2138,11 @@ mod tests {
     fn theorem_membership_counts_as_use() {
         // A theorem is a derived property, not a typing declaration: even
         // a membership-shaped one uses the variable.
-        let mut thm = lp(
-            "thm1",
-            cmp_pred(
-                ComparisonOp::In,
-                ident("x"),
-                ExpressionKind::Naturals.into(),
-            ),
-        );
+        let mut thm = lp("thm1", pred("x ∈ ℕ"));
         thm.is_theorem = true;
         let mut m = Machine::new("M".into());
         m.variables = vec![nv("x")];
-        m.invariants = vec![typing_inv("x", ExpressionKind::Integers.into()), thm];
+        m.invariants = vec![typing_inv("x"), thm];
         m.initialisation = Some(init_event(&["x"], false));
 
         let diags = run(&proj(vec![pc("M.bum", Component::Machine(m))]));
@@ -2319,18 +2155,7 @@ mod tests {
         // cur against another variable — cur is used, not dead.
         let mut m = Machine::new("M".into());
         m.variables = vec![nv("cur"), nv("routes")];
-        m.invariants = vec![lp(
-            "inv1",
-            cmp_pred(
-                ComparisonOp::In,
-                ident("cur"),
-                ExpressionKind::FunctionApplication {
-                    function: Box::new(ident("dom")),
-                    argument: Box::new(ident("routes")),
-                }
-                .into(),
-            ),
-        )];
+        m.invariants = vec![lp("inv1", pred("cur ∈ dom(routes)"))];
         m.initialisation = Some(init_event(&["cur"], false));
         m.events = vec![assigning_event("step", "routes")];
 
@@ -2345,10 +2170,7 @@ mod tests {
         // `x ⊂ s` is a proper-subset constraint, not mere typing.
         let mut m = Machine::new("M".into());
         m.variables = vec![nv("x")];
-        m.invariants = vec![lp(
-            "inv1",
-            cmp_pred(ComparisonOp::SubsetStrict, ident("x"), ident("s")),
-        )];
+        m.invariants = vec![lp("inv1", pred("x ⊂ s"))];
         m.initialisation = Some(init_event(&["x"], false));
 
         let diags = run(&proj(vec![pc("M.bum", Component::Machine(m))]));
@@ -2375,16 +2197,9 @@ mod tests {
         // axiom `x ∈ ℕ` has identical traces.
         let mut m = Machine::new("M".into());
         m.variables = vec![nv("x")];
-        m.invariants = vec![lp(
-            "inv1",
-            eq_pred(ident("x"), ExpressionKind::Integer(0).into()),
-        )];
+        m.invariants = vec![lp("inv1", pred("x = 0"))];
         m.initialisation = Some(InitialisationEvent {
-            actions: vec![la(ActionKind::BecomesIn {
-                variables: vec!["x".into()],
-                set: ExpressionKind::Naturals.into(),
-            }
-            .into())],
+            actions: vec![la(act("x :∈ ℕ"))],
             comment: None,
             extended: false,
             with: Vec::new(),
@@ -2403,10 +2218,7 @@ mod tests {
         // constant advice stays silent (the same gate as EB011).
         let mut c = abstract_machine("C", "v");
         c.refines = Some("Absent".into());
-        c.invariants = vec![lp(
-            "inv1",
-            eq_pred(ident("v"), ExpressionKind::Integer(0).into()),
-        )];
+        c.invariants = vec![lp("inv1", pred("v = 0"))];
 
         let diags = run(&proj(vec![pc("C.bum", Component::Machine(c))]));
         assert!(eb012_on(&diags, "C.v").is_empty(), "{diags:#?}");

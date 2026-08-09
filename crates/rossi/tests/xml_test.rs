@@ -1,7 +1,6 @@
 //! Integration tests for XML parsing (native Event-B format)
 
-use rossi::ast::expression::BinaryOp;
-use rossi::{ActionKind, Component, ExpressionKind, ParseError, parse_xml};
+use rossi::{AssignmentKind, Component, ExpressionKind, ParseError, parse_xml};
 
 #[test]
 fn test_parse_context_xml_from_file() {
@@ -214,13 +213,16 @@ fn test_parse_action_with_forward_composition_xml() {
         let actions = &m.events[0].actions;
         assert_eq!(actions.len(), 2);
         for labeled in actions {
-            let ActionKind::Assignment { assignments } = &labeled.action.kind else {
+            let Some(assignment) = labeled.action.assignment() else {
                 panic!("Expected Assignment, got {:?}", labeled.action);
             };
+            let AssignmentKind::BecomesEqualTo { values, .. } = assignment.kind() else {
+                panic!("Expected becomes-equal-to, got {assignment:?}");
+            };
             assert!(matches!(
-                &assignments[0].1.kind,
-                ExpressionKind::Binary {
-                    op: BinaryOp::Semicolon,
+                values[0].kind(),
+                ExpressionKind::Associative {
+                    op: rossi::formula::tag::AssocExprOp::FComp,
                     ..
                 }
             ));

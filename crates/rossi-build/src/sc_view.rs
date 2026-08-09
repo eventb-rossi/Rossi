@@ -20,10 +20,8 @@ use std::collections::BTreeMap;
 use quick_xml::Reader;
 use quick_xml::XmlVersion;
 use quick_xml::events::{BytesStart, Event as XmlEvent};
-use rossi::ast::expression::BinaryOp;
 use rossi::{
-    Action, ActionKind, Expression, ExpressionKind, Predicate, PredicateKind, parse_action_str,
-    parse_predicate_str,
+    ActionBody, Expression, ExpressionKind, Predicate, parse_action_str, parse_predicate_str,
 };
 
 use crate::error::{ProjectError, Result};
@@ -117,7 +115,7 @@ pub struct ActionRow {
     /// whitespace differences in the assignment text (e.g.
     /// `register ∪ {u}` vs `register∪{u}`) and to Rodin's post-SC
     /// insertion of `⦂ T` on empty-set RHS.
-    pub action: Action,
+    pub action: ActionBody,
 }
 
 impl ScView {
@@ -404,10 +402,10 @@ fn predicate_attr(e: &BytesStart) -> Result<Predicate> {
     Ok(strip_type_ascriptions_pred(ast))
 }
 
-/// Parse the `org.eventb.core.assignment` attribute into an [`Action`],
-/// stripping type ascriptions so Rodin-canonical and bare forms compare
-/// equal.
-fn action_attr(e: &BytesStart) -> Result<Action> {
+/// Parse the `org.eventb.core.assignment` attribute into an
+/// [`ActionBody`], stripping type ascriptions so Rodin-canonical and
+/// bare forms compare equal.
+fn action_attr(e: &BytesStart) -> Result<ActionBody> {
     let s = string_attr(e, b"assignment")?.unwrap_or_default();
     let s = s.trim();
     let ast = parse_action_str(s).map_err(|err| ProjectError::ReparseFormula {
@@ -435,250 +433,39 @@ fn normalize_source(s: Option<String>) -> Option<String> {
     Some(s)
 }
 
-/// Strip type ascriptions from every expression inside an [`Action`].
-/// Used so `register ≔ ∅ ⦂ ℙ(USERS)` compares equal to `register ≔ ∅`.
+/// Strip type ascriptions from every expression inside an
+/// [`ActionBody`]. Used so `register ≔ ∅ ⦂ ℙ(USERS)` compares equal to
+/// `register ≔ ∅`.
 #[must_use]
-pub fn strip_type_ascriptions_action(a: Action) -> Action {
-    match a.kind {
-        ActionKind::Skip => ActionKind::Skip.into(),
-        ActionKind::Assignment { assignments } => ActionKind::Assignment {
-            assignments: assignments
-                .into_iter()
-                .map(|(variable, expression)| (variable, strip_expr(expression)))
-                .collect(),
+pub fn strip_type_ascriptions_action(body: ActionBody) -> ActionBody {
+    match body {
+        ActionBody::Skip => ActionBody::Skip,
+        ActionBody::Assignment(assignment) => {
+            ActionBody::Assignment(assignment.rewrite(&mut StripAscriptions))
         }
-        .into(),
-        ActionKind::BecomesIn { variables, set } => ActionKind::BecomesIn {
-            variables,
-            set: strip_expr(set),
-        }
-        .into(),
-        ActionKind::BecomesSuchThat {
-            variables,
-            predicate,
-        } => ActionKind::BecomesSuchThat {
-            variables,
-            predicate: strip_type_ascriptions_pred(predicate),
-        }
-        .into(),
     }
 }
 
 /// Rodin emits type-inference artifacts into predicate strings:
-/// `∅ ⦂ ℙ(T)` and `∀x⦂T · P`. For semantic comparison we drop these,
-/// since they carry no logical content.
+/// `∅ ⦂ ℙ(T)` and `∀x⦂T · P`. For semantic comparison the ascription
+/// nodes are dropped. Declaration annotations and comprehension print
+/// forms need no treatment: the model's structural equality ignores
+/// both, so `{x⦂T·P∣x}` (Rodin's round-trip of the basic form) already
+/// compares equal to `{x∣P}`.
 #[must_use]
 pub fn strip_type_ascriptions_pred(p: Predicate) -> Predicate {
-    use PredicateKind as P;
-    match p.kind {
-        kind @ (P::True | P::False) => kind.into(),
-        P::Comparison { op, left, right } => P::Comparison {
-            op,
-            left: strip_expr(left),
-            right: strip_expr(right),
-        }
-        .into(),
-        P::Not(inner) => P::Not(Box::new(strip_type_ascriptions_pred(*inner))).into(),
-        P::Logical { op, left, right } => P::Logical {
-            op,
-            left: Box::new(strip_type_ascriptions_pred(*left)),
-            right: Box::new(strip_type_ascriptions_pred(*right)),
-        }
-        .into(),
-        P::Quantified {
-            quantifier,
-            identifiers,
-            predicate,
-        } => P::Quantified {
-            quantifier,
-            identifiers: identifiers
-                .into_iter()
-                .map(|mut ti| {
-                    ti.type_expr = None;
-                    ti
-                })
-                .collect(),
-            predicate: Box::new(strip_type_ascriptions_pred(*predicate)),
-        }
-        .into(),
-        P::Application {
-            function,
-            arguments,
-        } => P::Application {
-            function,
-            arguments: arguments.into_iter().map(strip_expr).collect(),
-        }
-        .into(),
-        P::BuiltinApplication {
-            predicate,
-            arguments,
-        } => P::BuiltinApplication {
-            predicate,
-            arguments: arguments.into_iter().map(strip_expr).collect(),
-        }
-        .into(),
-    }
+    p.rewrite(&mut StripAscriptions)
 }
 
-/// True when `expr` is a left-associative maplet of the binder identifiers
-/// in `ids`, in declared order. Arity-1 collapses to a single
-/// `Identifier(ids[0])`; arity-n collapses to `((ids[0] ↦ ids[1]) ↦ … ↦
-/// ids[n-1])`. Used to recognise Rodin's `{x⦂T·P|x}` round-trip of the
-/// basic-form `{x|P}`.
-fn projection_matches_binders(expr: &Expression, ids: &[rossi::ast::TypedIdentifier]) -> bool {
-    fn walk(expr: &Expression, names: &[String]) -> bool {
-        match (&expr.kind, names) {
-            (ExpressionKind::Identifier(n), [single]) => n == single,
-            (
-                ExpressionKind::Binary {
-                    op: rossi::ast::expression::BinaryOp::Maplet,
-                    left,
-                    right,
-                },
-                rest,
-            ) if rest.len() >= 2 => {
-                let (last, init) = rest.split_last().expect("len ≥ 2");
-                matches!(&right.as_ref().kind, ExpressionKind::Identifier(n) if n == last)
-                    && walk(left, init)
-            }
-            _ => false,
-        }
-    }
-    if ids.is_empty() {
-        return false;
-    }
-    let names: Vec<String> = ids.iter().map(|ti| ti.name.clone()).collect();
-    walk(expr, &names)
-}
+/// Unwraps `E ⦂ T` to `E` everywhere, bottom-up.
+struct StripAscriptions;
 
-fn strip_expr(e: Expression) -> Expression {
-    use ExpressionKind as E;
-    match e.kind {
-        E::Binary {
-            op: BinaryOp::OfType,
-            left,
-            right: _,
-        } => strip_expr(*left),
-        E::Binary { op, left, right } => E::Binary {
-            op,
-            left: Box::new(strip_expr(*left)),
-            right: Box::new(strip_expr(*right)),
+impl rossi::formula::FormulaRewriter for StripAscriptions {
+    fn rewrite_expression(&mut self, expr: &Expression) -> Expression {
+        match expr.kind() {
+            ExpressionKind::Ascription { expr: inner, .. } => inner.clone(),
+            _ => expr.clone(),
         }
-        .into(),
-        E::Unary { op, operand } => E::Unary {
-            op,
-            operand: Box::new(strip_expr(*operand)),
-        }
-        .into(),
-        E::FunctionApplication { function, argument } => {
-            // Rodin's static checker emits `prj1(s)` etc. as the generic-atomic
-            // form `(prj1 ⦂ T)(s)`: a type-ascribed atom applied as a function.
-            // After `OfType` stripping the atom is a bare `AtomicBuiltin(Prj1)`
-            // and the shape is `FunctionApplication` — exactly what our parser
-            // produces for the same surface text, so no special collapse is
-            // needed.
-            E::FunctionApplication {
-                function: Box::new(strip_expr(*function)),
-                argument: Box::new(strip_expr(*argument)),
-            }
-            .into()
-        }
-        E::BuiltinApplication { function, argument } => E::BuiltinApplication {
-            function,
-            argument: Box::new(strip_expr(*argument)),
-        }
-        .into(),
-        E::SetEnumeration(items) => {
-            E::SetEnumeration(items.into_iter().map(strip_expr).collect()).into()
-        }
-        E::SetComprehension {
-            identifiers,
-            predicate,
-            expression,
-        } => {
-            let stripped_ids: Vec<_> = identifiers
-                .into_iter()
-                .map(|mut ti| {
-                    ti.type_expr = None;
-                    ti
-                })
-                .collect();
-            // Rodin emits the basic form `{x | P}` as the extended form
-            // `{x⦂T · P | x}`. When the projection equals the binders
-            // (in left-associative maplet order), collapse it back so
-            // the two forms compare equal.
-            let collapsed = expression.and_then(|e| {
-                let stripped = strip_expr(*e);
-                if projection_matches_binders(&stripped, &stripped_ids) {
-                    None
-                } else {
-                    Some(Box::new(stripped))
-                }
-            });
-            E::SetComprehension {
-                identifiers: stripped_ids,
-                predicate: Box::new(strip_type_ascriptions_pred(*predicate)),
-                expression: collapsed,
-            }
-            .into()
-        }
-        E::SetBuilder {
-            member_expression,
-            predicate,
-        } => E::SetBuilder {
-            member_expression: Box::new(strip_expr(*member_expression)),
-            predicate: Box::new(strip_type_ascriptions_pred(*predicate)),
-        }
-        .into(),
-        E::Lambda {
-            pattern,
-            predicate,
-            expression,
-        } => E::Lambda {
-            pattern,
-            predicate: Box::new(strip_type_ascriptions_pred(*predicate)),
-            expression: Box::new(strip_expr(*expression)),
-        }
-        .into(),
-        E::QuantifiedUnion {
-            identifiers,
-            predicate,
-            expression,
-        } => E::QuantifiedUnion {
-            identifiers: identifiers
-                .into_iter()
-                .map(|mut ti| {
-                    ti.type_expr = None;
-                    ti
-                })
-                .collect(),
-            predicate: Box::new(strip_type_ascriptions_pred(*predicate)),
-            expression: Box::new(strip_expr(*expression)),
-        }
-        .into(),
-        E::QuantifiedInter {
-            identifiers,
-            predicate,
-            expression,
-        } => E::QuantifiedInter {
-            identifiers: identifiers
-                .into_iter()
-                .map(|mut ti| {
-                    ti.type_expr = None;
-                    ti
-                })
-                .collect(),
-            predicate: Box::new(strip_type_ascriptions_pred(*predicate)),
-            expression: Box::new(strip_expr(*expression)),
-        }
-        .into(),
-        E::RelationalImage { relation, set } => E::RelationalImage {
-            relation: Box::new(strip_expr(*relation)),
-            set: Box::new(strip_expr(*set)),
-        }
-        .into(),
-        E::Bool(p) => E::Bool(Box::new(strip_type_ascriptions_pred(*p))).into(),
-        other => other.into(),
     }
 }
 

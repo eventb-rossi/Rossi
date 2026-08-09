@@ -47,10 +47,30 @@ pub fn lower_action(action: &legacy::Action) -> Option<Assignment> {
     Lowerer::new().action(action)
 }
 
+thread_local! {
+    static SPAN_BASE: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+}
+
+/// Runs `f` with the spans produced by the lowering shifted by `delta`
+/// beyond the enclosing scope's shift. Used by error recovery, which
+/// parses clause segments out of their document position: the legacy
+/// tree keeps segment-relative spans and the lowering lifts them to
+/// document coordinates.
+pub fn with_span_base<T>(delta: usize, f: impl FnOnce() -> T) -> T {
+    let previous = SPAN_BASE.with(|base| base.get());
+    SPAN_BASE.with(|base| base.set(previous + delta));
+    let result = f();
+    SPAN_BASE.with(|base| base.set(previous));
+    result
+}
+
 struct Lowerer {
     ff: FormulaFactory,
     /// Names in scope, innermost last.
     binders: Vec<String>,
+    /// Added to every span copied off the legacy tree (see
+    /// [`with_span_base`]); zero outside error recovery.
+    base: usize,
 }
 
 impl Lowerer {
@@ -58,7 +78,16 @@ impl Lowerer {
         Lowerer {
             ff: FormulaFactory::default_factory(),
             binders: Vec::new(),
+            base: SPAN_BASE.with(|base| base.get()),
         }
+    }
+
+    /// A legacy span lifted into the enclosing document's coordinates.
+    fn at(&self, span: Option<crate::ast::Span>) -> Option<crate::ast::Span> {
+        span.map(|s| crate::ast::Span {
+            start: s.start + self.base,
+            end: s.end + self.base,
+        })
     }
 
     /// A name occurrence: bound if a binder is in scope, free otherwise.
@@ -73,7 +102,7 @@ impl Lowerer {
         // Annotations are scoped to the enclosing context.
         let annotation = ident.type_expr.as_deref().map(|t| self.expr(t));
         self.ff
-            .bound_ident_decl(&ident.name, ident.span, annotation, None)
+            .bound_ident_decl(&ident.name, self.at(ident.span), annotation, None)
     }
 
     fn decls(&mut self, idents: &[TypedIdentifier]) -> Vec<BoundIdentDecl> {
@@ -87,7 +116,7 @@ impl Lowerer {
     }
 
     fn expr(&mut self, e: &legacy::Expression) -> Expression {
-        let span = e.span;
+        let span = self.at(e.span);
         match &e.kind {
             ExpressionKind::Integer(n) => self.ff.integer_literal(*n, span),
             ExpressionKind::Identifier(name) => self.identifier(name, span),
@@ -309,7 +338,7 @@ impl Lowerer {
     /// A lambda pattern as an expression over the bound declarations.
     fn pattern_expr(&mut self, pattern: &IdentPattern) -> Expression {
         match pattern {
-            IdentPattern::Identifier(ident) => self.identifier(&ident.name, ident.span),
+            IdentPattern::Identifier(ident) => self.identifier(&ident.name, self.at(ident.span)),
             IdentPattern::Maplet(left, right) => {
                 let left = self.pattern_expr(left);
                 let right = self.pattern_expr(right);
@@ -320,7 +349,7 @@ impl Lowerer {
     }
 
     fn pred(&mut self, p: &legacy::Predicate) -> Predicate {
-        let span = p.span;
+        let span = self.at(p.span);
         match &p.kind {
             PredicateKind::True => self.ff.literal_predicate(LiteralPredOp::BTrue, span),
             PredicateKind::False => self.ff.literal_predicate(LiteralPredOp::BFalse, span),
@@ -394,7 +423,7 @@ impl Lowerer {
             } => {
                 let args = arguments.iter().map(|a| self.expr(a)).collect();
                 self.ff
-                    .predicate_application(&function.name, function.span, args, span)
+                    .predicate_application(&function.name, self.at(function.span), args, span)
             }
             PredicateKind::BuiltinApplication {
                 predicate,
@@ -429,13 +458,16 @@ impl Lowerer {
     }
 
     fn action(&mut self, a: &legacy::Action) -> Option<Assignment> {
-        let span = a.span;
+        let span = self.at(a.span);
         match &a.kind {
             ActionKind::Skip => None,
             ActionKind::Assignment { assignments } => {
                 let idents = assignments
                     .iter()
-                    .map(|(ident, _)| self.ff.free_identifier(ident.as_str(), ident.span, None))
+                    .map(|(ident, _)| {
+                        self.ff
+                            .free_identifier(ident.as_str(), self.at(ident.span), None)
+                    })
                     .collect();
                 let values = assignments
                     .iter()
@@ -446,7 +478,10 @@ impl Lowerer {
             ActionKind::BecomesIn { variables, set } => {
                 let idents = variables
                     .iter()
-                    .map(|ident| self.ff.free_identifier(ident.as_str(), ident.span, None))
+                    .map(|ident| {
+                        self.ff
+                            .free_identifier(ident.as_str(), self.at(ident.span), None)
+                    })
                     .collect();
                 let set = self.expr(set);
                 Some(self.ff.becomes_member_of(idents, set, span))
@@ -457,7 +492,10 @@ impl Lowerer {
             } => {
                 let idents: Vec<Expression> = variables
                     .iter()
-                    .map(|ident| self.ff.free_identifier(ident.as_str(), ident.span, None))
+                    .map(|ident| {
+                        self.ff
+                            .free_identifier(ident.as_str(), self.at(ident.span), None)
+                    })
                     .collect();
                 let primed: Vec<BoundIdentDecl> = variables
                     .iter()
@@ -548,6 +586,15 @@ fn collect_identifiers(e: &legacy::Expression, out: &mut Vec<String>) {
         }
     }
     let _ = legacy::walk::walk_expression(e, &mut Vec::new(), &mut Collector { out });
+}
+
+/// Lower an action onto the surface [`ActionBody`]: `skip` stays the
+/// explicit no-op, everything else becomes a modelled assignment.
+pub fn lower_action_body(action: &legacy::Action) -> crate::ast::ActionBody {
+    match lower_action(action) {
+        Some(assignment) => crate::ast::ActionBody::Assignment(assignment),
+        None => crate::ast::ActionBody::Skip,
+    }
 }
 
 /// The pattern's leaves, left to right.

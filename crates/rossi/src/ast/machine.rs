@@ -4,13 +4,12 @@
 //! variables, invariants, and events.
 
 use super::{
-    ClauseRegion, Event, Expression, FileMetadata, InitialisationEvent, LabeledPredicate,
-    NamedElement, Span,
+    ClauseRegion, Event, FileMetadata, InitialisationEvent, LabeledPredicate, NamedElement, Span,
 };
+use crate::formula::Expression;
 
 /// An Event-B Machine component
 #[derive(Debug, Clone, PartialEq, Eq)]
-#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct Machine {
     /// Name of the machine
     pub name: String,
@@ -45,7 +44,6 @@ pub struct Machine {
 
     /// Source regions of the machine's clause sections (textual parse only),
     /// used by structural LSP features such as folding.
-    #[cfg_attr(feature = "serde", serde(default))]
     pub clauses: Vec<ClauseRegion>,
 
     /// Comment from Rodin XML

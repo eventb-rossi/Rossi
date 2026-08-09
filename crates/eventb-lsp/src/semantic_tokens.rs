@@ -4,11 +4,11 @@
 //! Semantic tokens provide more accurate syntax highlighting by analyzing the AST
 //! rather than relying solely on TextMate grammars.
 
+use crate::formula_walk::IdentRole;
 use crate::lsp_types::{
     SemanticToken, SemanticTokenModifier, SemanticTokenType, SemanticTokens, SemanticTokensLegend,
     SemanticTokensParams, SemanticTokensResult,
 };
-use rossi::ast::walk::IdentRole;
 use rossi::ast::{
     Component, Context, Event, InitialisationEvent, LabeledAction, LabeledPredicate, Machine, Span,
 };

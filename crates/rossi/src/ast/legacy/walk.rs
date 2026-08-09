@@ -451,7 +451,6 @@ fn union_span(a: Option<Span>, b: Option<Span>) -> Option<Span> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{Component, parse};
 
     /// Records the `(binder names, scope span)` of every binder body the walker
     /// enters, so a test can check the reported scope.
@@ -471,12 +470,10 @@ mod tests {
         }
     }
 
-    fn first_invariant_scope(src: &str) -> (Vec<String>, Span) {
-        let Component::Machine(machine) = parse(src).expect("parses") else {
-            panic!("expected a machine");
-        };
+    fn first_predicate_scope(src: &str) -> (Vec<String>, Span) {
+        let predicate = crate::parser::parse_predicate_str_legacy(src).expect("parses");
         let mut rec = ScopeRecorder { scopes: Vec::new() };
-        let _ = walk_predicate(&machine.invariants[0].predicate, &mut Vec::new(), &mut rec);
+        let _ = walk_predicate(&predicate, &mut Vec::new(), &mut rec);
         assert_eq!(rec.scopes.len(), 1, "exactly one binder body was entered");
         let (names, span) = rec.scopes.into_iter().next().unwrap();
         (names, span.expect("the binder body carries a span"))
@@ -486,8 +483,8 @@ mod tests {
     fn enter_scope_reports_a_quantifier_body() {
         // `∀ x · x > 0`: the body scope is `x > 0`, covering the bound use but
         // not the `∀ x` declaration (declarations live in the enclosing scope).
-        let src = "MACHINE m\nINVARIANTS\n@i1 ∀ x · x > 0\nEND\n";
-        let (names, span) = first_invariant_scope(src);
+        let src = "∀ x · x > 0";
+        let (names, span) = first_predicate_scope(src);
 
         assert_eq!(names, vec!["x".to_string()]);
         let bound_use = src.rfind('x').unwrap();
@@ -503,8 +500,8 @@ mod tests {
     fn enter_scope_spans_a_comprehension_predicate_and_expression() {
         // `{ x · x > 0 ∣ x + 1 }`: the body spans both the predicate `x > 0` and
         // the expression `x + 1`, so the union covers the trailing use too.
-        let src = "MACHINE m\nINVARIANTS\n@i1 s = { x · x > 0 ∣ x + 1 }\nEND\n";
-        let (names, span) = first_invariant_scope(src);
+        let src = "s = { x · x > 0 ∣ x + 1 }";
+        let (names, span) = first_predicate_scope(src);
 
         assert_eq!(names, vec!["x".to_string()]);
         let predicate_use = src.find("x > 0").unwrap();
@@ -533,7 +530,7 @@ mod tests {
     }
 
     fn recorded_scopes(src: &str) -> Vec<Vec<String>> {
-        let p = crate::parse_predicate_str(src).expect(src);
+        let p = crate::parser::parse_predicate_str_legacy(src).expect(src);
         let mut rec = ScopeRecorder { scopes: Vec::new() };
         let _ = walk_predicate(&p, &mut Vec::new(), &mut rec);
         rec.scopes.into_iter().map(|(names, _)| names).collect()

@@ -380,10 +380,11 @@ fn event_diags(dups: EventDuplicates) -> Vec<Diagnostic> {
 mod tests {
     use super::*;
     use crate::Severity;
-    use rossi::ast::predicate::ComparisonOp;
+    use rossi::formula::FormulaFactory;
+    use rossi::formula::tag::RelationalOp;
     use rossi::{
-        Action, Component, Context, Event, Expression, ExpressionKind, InitialisationEvent,
-        Machine, NamedElement, Predicate, PredicateKind,
+        Component, Context, Event, Expression, InitialisationEvent, Machine, NamedElement,
+        Predicate,
     };
 
     fn lp(label: &str, predicate: Predicate) -> LabeledPredicate {
@@ -397,16 +398,11 @@ mod tests {
     }
 
     fn ident(n: &str) -> Expression {
-        ExpressionKind::Identifier(n.into()).into()
+        FormulaFactory::default_factory().free_identifier(n, None, None)
     }
 
     fn eq_pred(lhs: Expression, rhs: Expression) -> Predicate {
-        PredicateKind::Comparison {
-            op: ComparisonOp::Equal,
-            left: lhs,
-            right: rhs,
-        }
-        .into()
+        FormulaFactory::default_factory().relational_predicate(RelationalOp::Equal, lhs, rhs, None)
     }
 
     fn nv(n: &str) -> NamedElement {
@@ -420,7 +416,7 @@ mod tests {
     fn labeled_action(label: &str) -> LabeledAction {
         LabeledAction {
             label: Some(label.into()),
-            action: Action::assignment("x", ExpressionKind::Integer(0).into()),
+            action: rossi::parse_action_str("x ≔ 0").unwrap(),
             span: None,
             comment: None,
         }
@@ -466,11 +462,17 @@ mod tests {
         m.invariants = vec![
             lp(
                 "inv1",
-                eq_pred(ident("x"), ExpressionKind::Integer(0).into()),
+                eq_pred(
+                    ident("x"),
+                    FormulaFactory::default_factory().integer_literal(0, None),
+                ),
             ),
             lp(
                 "inv1",
-                eq_pred(ident("y"), ExpressionKind::Integer(0).into()),
+                eq_pred(
+                    ident("y"),
+                    FormulaFactory::default_factory().integer_literal(0, None),
+                ),
             ),
         ];
         let diags = component_duplicate_diagnostics(&Component::Machine(m));
@@ -497,7 +499,7 @@ mod tests {
         // Event-B shares one label namespace across guards and actions, so a
         // guard `lbl` and an action `lbl` in the same event collide.
         let mut e = Event::new("evt".into());
-        e.guards = vec![lp("lbl", PredicateKind::True.into())];
+        e.guards = vec![lp("lbl", rossi::parse_predicate_str("⊤").unwrap())];
         e.actions = vec![labeled_action("lbl")];
         let mut m = Machine::new("M".into());
         m.events = vec![e];
@@ -550,11 +552,17 @@ mod tests {
         c.axioms = vec![
             lp(
                 "axm1",
-                eq_pred(ident("k"), ExpressionKind::Integer(0).into()),
+                eq_pred(
+                    ident("k"),
+                    FormulaFactory::default_factory().integer_literal(0, None),
+                ),
             ),
             lp(
                 "axm1",
-                eq_pred(ident("k"), ExpressionKind::Integer(1).into()),
+                eq_pred(
+                    ident("k"),
+                    FormulaFactory::default_factory().integer_literal(1, None),
+                ),
             ),
         ];
         let diags = component_duplicate_diagnostics(&Component::Context(c));
@@ -569,8 +577,8 @@ mod tests {
         // `with` (abstract var) and `witnesses` (abstract param) share one
         // witness-label namespace in Event-B; the same label in each collides.
         let mut e = Event::new("evt".into());
-        e.with = vec![lp("w", PredicateKind::True.into())];
-        e.witnesses = vec![lp("w", PredicateKind::True.into())];
+        e.with = vec![lp("w", rossi::parse_predicate_str("⊤").unwrap())];
+        e.witnesses = vec![lp("w", rossi::parse_predicate_str("⊤").unwrap())];
         let mut m = Machine::new("M".into());
         m.events = vec![e];
         let diags = component_duplicate_diagnostics(&Component::Machine(m));
@@ -615,7 +623,10 @@ mod tests {
         m.variables = vec![nv("x")];
         m.invariants = vec![lp(
             "x",
-            eq_pred(ident("x"), ExpressionKind::Integer(0).into()),
+            eq_pred(
+                ident("x"),
+                FormulaFactory::default_factory().integer_literal(0, None),
+            ),
         )];
         let diags = component_duplicate_diagnostics(&Component::Machine(m));
         assert!(
@@ -633,7 +644,10 @@ mod tests {
         c.constants = vec![nv("S")];
         c.axioms = vec![lp(
             "S",
-            eq_pred(ident("S"), ExpressionKind::Integer(0).into()),
+            eq_pred(
+                ident("S"),
+                FormulaFactory::default_factory().integer_literal(0, None),
+            ),
         )];
         let diags = component_duplicate_diagnostics(&Component::Context(c));
         assert!(
@@ -650,7 +664,7 @@ mod tests {
         let blank = || LabeledPredicate {
             label: None,
             is_theorem: false,
-            predicate: PredicateKind::True.into(),
+            predicate: rossi::parse_predicate_str("⊤").unwrap(),
             span: None,
             comment: None,
         };
@@ -672,7 +686,7 @@ mod tests {
         let ws = || LabeledPredicate {
             label: Some("   ".into()),
             is_theorem: false,
-            predicate: PredicateKind::True.into(),
+            predicate: rossi::parse_predicate_str("⊤").unwrap(),
             span: None,
             comment: None,
         };
@@ -692,12 +706,12 @@ mod tests {
         let mut m = Machine::new("M".into());
         m.variables = vec![nv("x"), nv("y")];
         m.invariants = vec![
-            lp("inv1", PredicateKind::True.into()),
-            lp("inv2", PredicateKind::True.into()),
+            lp("inv1", rossi::parse_predicate_str("⊤").unwrap()),
+            lp("inv2", rossi::parse_predicate_str("⊤").unwrap()),
         ];
         let mut e = Event::new("evt".into());
         e.parameters = vec![nv("p"), nv("q")];
-        e.guards = vec![lp("grd1", PredicateKind::True.into())];
+        e.guards = vec![lp("grd1", rossi::parse_predicate_str("⊤").unwrap())];
         e.actions = vec![labeled_action("act1")];
         m.events = vec![e];
         let diags = component_duplicate_diagnostics(&Component::Machine(m));

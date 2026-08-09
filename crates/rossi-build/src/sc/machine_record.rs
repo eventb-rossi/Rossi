@@ -24,7 +24,7 @@
 use std::collections::HashMap;
 use std::rc::Rc;
 
-use rossi::{Action, EventStatus, Expression, Predicate};
+use rossi::{ActionBody, EventStatus, Expression, Predicate};
 
 use crate::handles::HandleUri;
 use crate::normalize::{
@@ -244,7 +244,7 @@ pub struct ActionDecl {
     /// find the LHS variables an inherited INITIALISATION action
     /// assigns when deciding extended-event scope, and the render-time
     /// fallback when `typed` is absent.
-    pub action: Action,
+    pub action: ActionBody,
     /// The fully typed formula-model form; `None` for `skip`, which
     /// has no assignment to rebuild.
     pub typed: Option<rossi::formula::Assignment>,
@@ -599,8 +599,8 @@ mod tests {
         r.invariants.push(InvariantDecl {
             label: "inv1".into(),
             source_index: 0,
-            typed: rossi::formula::lower::lower_predicate(&rossi::PredicateKind::True.into()),
-            predicate: rossi::PredicateKind::True.into(),
+            typed: rossi::parse_predicate_str("⊤").unwrap(),
+            predicate: rossi::parse_predicate_str("⊤").unwrap(),
             is_theorem: false,
             source: mk_uri().child("org.eventb.core.invariant", "inv1"),
         });
