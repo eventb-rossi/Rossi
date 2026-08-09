@@ -1,22 +1,33 @@
-//! Property-based roundtrip tests for Event-B parser.
+//! Property-based roundtrip tests for the Event-B parser and printer.
 //!
-//! Core invariant: for any generated AST node, pretty-printing and re-parsing
-//! should produce the same AST (modulo spans). This catches edge cases in
-//! precedence, parenthesization, and operator rendering.
+//! Core invariant: for any generated formula-model tree, pretty-printing and
+//! re-parsing produce an equal tree (structural equality — spans are
+//! positional metadata and declaration names compare alpha-structurally).
+//! This catches edge cases in precedence, parenthesization, operator
+//! rendering, and binder-name resolution.
+//!
+//! Generation is canonical by construction: same-operator associative
+//! children are spliced flat (the parser never produces a nested
+//! same-operator chain), set extensions are non-empty, and comprehension
+//! values take the shapes their print forms require.
 
 mod common;
 
 use proptest::prelude::*;
-use proptest::strategy::BoxedStrategy;
-use rossi::ast::TypedIdentifier;
-use rossi::ast::expression::*;
-use rossi::ast::predicate::*;
-use rossi::ast::{Action, ActionKind, Expression, ExpressionKind, Predicate, PredicateKind};
-use rossi::formula::lower::{lower_action_body, lower_expression, lower_predicate};
-use rossi::{
-    Component, Context, Event, EventStatus, InitialisationEvent, LabeledAction, LabeledPredicate,
-    Machine, NamedElement, PrettyPrinter, SetDeclaration, parse,
+use rossi::formula::tag::{
+    AssocExprOp, AssocPredOp, AtomicOp, BinaryExprOp, BinaryPredOp, LiteralPredOp, QuantExprOp,
+    QuantPredOp, RelationalOp, UnaryExprOp,
 };
+use rossi::formula::{BoundIdentDecl, FormulaFactory};
+use rossi::{
+    ActionBody, Assignment, Component, Context, Event, EventStatus, Expression, ExpressionKind,
+    Form, InitialisationEvent, LabeledAction, LabeledPredicate, Machine, NamedElement, Predicate,
+    PredicateKind, PrettyPrinter, SetDeclaration, parse,
+};
+
+fn ff() -> FormulaFactory {
+    FormulaFactory::default_factory()
+}
 
 // =============================================================================
 // Identifier strategies — fixed pools of safe names (no keyword collisions)
@@ -43,526 +54,446 @@ fn arb_identifier() -> impl Strategy<Value = String> {
     ]
 }
 
-/// Disjoint identifier pool for bound variables in quantified constructs.
-/// Includes both untyped (`p1`) and typed (`p1⦂ℤ`) identifiers.
-fn arb_quantifier_identifier() -> impl Strategy<Value = TypedIdentifier> {
+/// Disjoint pool for bound declarations in quantified constructs, with both
+/// bare (`p1`) and annotated (`p1⦂ℤ`) declarations. Bodies are drawn from
+/// the free pool, which never mentions these names, so binders are unused
+/// and scoping is trivially correct; the with-replacement vectors below can
+/// repeat a name, giving the printer's hint freshening real coverage.
+fn arb_bound_decl() -> impl Strategy<Value = BoundIdentDecl> {
+    fn bare(name: &str) -> BoundIdentDecl {
+        ff().bound_ident_decl(name, None, None, None)
+    }
+    fn annotated(name: &str, atom: AtomicOp) -> BoundIdentDecl {
+        let annotation = ff().atomic_expression(atom, None, None);
+        ff().bound_ident_decl(name, None, Some(annotation), None)
+    }
     prop_oneof![
-        Just(TypedIdentifier::untyped("p1".into())),
-        Just(TypedIdentifier::untyped("p2".into())),
-        Just(TypedIdentifier::untyped("p3".into())),
-        Just(TypedIdentifier::untyped("q1".into())),
-        Just(TypedIdentifier::untyped("q2".into())),
-        Just(TypedIdentifier::untyped("q3".into())),
-        Just(TypedIdentifier::typed(
-            "p1".into(),
-            ExpressionKind::Integers.into()
-        )),
-        Just(TypedIdentifier::typed(
-            "p2".into(),
-            ExpressionKind::Naturals.into()
-        )),
-        Just(TypedIdentifier::typed(
-            "q1".into(),
-            ExpressionKind::BoolType.into()
-        )),
+        Just(bare("p1")),
+        Just(bare("p2")),
+        Just(bare("p3")),
+        Just(bare("q1")),
+        Just(bare("q2")),
+        Just(bare("q3")),
+        Just(annotated("p1", AtomicOp::Integer)),
+        Just(annotated("p2", AtomicOp::Natural)),
+        Just(annotated("q1", AtomicOp::Bool)),
     ]
 }
 
 // =============================================================================
-// IdentPattern strategy (for lambda expressions)
+// Operator strategies
 // =============================================================================
 
-fn arb_ident_pattern() -> impl Strategy<Value = IdentPattern> {
-    arb_quantifier_identifier()
-        .prop_map(IdentPattern::Identifier)
-        .prop_recursive(2, 8, 2, |inner: BoxedStrategy<IdentPattern>| {
-            (inner.clone(), inner)
-                .prop_map(|(left, right)| IdentPattern::Maplet(Box::new(left), Box::new(right)))
-        })
+/// True binary operators. The associative family generates n-ary nodes
+/// instead, `⦂` generates an ascription node, and FunImage/RelImage have
+/// dedicated application branches.
+fn arb_binary_op() -> impl Strategy<Value = BinaryExprOp> {
+    prop_oneof![
+        Just(BinaryExprOp::Mapsto),
+        Just(BinaryExprOp::Rel),
+        Just(BinaryExprOp::TRel),
+        Just(BinaryExprOp::SRel),
+        Just(BinaryExprOp::STRel),
+        Just(BinaryExprOp::PFun),
+        Just(BinaryExprOp::TFun),
+        Just(BinaryExprOp::PInj),
+        Just(BinaryExprOp::TInj),
+        Just(BinaryExprOp::PSur),
+        Just(BinaryExprOp::TSur),
+        Just(BinaryExprOp::TBij),
+        Just(BinaryExprOp::SetMinus),
+        Just(BinaryExprOp::CProd),
+        Just(BinaryExprOp::DProd),
+        Just(BinaryExprOp::PProd),
+        Just(BinaryExprOp::DomRes),
+        Just(BinaryExprOp::DomSub),
+        Just(BinaryExprOp::RanRes),
+        Just(BinaryExprOp::RanSub),
+        Just(BinaryExprOp::UpTo),
+        Just(BinaryExprOp::Minus),
+        Just(BinaryExprOp::Div),
+        Just(BinaryExprOp::Mod),
+        Just(BinaryExprOp::Expn),
+    ]
+}
+
+fn arb_assoc_op() -> impl Strategy<Value = AssocExprOp> {
+    prop_oneof![
+        Just(AssocExprOp::Plus),
+        Just(AssocExprOp::Mul),
+        Just(AssocExprOp::BUnion),
+        Just(AssocExprOp::BInter),
+        Just(AssocExprOp::Ovr),
+        Just(AssocExprOp::FComp),
+        Just(AssocExprOp::BComp),
+    ]
+}
+
+fn arb_unary_op() -> impl Strategy<Value = UnaryExprOp> {
+    prop_oneof![
+        Just(UnaryExprOp::UnMinus),
+        Just(UnaryExprOp::Pow),
+        Just(UnaryExprOp::Pow1),
+        Just(UnaryExprOp::KDom),
+        Just(UnaryExprOp::KRan),
+        Just(UnaryExprOp::Converse),
+        // The closed builtins are unary operators in the model.
+        Just(UnaryExprOp::KCard),
+        Just(UnaryExprOp::KMin),
+        Just(UnaryExprOp::KMax),
+        Just(UnaryExprOp::KUnion),
+        Just(UnaryExprOp::KInter),
+    ]
+}
+
+fn arb_relational_op() -> impl Strategy<Value = RelationalOp> {
+    prop_oneof![
+        Just(RelationalOp::Equal),
+        Just(RelationalOp::NotEqual),
+        Just(RelationalOp::Lt),
+        Just(RelationalOp::Le),
+        Just(RelationalOp::Gt),
+        Just(RelationalOp::Ge),
+        Just(RelationalOp::In),
+        Just(RelationalOp::NotIn),
+        Just(RelationalOp::SubsetEq),
+        Just(RelationalOp::Subset),
+    ]
+}
+
+/// Atomic expressions. `TRUE`/`FALSE` are excluded: their printed form is
+/// ambiguous with the predicate literals at parse boundaries (e.g. as a
+/// comparison operand).
+fn arb_atomic() -> impl Strategy<Value = AtomicOp> {
+    prop_oneof![
+        Just(AtomicOp::EmptySet),
+        Just(AtomicOp::Natural),
+        Just(AtomicOp::Natural1),
+        Just(AtomicOp::Integer),
+        Just(AtomicOp::Bool),
+        Just(AtomicOp::KIdGen),
+        Just(AtomicOp::KPrj1Gen),
+        Just(AtomicOp::KPrj2Gen),
+        Just(AtomicOp::KPred),
+        Just(AtomicOp::KSucc),
+    ]
 }
 
 // =============================================================================
-// Leaf enum strategies
+// Canonical constructors — splice same-operator associative children so a
+// generated tree always has the shape the parser itself produces.
 // =============================================================================
 
-fn arb_binary_op() -> impl Strategy<Value = BinaryOp> {
-    prop_oneof![
-        Just(BinaryOp::Add),
-        Just(BinaryOp::Subtract),
-        Just(BinaryOp::Multiply),
-        Just(BinaryOp::Divide),
-        Just(BinaryOp::Modulo),
-        Just(BinaryOp::Exponent),
-        Just(BinaryOp::Range),
-        Just(BinaryOp::Union),
-        Just(BinaryOp::Intersection),
-        Just(BinaryOp::Difference),
-        Just(BinaryOp::CartesianProduct),
-        Just(BinaryOp::Relation),
-        Just(BinaryOp::TotalRelation),
-        Just(BinaryOp::SurjectiveRelation),
-        Just(BinaryOp::TotalSurjectiveRelation),
-        Just(BinaryOp::TotalFunction),
-        Just(BinaryOp::PartialFunction),
-        Just(BinaryOp::TotalInjection),
-        Just(BinaryOp::PartialInjection),
-        Just(BinaryOp::TotalSurjection),
-        Just(BinaryOp::PartialSurjection),
-        Just(BinaryOp::Bijection),
-        Just(BinaryOp::Composition),
-        Just(BinaryOp::Semicolon),
-        Just(BinaryOp::DomainRestriction),
-        Just(BinaryOp::DomainSubtraction),
-        Just(BinaryOp::RangeRestriction),
-        Just(BinaryOp::RangeSubtraction),
-        Just(BinaryOp::Overwrite),
-        Just(BinaryOp::DirectProduct),
-        Just(BinaryOp::ParallelProduct),
-        Just(BinaryOp::Maplet),
-        Just(BinaryOp::OfType),
-    ]
+fn assoc_expr(op: AssocExprOp, children: Vec<Expression>) -> Expression {
+    let mut flat: Vec<Expression> = Vec::new();
+    for child in children {
+        match child.kind() {
+            ExpressionKind::Associative {
+                op: nested_op,
+                children: nested,
+            } if *nested_op == op => flat.extend(nested.iter().cloned()),
+            _ => flat.push(child.clone()),
+        }
+    }
+    ff().associative_expression(op, flat, None)
 }
 
-fn arb_unary_op() -> impl Strategy<Value = UnaryOp> {
-    prop_oneof![
-        Just(UnaryOp::Minus),
-        Just(UnaryOp::PowerSet),
-        Just(UnaryOp::PowerSet1),
-        Just(UnaryOp::Domain),
-        Just(UnaryOp::Range),
-        Just(UnaryOp::Inverse),
-    ]
-}
-
-fn arb_comparison_op() -> impl Strategy<Value = ComparisonOp> {
-    prop_oneof![
-        Just(ComparisonOp::Equal),
-        Just(ComparisonOp::NotEqual),
-        Just(ComparisonOp::LessThan),
-        Just(ComparisonOp::LessEqual),
-        Just(ComparisonOp::GreaterThan),
-        Just(ComparisonOp::GreaterEqual),
-        Just(ComparisonOp::In),
-        Just(ComparisonOp::NotIn),
-        Just(ComparisonOp::Subset),
-        Just(ComparisonOp::SubsetStrict),
-    ]
-}
-
-fn arb_logical_op() -> impl Strategy<Value = LogicalOp> {
-    prop_oneof![
-        Just(LogicalOp::And),
-        Just(LogicalOp::Or),
-        Just(LogicalOp::Implies),
-        Just(LogicalOp::Equivalent),
-    ]
-}
-
-fn arb_builtin_function() -> impl Strategy<Value = BuiltinFunction> {
-    prop_oneof![
-        Just(BuiltinFunction::Card),
-        Just(BuiltinFunction::Min),
-        Just(BuiltinFunction::Max),
-        Just(BuiltinFunction::Union),
-        Just(BuiltinFunction::Inter),
-    ]
-}
-
-fn arb_atomic_builtin() -> impl Strategy<Value = AtomicBuiltinKind> {
-    proptest::sample::select(AtomicBuiltinKind::ALL.to_vec())
+fn assoc_pred(op: AssocPredOp, children: Vec<Predicate>) -> Predicate {
+    let mut flat: Vec<Predicate> = Vec::new();
+    for child in children {
+        match child.kind() {
+            PredicateKind::Associative {
+                op: nested_op,
+                children: nested,
+            } if *nested_op == op => flat.extend(nested.iter().cloned()),
+            _ => flat.push(child.clone()),
+        }
+    }
+    ff().associative_predicate(op, flat, None)
 }
 
 // =============================================================================
 // Expression strategy (recursive, depth-limited)
 // =============================================================================
 
-/// Leaf expressions without the `Bool(...)` branch — also used as comparison
-/// operands inside `Bool` below, to avoid unbounded mutual recursion between
+/// Leaf expressions without the `bool(...)` branch — also used as comparison
+/// operands inside `bool` below, to avoid unbounded mutual recursion between
 /// the expression and predicate strategies.
 fn arb_bool_free_leaf_expression() -> impl Strategy<Value = Expression> {
-    // NOTE: Expression::True and Expression::False are excluded because their
-    // printed form (⊤/⊥ or TRUE/FALSE) is ambiguous with Predicate::True/False
-    // at parse boundaries (e.g. as LHS of a comparison). They are still reachable
-    // inside set enumerations, function arguments, etc. via other AST paths.
     prop_oneof![
-        (0i64..1000).prop_map(|n| ExpressionKind::Integer(n).into()),
-        arb_identifier().prop_map(|s| ExpressionKind::Identifier(s).into()),
-        arb_atomic_builtin().prop_map(|k| ExpressionKind::AtomicBuiltin(k).into()),
-        Just(ExpressionKind::EmptySet.into()),
-        Just(ExpressionKind::Naturals.into()),
-        Just(ExpressionKind::Naturals1.into()),
-        Just(ExpressionKind::Integers.into()),
-        Just(ExpressionKind::BoolType.into()),
+        (0i64..1000).prop_map(|n| ff().integer_literal(n, None)),
+        arb_identifier().prop_map(|name| ff().free_identifier(&name, None, None)),
+        arb_atomic().prop_map(|op| ff().atomic_expression(op, None, None)),
     ]
 }
 
 fn arb_leaf_expression() -> impl Strategy<Value = Expression> {
-    // The weights keep every Bool-free leaf as likely as before (8 branches),
-    // with Bool(...) as a ninth equally-likely branch.
     prop_oneof![
         8 => arb_bool_free_leaf_expression(),
-        // Bool(predicate) — leaf predicates only (True/False or a comparison
-        // of Bool-free leaves) to avoid circular strategy recursion.
+        // bool(P) — leaf predicates only, to keep recursion bounded.
         1 => prop_oneof![
-            Just(Predicate::from(PredicateKind::True)),
-            Just(Predicate::from(PredicateKind::False)),
+            Just(ff().literal_predicate(LiteralPredOp::BTrue, None)),
+            Just(ff().literal_predicate(LiteralPredOp::BFalse, None)),
             (
-                arb_comparison_op(),
+                arb_relational_op(),
                 arb_bool_free_leaf_expression(),
                 arb_bool_free_leaf_expression()
             )
-                .prop_map(|(op, left, right)| {
-                    Predicate::from(PredicateKind::Comparison { op, left, right })
-                }),
+                .prop_map(|(op, left, right)| ff().relational_predicate(op, left, right, None)),
         ]
-        .prop_map(|p| ExpressionKind::Bool(Box::new(p)).into()),
+        .prop_map(|pred| ff().bool_expression(pred, None)),
     ]
 }
 
-/// Build a recursive expression strategy parameterized by the binary op strategy.
-fn arb_expression_with(
-    bin_ops: BoxedStrategy<BinaryOp>,
-    depth: u32,
-    desired_size: u32,
-) -> impl Strategy<Value = Expression> {
-    arb_leaf_expression().prop_recursive(depth, desired_size, 8, move |inner| {
-        let boxed = inner.clone().boxed();
+fn arb_leaf_predicate() -> impl Strategy<Value = Predicate> {
+    prop_oneof![
+        Just(ff().literal_predicate(LiteralPredOp::BTrue, None)),
+        Just(ff().literal_predicate(LiteralPredOp::BFalse, None)),
+        (
+            arb_relational_op(),
+            arb_leaf_expression(),
+            arb_leaf_expression()
+        )
+            .prop_map(|(op, left, right)| ff().relational_predicate(op, left, right, None)),
+    ]
+}
+
+fn arb_expression_impl(depth: u32, desired_size: u32) -> impl Strategy<Value = Expression> {
+    arb_leaf_expression().prop_recursive(depth, desired_size, 8, |inner| {
         prop_oneof![
-            // Binary expression
-            (bin_ops.clone(), inner.clone(), inner.clone()).prop_map(|(op, left, right)| {
-                ExpressionKind::Binary {
-                    op,
-                    left: Box::new(left),
-                    right: Box::new(right),
-                }
-                .into()
-            }),
-            // Unary expression
-            (arb_unary_op(), inner.clone()).prop_map(|(op, operand)| ExpressionKind::Unary {
-                op,
-                operand: Box::new(operand),
-            }
-            .into()),
-            // SetEnumeration (non-empty to avoid EmptySet mismatch)
+            // True binary operators.
+            (arb_binary_op(), inner.clone(), inner.clone())
+                .prop_map(|(op, left, right)| ff().binary_expression(op, left, right, None)),
+            // Associative operators, canonical by construction.
+            (
+                arb_assoc_op(),
+                proptest::collection::vec(inner.clone(), 2..4)
+            )
+                .prop_map(|(op, children)| assoc_expr(op, children)),
+            // Unary operators (including the closed builtins).
+            (arb_unary_op(), inner.clone())
+                .prop_map(|(op, child)| ff().unary_expression(op, child, None)),
+            // Set extension (non-empty; the empty set is the ∅ atom).
             proptest::collection::vec(inner.clone(), 1..4)
-                .prop_map(|v| ExpressionKind::SetEnumeration(v).into()),
-            // BuiltinApplication (respecting arity)
-            arb_builtin_application(boxed.clone()),
-            // FunctionApplication (function must not be a builtin name)
-            arb_function_application(boxed),
-            // RelationalImage: r[S]
-            (inner.clone(), inner.clone()).prop_map(|(relation, set)| {
-                ExpressionKind::RelationalImage {
-                    relation: Box::new(relation),
-                    set: Box::new(set),
-                }
-                .into()
+                .prop_map(|members| ff().set_extension(members, None)),
+            // Function application f(x): the function side is a plain name.
+            (arb_identifier(), inner.clone()).prop_map(|(name, argument)| {
+                ff().binary_expression(
+                    BinaryExprOp::FunImage,
+                    ff().free_identifier(&name, None, None),
+                    argument,
+                    None,
+                )
             }),
-            // SetComprehension basic: {ids | P}
+            // Relational image r[S].
+            (inner.clone(), inner.clone()).prop_map(|(relation, set)| {
+                ff().binary_expression(BinaryExprOp::RelImage, relation, set, None)
+            }),
+            // Type ascription e ⦂ T.
+            (inner.clone(), inner.clone())
+                .prop_map(|(expr, ty)| ff().ascription(expr, ty, None)),
+            // Ident-list comprehension {ids ∣ P}: the value is the binder
+            // chain in declaration order.
             (
-                proptest::collection::vec(arb_quantifier_identifier(), 1..3),
+                proptest::collection::vec(arb_bound_decl(), 1..3),
                 arb_leaf_predicate(),
             )
-                .prop_map(|(identifiers, predicate)| {
-                    ExpressionKind::SetComprehension {
-                        identifiers,
-                        predicate: Box::new(predicate),
-                        expression: None,
-                    }
-                    .into()
+                .prop_map(|(decls, pred)| {
+                    let value = ff().bound_ident_chain(decls.len());
+                    ff().quantified_expression(
+                        QuantExprOp::CSet,
+                        decls,
+                        pred,
+                        value,
+                        None,
+                        Form::IdentList,
+                    )
                 }),
-            // SetComprehension extended: {ids · P | E}
+            // Explicit comprehension {ids · P ∣ E}.
             (
-                proptest::collection::vec(arb_quantifier_identifier(), 1..3),
-                arb_leaf_predicate(),
-                inner.clone(),
-            )
-                .prop_map(|(identifiers, predicate, expr)| {
-                    ExpressionKind::SetComprehension {
-                        identifiers,
-                        predicate: Box::new(predicate),
-                        expression: Some(Box::new(expr)),
-                    }
-                    .into()
-                }),
-            // Lambda: λ pattern · P | E
-            (arb_ident_pattern(), arb_leaf_predicate(), inner.clone(),).prop_map(
-                |(pattern, predicate, expression)| ExpressionKind::Lambda {
-                    pattern,
-                    predicate: Box::new(predicate),
-                    expression: Box::new(expression),
-                }
-                .into()
-            ),
-            // QuantifiedUnion: ⋃ids · P | E
-            (
-                proptest::collection::vec(arb_quantifier_identifier(), 1..3),
+                proptest::collection::vec(arb_bound_decl(), 1..3),
                 arb_leaf_predicate(),
                 inner.clone(),
             )
-                .prop_map(|(identifiers, predicate, expression)| {
-                    ExpressionKind::QuantifiedUnion {
-                        identifiers,
-                        predicate: Box::new(predicate),
-                        expression: Box::new(expression),
-                    }
-                    .into()
+                .prop_map(|(decls, pred, value)| {
+                    ff().quantified_expression(
+                        QuantExprOp::CSet,
+                        decls,
+                        pred,
+                        value,
+                        None,
+                        Form::Explicit,
+                    )
                 }),
-            // QuantifiedInter: ⋂ids · P | E
+            // Lambda λ pattern · P ∣ body: the value pairs the binder chain
+            // with the body.
             (
-                proptest::collection::vec(arb_quantifier_identifier(), 1..3),
+                proptest::collection::vec(arb_bound_decl(), 1..3),
+                arb_leaf_predicate(),
+                inner.clone(),
+            )
+                .prop_map(|(decls, pred, body)| {
+                    let pattern = ff().bound_ident_chain(decls.len());
+                    let value = ff().binary_expression(BinaryExprOp::Mapsto, pattern, body, None);
+                    ff().quantified_expression(
+                        QuantExprOp::CSet,
+                        decls,
+                        pred,
+                        value,
+                        None,
+                        Form::Lambda,
+                    )
+                }),
+            // Quantified union / intersection.
+            (
+                prop_oneof![Just(QuantExprOp::QUnion), Just(QuantExprOp::QInter)],
+                proptest::collection::vec(arb_bound_decl(), 1..3),
                 arb_leaf_predicate(),
                 inner,
             )
-                .prop_map(|(identifiers, predicate, expression)| {
-                    ExpressionKind::QuantifiedInter {
-                        identifiers,
-                        predicate: Box::new(predicate),
-                        expression: Box::new(expression),
-                    }
-                    .into()
+                .prop_map(|(op, decls, pred, value)| {
+                    ff().quantified_expression(op, decls, pred, value, None, Form::Explicit)
                 }),
         ]
     })
 }
 
 fn arb_expression() -> impl Strategy<Value = Expression> {
-    arb_expression_with(arb_binary_op().boxed(), 4, 64)
-}
-
-/// Generate a BuiltinApplication. Every closed builtin takes exactly one
-/// argument (`card(S)`, `min(S)`, …).
-fn arb_builtin_application(inner: BoxedStrategy<Expression>) -> impl Strategy<Value = Expression> {
-    (arb_builtin_function(), inner).prop_map(|(function, arg)| {
-        ExpressionKind::BuiltinApplication {
-            function,
-            argument: Box::new(arg),
-        }
-        .into()
-    })
-}
-
-/// Generate a FunctionApplication with a safe identifier as function.
-/// All names in `arb_identifier()` already avoid builtins and keywords.
-/// Application is single-argument (Rodin's FUNIMAGE); a pair would be a maplet.
-fn arb_function_application(inner: BoxedStrategy<Expression>) -> impl Strategy<Value = Expression> {
-    (arb_identifier(), inner).prop_map(|(name, argument)| {
-        ExpressionKind::FunctionApplication {
-            function: Box::new(ExpressionKind::Identifier(name).into()),
-            argument: Box::new(argument),
-        }
-        .into()
-    })
+    arb_expression_impl(4, 64)
 }
 
 // =============================================================================
 // Predicate strategy (recursive, depth-limited)
 // =============================================================================
 
-fn arb_leaf_predicate() -> impl Strategy<Value = Predicate> {
-    prop_oneof![
-        Just(Predicate::from(PredicateKind::True)),
-        Just(Predicate::from(PredicateKind::False)),
-        (
-            arb_comparison_op(),
-            arb_leaf_expression(),
-            arb_leaf_expression()
-        )
-            .prop_map(|(op, left, right)| PredicateKind::Comparison { op, left, right }.into()),
-    ]
-}
-
 fn arb_predicate() -> impl Strategy<Value = Predicate> {
-    arb_leaf_predicate().prop_recursive(
-        3,  // depth
-        32, // desired size
-        4,  // items per collection
-        |inner| {
-            prop_oneof![
-                // Logical { op, left, right }
-                (arb_logical_op(), inner.clone(), inner.clone()).prop_map(|(op, left, right)| {
-                    PredicateKind::Logical {
-                        op,
-                        left: Box::new(left),
-                        right: Box::new(right),
-                    }
-                    .into()
+    arb_leaf_predicate().prop_recursive(3, 32, 4, |inner| {
+        prop_oneof![
+            // Conjunction / disjunction, canonical by construction.
+            (
+                prop_oneof![Just(AssocPredOp::LAnd), Just(AssocPredOp::LOr)],
+                proptest::collection::vec(inner.clone(), 2..4)
+            )
+                .prop_map(|(op, children)| assoc_pred(op, children)),
+            // Implication / equivalence.
+            (
+                prop_oneof![Just(BinaryPredOp::LImp), Just(BinaryPredOp::LEqv)],
+                inner.clone(),
+                inner.clone()
+            )
+                .prop_map(|(op, left, right)| ff().binary_predicate(op, left, right, None)),
+            // Negation.
+            inner
+                .clone()
+                .prop_map(|child| ff().not_predicate(child, None)),
+            // Comparison over recursive expressions.
+            (arb_relational_op(), arb_expression(), arb_expression())
+                .prop_map(|(op, left, right)| ff().relational_predicate(op, left, right, None)),
+            // Quantified predicate.
+            (
+                prop_oneof![Just(QuantPredOp::Forall), Just(QuantPredOp::Exists)],
+                proptest::collection::vec(arb_bound_decl(), 1..3),
+                inner.clone(),
+            )
+                .prop_map(|(op, decls, pred)| ff().quantified_predicate(op, decls, pred, None)),
+            // finite(S).
+            arb_leaf_expression().prop_map(|expr| ff().simple_predicate(expr, None)),
+            // partition(S, A, B, …).
+            proptest::collection::vec(arb_leaf_expression(), 2..5)
+                .prop_map(|args| ff().multiple_predicate(args, None)),
+            // User-defined predicate application foo(x, y).
+            (
+                arb_identifier(),
+                proptest::collection::vec(arb_leaf_expression(), 1..3)
+            )
+                .prop_map(|(function, args)| {
+                    ff().predicate_application(&function, None, args, None)
                 }),
-                // Not(pred)
-                inner
-                    .clone()
-                    .prop_map(|p| PredicateKind::Not(Box::new(p)).into()),
-                // Comparison with recursive expressions
-                (arb_comparison_op(), arb_expression(), arb_expression()).prop_map(
-                    |(op, left, right)| PredicateKind::Comparison { op, left, right }.into()
-                ),
-                // Quantified predicate
-                (
-                    prop_oneof![Just(Quantifier::ForAll), Just(Quantifier::Exists)],
-                    proptest::collection::vec(arb_quantifier_identifier(), 1..3),
-                    inner.clone(),
-                )
-                    .prop_map(|(quantifier, identifiers, predicate)| {
-                        PredicateKind::Quantified {
-                            quantifier,
-                            identifiers,
-                            predicate: Box::new(predicate),
-                        }
-                        .into()
-                    }),
-                // BuiltinApplication: finite(expr) or partition(expr, expr, ...)
-                arb_builtin_predicate_application(),
-                // User-defined predicate application: foo(x, y)
-                (
-                    arb_identifier(),
-                    proptest::collection::vec(arb_leaf_expression(), 1..3)
-                )
-                    .prop_map(|(function, arguments)| PredicateKind::Application {
-                        function: function.into(),
-                        arguments,
-                    }
-                    .into()),
-            ]
-        },
-    )
-}
-
-fn arb_builtin_predicate_application() -> impl Strategy<Value = Predicate> {
-    prop_oneof![
-        // finite(S) — 1 argument
-        arb_leaf_expression().prop_map(|expr| PredicateKind::BuiltinApplication {
-            predicate: BuiltinPredicate::Finite,
-            arguments: vec![expr],
-        }
-        .into()),
-        // partition(S, A, B, ...) — 2..4 arguments
-        proptest::collection::vec(arb_leaf_expression(), 2..5).prop_map(|args| {
-            PredicateKind::BuiltinApplication {
-                predicate: BuiltinPredicate::Partition,
-                arguments: args,
-            }
-            .into()
-        }),
-    ]
+        ]
+    })
 }
 
 // =============================================================================
 // Action strategy
 // =============================================================================
 
-/// Expression strategy for action RHS. Forward composition `;` is included:
-/// the printer parenthesizes any action sub-part containing a top-level `;`,
-/// so it round-trips through the text format's `;`-free action grammar.
+/// Expression strategy for assignment right-hand sides. Forward composition
+/// `;` stays in the pool: the printer parenthesizes any action sub-part
+/// containing a top-level `;`, which this exercises.
 fn arb_action_expression() -> impl Strategy<Value = Expression> {
-    arb_expression_with(arb_binary_op().boxed(), 3, 32)
+    arb_expression_impl(3, 32)
 }
 
-/// Predicate strategy for action RHS (BecomesSuchThat) — uses action expressions.
 fn arb_action_predicate() -> impl Strategy<Value = Predicate> {
     prop_oneof![
-        Just(Predicate::from(PredicateKind::True)),
-        Just(Predicate::from(PredicateKind::False)),
+        Just(ff().literal_predicate(LiteralPredOp::BTrue, None)),
+        Just(ff().literal_predicate(LiteralPredOp::BFalse, None)),
         (
-            arb_comparison_op(),
+            arb_relational_op(),
             arb_action_expression(),
             arb_action_expression()
         )
-            .prop_map(|(op, left, right)| PredicateKind::Comparison { op, left, right }.into()),
+            .prop_map(|(op, left, right)| ff().relational_predicate(op, left, right, None)),
     ]
 }
 
-fn arb_action() -> impl Strategy<Value = (Action, Vec<String>)> {
+/// Distinct assignment targets (the machine wrapper declares them).
+fn arb_targets() -> impl Strategy<Value = Vec<String>> {
+    proptest::sample::subsequence(
+        vec![
+            "aa".to_string(),
+            "bb".to_string(),
+            "cc".to_string(),
+            "dd".to_string(),
+        ],
+        1..4,
+    )
+}
+
+fn target_idents(names: &[String]) -> Vec<Expression> {
+    names
+        .iter()
+        .map(|name| ff().free_identifier(name, None, None))
+        .collect()
+}
+
+fn arb_assignment() -> impl Strategy<Value = (Assignment, Vec<String>)> {
     prop_oneof![
-        // Single-variable Assignment: v := E
-        (arb_identifier(), arb_action_expression()).prop_map(|(var, expr)| {
-            let vars = vec![var.clone()];
-            (
-                ActionKind::Assignment {
-                    assignments: vec![(var.into(), expr)],
-                }
-                .into(),
-                vars,
-            )
-        }),
-        // Multi-variable Assignment: x, y := E1, E2
-        (2usize..4)
-            .prop_flat_map(|n| {
-                (
-                    proptest::collection::vec(arb_identifier(), n..=n),
-                    proptest::collection::vec(arb_action_expression(), n..=n),
-                )
-            })
-            .prop_map(|(variables, expressions)| {
-                let vars = variables.clone();
-                (
-                    ActionKind::Assignment {
-                        assignments: variables
-                            .into_iter()
-                            .map(Into::into)
-                            .zip(expressions)
-                            .collect(),
-                    }
-                    .into(),
-                    vars,
-                )
-            }),
-        // Single-variable BecomesIn: v :∈ S
-        (arb_identifier(), arb_action_expression()).prop_map(|(var, set)| {
-            let vars = vec![var.clone()];
-            (
-                ActionKind::BecomesIn {
-                    variables: vec![var.into()],
-                    set,
-                }
-                .into(),
-                vars,
-            )
-        }),
-        // Multi-variable BecomesIn: x, y :∈ S
+        // x, y ≔ E, F
         (
-            proptest::collection::vec(arb_identifier(), 2..4),
-            arb_action_expression(),
+            arb_targets(),
+            proptest::collection::vec(arb_action_expression(), 3)
         )
-            .prop_map(|(variables, set)| {
-                let vars = variables.clone();
+            .prop_map(|(names, values)| {
+                let values = values.into_iter().take(names.len()).collect();
                 (
-                    ActionKind::BecomesIn {
-                        variables: variables.into_iter().map(Into::into).collect(),
-                        set,
-                    }
-                    .into(),
-                    vars,
+                    ff().becomes_equal_to(target_idents(&names), values, None),
+                    names,
                 )
             }),
-        // Single-variable BecomesSuchThat: v :| P
-        (arb_identifier(), arb_action_predicate()).prop_map(|(var, pred)| {
-            let vars = vec![var.clone()];
+        // x, y :∈ S
+        (arb_targets(), arb_action_expression()).prop_map(|(names, set)| {
             (
-                ActionKind::BecomesSuchThat {
-                    variables: vec![var.into()],
-                    predicate: pred,
-                }
-                .into(),
-                vars,
+                ff().becomes_member_of(target_idents(&names), set, None),
+                names,
             )
         }),
-        // Multi-variable BecomesSuchThat: x, y :| P
-        (
-            proptest::collection::vec(arb_identifier(), 2..4),
-            arb_action_predicate(),
-        )
-            .prop_map(|(variables, predicate)| {
-                let vars = variables.clone();
-                (
-                    ActionKind::BecomesSuchThat {
-                        variables: variables.into_iter().map(Into::into).collect(),
-                        predicate,
-                    }
-                    .into(),
-                    vars,
-                )
-            }),
+        // x, y :∣ P — one primed declaration per target.
+        (arb_targets(), arb_action_predicate()).prop_map(|(names, pred)| {
+            let primed = names
+                .iter()
+                .map(|name| ff().bound_ident_decl(format!("{name}'"), None, None, None))
+                .collect();
+            (
+                ff().becomes_such_that(target_idents(&names), primed, pred, None),
+                names,
+            )
+        }),
     ]
+}
+
+fn arb_action() -> impl Strategy<Value = (ActionBody, Vec<String>)> {
+    arb_assignment().prop_map(|(assignment, names)| (ActionBody::Assignment(assignment), names))
 }
 
 // =============================================================================
@@ -619,7 +550,7 @@ fn arb_axiom() -> impl Strategy<Value = LabeledPredicate> {
     (arb_label(), arb_leaf_predicate()).prop_map(|(label, predicate)| LabeledPredicate {
         label,
         is_theorem: false,
-        predicate: lower_predicate(&predicate),
+        predicate,
         span: None,
         comment: None,
     })
@@ -629,7 +560,7 @@ fn arb_theorem() -> impl Strategy<Value = LabeledPredicate> {
     (arb_label(), arb_leaf_predicate()).prop_map(|(label, predicate)| LabeledPredicate {
         label,
         is_theorem: true,
-        predicate: lower_predicate(&predicate),
+        predicate,
         span: None,
         comment: None,
     })
@@ -638,7 +569,7 @@ fn arb_theorem() -> impl Strategy<Value = LabeledPredicate> {
 fn arb_labeled_action() -> impl Strategy<Value = LabeledAction> {
     (arb_label(), arb_action()).prop_map(|(label, (action, _vars))| LabeledAction {
         label,
-        action: lower_action_body(&action),
+        action,
         span: None,
         comment: None,
     })
@@ -668,7 +599,7 @@ fn arb_witness_predicate() -> impl Strategy<Value = LabeledPredicate> {
     (arb_label(), arb_leaf_predicate()).prop_map(|(label, predicate)| LabeledPredicate {
         label,
         is_theorem: false,
-        predicate: lower_predicate(&predicate),
+        predicate,
         span: None,
         comment: None,
     })
@@ -679,7 +610,10 @@ fn arb_event() -> impl Strategy<Value = Event> {
         arb_event_name(),
         arb_event_status(),
         proptest::bool::ANY,
-        proptest::collection::vec(arb_quantifier_identifier(), 0..3),
+        proptest::sample::subsequence(
+            vec!["p1".to_string(), "p2".to_string(), "p3".to_string()],
+            0..3,
+        ),
         proptest::collection::vec(arb_axiom(), 0..3),
         proptest::collection::vec(arb_witness_predicate(), 0..2),
         proptest::collection::vec(arb_witness_predicate(), 0..2),
@@ -693,10 +627,7 @@ fn arb_event() -> impl Strategy<Value = Event> {
                     event.refines = Some(format!("{name}_abs"));
                     event.with = with;
                 }
-                event.parameters = parameters
-                    .into_iter()
-                    .map(|tid| NamedElement::new(tid.name))
-                    .collect();
+                event.parameters = parameters.into_iter().map(NamedElement::new).collect();
                 event.guards = guards;
                 event.witnesses = witnesses;
                 event.actions = actions;
@@ -771,7 +702,7 @@ fn arb_machine() -> impl Strategy<Value = Component> {
                 machine.variables = variables.into_iter().map(NamedElement::new).collect();
                 invariants.extend(theorems);
                 machine.invariants = invariants;
-                machine.variant = variant.map(|v| lower_expression(&v));
+                machine.variant = variant;
                 machine.initialisation = initialisation;
                 machine.events = events;
                 Component::Machine(machine)
@@ -780,23 +711,23 @@ fn arb_machine() -> impl Strategy<Value = Component> {
 }
 
 // =============================================================================
-// Wrappers — embed generated AST in minimal parseable Components
+// Wrappers — embed generated trees in minimal parseable Components
 // =============================================================================
 
 /// Wrap an expression in a Context axiom: `axm1: propvar = <expr>`
 fn wrap_expression_in_context(expr: &Expression) -> Component {
     let mut ctx = Context::new("proptest".into());
     ctx.constants = vec![NamedElement::new("propvar".to_string())];
-    let axiom: Predicate = PredicateKind::Comparison {
-        op: ComparisonOp::Equal,
-        left: ExpressionKind::Identifier("propvar".into()).into(),
-        right: expr.clone(),
-    }
-    .into();
+    let axiom = ff().relational_predicate(
+        RelationalOp::Equal,
+        ff().free_identifier("propvar", None, None),
+        expr.clone(),
+        None,
+    );
     ctx.axioms = vec![LabeledPredicate {
         label: Some("axm1".into()),
         is_theorem: false,
-        predicate: lower_predicate(&axiom),
+        predicate: axiom,
         span: None,
         comment: None,
     }];
@@ -809,7 +740,7 @@ fn wrap_predicate_in_context(pred: &Predicate) -> Component {
     ctx.axioms = vec![LabeledPredicate {
         label: Some("axm1".into()),
         is_theorem: false,
-        predicate: lower_predicate(pred),
+        predicate: pred.clone(),
         span: None,
         comment: None,
     }];
@@ -817,7 +748,7 @@ fn wrap_predicate_in_context(pred: &Predicate) -> Component {
 }
 
 /// Wrap an action in a Machine event.
-fn wrap_action_in_machine(action: &Action, variables: &[String]) -> Component {
+fn wrap_action_in_machine(action: &ActionBody, variables: &[String]) -> Component {
     let mut machine = Machine::new("proptest".into());
     machine.variables = variables
         .iter()
@@ -826,7 +757,7 @@ fn wrap_action_in_machine(action: &Action, variables: &[String]) -> Component {
     machine.events = vec![Event::new("test_event".into())];
     machine.events[0].actions = vec![LabeledAction {
         label: Some("act1".into()),
-        action: lower_action_body(action),
+        action: action.clone(),
         span: None,
         comment: None,
     }];
@@ -961,15 +892,14 @@ fn action_roundtrip_ascii() {
 #[test]
 fn action_roundtrip_standalone() {
     check_roundtrip_property(500, arb_action, |(action, _vars)| {
-        let printed = PrettyPrinter::new().print_action(action);
+        let printed = PrettyPrinter::new().print_action_body(action);
         let reparsed = rossi::parse_action_str(&printed).unwrap_or_else(|e| {
             panic!(
                 "Failed to parse printed action:\n{e}\n\nPrinted:\n{printed}\n\nOriginal AST:\n{action:#?}"
             )
         });
         assert_eq!(
-            lower_action_body(action),
-            reparsed,
+            *action, reparsed,
             "standalone roundtrip mismatch.\nPrinted:\n{printed}"
         );
     });
