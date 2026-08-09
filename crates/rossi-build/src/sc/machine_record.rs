@@ -223,9 +223,8 @@ pub struct GuardDecl {
     /// Position of this guard in the *raw* event's `guards` list — see
     /// [`super::context_record::AxiomDecl::source_index`].
     pub source_index: usize,
-    /// Predicate AST as parsed. Re-read by
-    /// [`EventDecl::typing_guard_predicates`] to recover parameter
-    /// types for extended events in descendant (M1+) machines.
+    /// Predicate AST as parsed. Retained so downstream passes do not
+    /// need to re-parse the XML representation.
     pub predicate: Predicate,
     /// The fully typed formula-model form; see
     /// [`super::context_record::AxiomDecl::typed`].
@@ -282,33 +281,14 @@ impl EventDecl {
         out
     }
 
-    /// Every guard predicate visible to this event's parameter
-    /// inference: the inherited chain (in chain order, when extended)
-    /// followed by own.
-    pub fn typing_guard_predicates(&self) -> Vec<&Predicate> {
-        let mut out: Vec<&Predicate> = Vec::new();
-        if self.extended {
-            for ancestor in self.chain_root_first() {
-                for g in &ancestor.guards {
-                    out.push(&g.predicate);
-                }
-            }
-        }
-        for g in &self.guards {
-            out.push(&g.predicate);
-        }
-        out
-    }
-
     /// Every parameter visible to this event: the inherited chain
     /// (root-first, populated only when the event is `extended`)
     /// followed by own. A name re-listed along the chain is kept once
     /// — it denotes the same parameter, so the types agree.
     ///
-    /// This is the parameter analogue of
-    /// [`Self::typing_guard_predicates`]; downstream passes use it to
-    /// rebuild the event-local scope (see
-    /// [`super::CheckedMachine::event_env`]).
+    /// Downstream passes use it to rebuild the event-local scope (see
+    /// [`super::CheckedMachine::event_env`]); extended events inherit
+    /// their scope from these declarations' solved types.
     pub fn chain_parameters(&self) -> Vec<&ParameterDecl> {
         let mut out: Vec<&ParameterDecl> = Vec::new();
         for ancestor in self.chain_root_first() {
