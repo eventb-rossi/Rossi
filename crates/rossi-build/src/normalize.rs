@@ -7,11 +7,11 @@
 
 use rossi::formula;
 use rossi::pretty::PrettyPrinter;
-use rossi::{Action, Expression, Predicate};
+use rossi::{Expression, Predicate};
 
 /// Canonicalise a predicate to Rodin's tight form.
 pub fn canonical_predicate(p: &Predicate) -> String {
-    PrettyPrinter::rodin_canonical().print_predicate(p)
+    PrettyPrinter::rodin_canonical().print_formula_predicate(p)
 }
 
 /// Canonicalise a typed predicate: the tight form with every bound
@@ -63,12 +63,12 @@ fn ascribe_empty_set_values(a: &formula::Assignment) -> formula::Assignment {
 
 /// Canonicalise an expression to Rodin's tight form.
 pub fn canonical_expression(e: &Expression) -> String {
-    PrettyPrinter::rodin_canonical().print_expression(e)
+    PrettyPrinter::rodin_canonical().print_formula_expression(e)
 }
 
-/// Canonicalise an action (assignment).
-pub fn canonical_action(a: &Action) -> String {
-    PrettyPrinter::rodin_canonical().print_action(a)
+/// Canonicalise an action body (`skip` or an assignment).
+pub fn canonical_action(a: &rossi::ActionBody) -> String {
+    PrettyPrinter::rodin_canonical().print_action_body(a)
 }
 
 #[cfg(test)]

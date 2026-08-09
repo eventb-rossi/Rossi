@@ -14,9 +14,8 @@
 //! exactly as the previous engine refused predicates it could not
 //! fully verify.
 
-use rossi::formula::lower::{lower_action, lower_expression, lower_predicate};
-use rossi::formula::{self, TypeEnvironmentBuilder};
-use rossi::{Action, Expression, Predicate};
+use rossi::formula::{self};
+use rossi::{ActionBody, Expression, Predicate};
 
 use crate::type_env::TypeEnv;
 
@@ -28,23 +27,41 @@ pub(crate) fn resolve_identifier_types<'a>(
     declared: &'a [String],
     predicates: &[Predicate],
 ) -> Vec<&'a str> {
-    let lowered: Vec<formula::Predicate> = predicates.iter().map(lower_predicate).collect();
+    let declared_set: std::collections::BTreeSet<&str> =
+        declared.iter().map(String::as_str).collect();
+    // Only predicates mentioning a still-unresolved declared name can
+    // contribute; the rest are never worth re-checking. The worklist
+    // shrinks as predicates are spent.
+    let mut worklist: Vec<&Predicate> = predicates
+        .iter()
+        .filter(|pred| {
+            pred.free_identifiers()
+                .iter()
+                .any(|name| declared_set.contains(name.as_str()) && !env.contains(name))
+        })
+        .collect();
     loop {
         let mut progressed = false;
-        let sealed = seal(env);
-        for pred in &lowered {
-            let result = pred.type_check(&sealed);
+        worklist.retain(|pred| {
+            // Sealed fresh per predicate (an O(1) cache hit while the
+            // environment is unchanged): a predicate must be validated
+            // against everything merged before it in this pass, or an
+            // ill-typed predicate could slip its typings in before the
+            // conflicting evidence lands and keep a type the later
+            // per-formula gate rejects.
+            let result = pred.type_check(&env.sealed());
             if !result.is_success() {
-                continue;
+                // May start succeeding once more names resolve.
+                return true;
             }
             // Reject typings from predicates referencing identifiers
             // that are neither in the environment nor declared here.
             if result
                 .inferred
                 .iter()
-                .any(|(name, _)| !declared.iter().any(|d| d == name))
+                .any(|(name, _)| !declared_set.contains(name))
             {
-                continue;
+                return true;
             }
             for (name, ty) in result.inferred.iter() {
                 if !env.contains(name) {
@@ -52,7 +69,10 @@ pub(crate) fn resolve_identifier_types<'a>(
                     progressed = true;
                 }
             }
-        }
+            // Everything this predicate can give is merged; a spent
+            // predicate never infers anything new.
+            false
+        });
         if !progressed {
             break;
         }
@@ -64,59 +84,45 @@ pub(crate) fn resolve_identifier_types<'a>(
         .collect()
 }
 
+/// The strict acceptance shared by the per-formula gates: the check
+/// succeeded without deriving anything new, so the typed rebuild is
+/// trusted.
+fn accepted<T>(result: rossi::formula::TypeCheckResult<T>) -> Option<T> {
+    (result.is_success() && result.inferred.is_empty()).then(|| {
+        result
+            .typed
+            .expect("a successful check produces the rebuild")
+    })
+}
+
 /// The per-formula gate and its payoff in one step: the fully typed
 /// formula-model rebuild of the predicate, or `None` when it does not
 /// type-check against `env` without deriving anything new — an
 /// identifier the environment does not know makes the formula
 /// unverifiable.
-pub(crate) fn typed_predicate(env: &TypeEnv, pred: &Predicate) -> Option<formula::Predicate> {
-    let result = lower_predicate(pred).type_check(&seal(env));
-    (result.is_success() && result.inferred.is_empty()).then(|| {
-        result
-            .typed
-            .expect("a successful check produces the rebuild")
-    })
+pub(crate) fn typed_predicate(env: &TypeEnv, pred: &Predicate) -> Option<Predicate> {
+    accepted(pred.type_check(&env.sealed()))
 }
 
 /// See [`typed_predicate`].
-pub(crate) fn typed_expression(env: &TypeEnv, expr: &Expression) -> Option<formula::Expression> {
-    let result = lower_expression(expr).type_check(&seal(env));
-    (result.is_success() && result.inferred.is_empty()).then(|| {
-        result
-            .typed
-            .expect("a successful check produces the rebuild")
-    })
+pub(crate) fn typed_expression(env: &TypeEnv, expr: &Expression) -> Option<Expression> {
+    accepted(expr.type_check(&env.sealed()))
 }
 
 /// See [`typed_predicate`]. `None` also stands for `skip`, which has
 /// no assignment to rebuild (and nothing to check).
-pub(crate) fn typed_assignment(env: &TypeEnv, action: &Action) -> Option<formula::Assignment> {
-    let result = lower_action(action)?.type_check(&seal(env));
-    (result.is_success() && result.inferred.is_empty()).then(|| {
-        result
-            .typed
-            .expect("a successful check produces the rebuild")
-    })
+pub(crate) fn typed_assignment(env: &TypeEnv, action: &ActionBody) -> Option<formula::Assignment> {
+    accepted(action.assignment()?.type_check(&env.sealed()))
 }
 
-/// See [`typed_predicate`]. `skip` has nothing to check.
-pub(crate) fn action_well_typed(env: &TypeEnv, action: &Action) -> bool {
-    match lower_action(action) {
-        Some(assignment) => {
-            let result = assignment.type_check(&seal(env));
-            result.is_success() && result.inferred.is_empty()
-        }
-        None => true,
-    }
-}
-
-/// The checker-facing snapshot of the pipeline's environment.
-pub(crate) fn seal(env: &TypeEnv) -> formula::SealedTypeEnvironment {
-    let mut builder = TypeEnvironmentBuilder::new();
-    for (name, ty) in env.iter() {
-        builder.insert(name, ty.clone());
-    }
-    builder.make_snapshot()
+/// See [`typed_predicate`]. `skip` has nothing to check. The pipeline
+/// reads the verdict off an already-computed [`check_action`] result;
+/// this boolean spelling remains as the seam the behavior tests pin.
+///
+/// [`check_action`]: crate::checked_predicate::check_action
+#[cfg(test)]
+pub(crate) fn action_well_typed(env: &TypeEnv, action: &ActionBody) -> bool {
+    action.assignment().is_none() || typed_assignment(env, action).is_some()
 }
 
 #[cfg(test)]
@@ -225,12 +231,13 @@ mod tests {
             BinaryOp::DirectProduct,
             BinaryOp::ParallelProduct,
         ] {
-            let expression = rossi::ExpressionKind::Binary {
+            let legacy: rossi::ast::Expression = rossi::ast::ExpressionKind::Binary {
                 op,
-                left: Box::new(rossi::ExpressionKind::True.into()),
-                right: Box::new(rossi::ExpressionKind::False.into()),
+                left: Box::new(rossi::ast::ExpressionKind::True.into()),
+                right: Box::new(rossi::ast::ExpressionKind::False.into()),
             }
             .into();
+            let expression = rossi::formula::lower::lower_expression(&legacy);
             assert!(
                 typed_expression(&env, &expression).is_none(),
                 "accepted ill-typed set/relation operator: {op:?}"
@@ -244,11 +251,12 @@ mod tests {
             UnaryOp::Range,
             UnaryOp::Inverse,
         ] {
-            let expression = rossi::ExpressionKind::Unary {
+            let legacy: rossi::ast::Expression = rossi::ast::ExpressionKind::Unary {
                 op,
-                operand: Box::new(rossi::ExpressionKind::True.into()),
+                operand: Box::new(rossi::ast::ExpressionKind::True.into()),
             }
             .into();
+            let expression = rossi::formula::lower::lower_expression(&legacy);
             assert!(
                 typed_expression(&env, &expression).is_none(),
                 "accepted ill-typed unary operator: {op:?}"

@@ -313,7 +313,7 @@ pub(crate) fn default_range() -> Range {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use rossi::{LabeledPredicate, PredicateKind, parse};
+    use rossi::{LabeledPredicate, parse};
 
     #[test]
     fn test_extract_context_symbols() {
@@ -337,7 +337,7 @@ mod tests {
         ctx.axioms = vec![LabeledPredicate {
             label: Some("axm1".to_string()),
             is_theorem: false,
-            predicate: PredicateKind::True.into(),
+            predicate: rossi::parse_predicate_str("⊤").unwrap(),
             span: None,
             comment: None,
         }];
@@ -380,7 +380,7 @@ mod tests {
         machine.invariants = vec![LabeledPredicate {
             label: Some("inv1".to_string()),
             is_theorem: false,
-            predicate: PredicateKind::True.into(),
+            predicate: rossi::parse_predicate_str("⊤").unwrap(),
             span: None,
             comment: None,
         }];

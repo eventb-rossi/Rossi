@@ -2,11 +2,10 @@
 
 mod common;
 
-use rossi::ast::expression::{BinaryOp, UnaryOp};
-use rossi::ast::predicate::Quantifier;
+use rossi::formula::tag::{AssocExprOp, BinaryExprOp, QuantExprOp, QuantPredOp, UnaryExprOp};
 use rossi::{
-    ActionKind, EventStatus, Expression, ExpressionKind, ParseError, Predicate, PredicateKind,
-    parse, parse_action_str, parse_expression_str, parse_predicate_str, to_string,
+    AssignmentKind, EventStatus, ExpressionKind, ParseError, PredicateKind, parse,
+    parse_action_str, parse_expression_str, parse_predicate_str, to_string,
 };
 use test_case::test_case;
 
@@ -41,16 +40,20 @@ fn test_becomes_in(op: &str) {
     let m = common::parse_machine(&source);
     let event = &m.events[0];
     assert_eq!(event.actions.len(), 1);
-    match &event.actions[0].action.kind {
-        ActionKind::BecomesIn { variables, set } => {
-            assert_eq!(variables, &["x"]);
+    match event.actions[0]
+        .action
+        .assignment()
+        .map(rossi::Assignment::kind)
+    {
+        Some(AssignmentKind::BecomesMemberOf { idents, set }) => {
+            assert!(matches!(idents[0].kind(), ExpressionKind::FreeIdentifier(n) if n == "x"));
             assert!(
-                matches!(set.kind, ExpressionKind::SetEnumeration(_)),
-                "Expected SetEnumeration, got {:?}",
+                matches!(set.kind(), ExpressionKind::SetExtension(_)),
+                "Expected SetExtension, got {:?}",
                 set
             );
         }
-        other => panic!("Expected BecomesIn, got {:?}", other),
+        other => panic!("Expected BecomesMemberOf, got {:?}", other),
     }
 }
 
@@ -80,16 +83,17 @@ fn test_becomes_such_that() {
     let m = common::parse_machine(source);
     let event = &m.events[0];
     assert_eq!(event.actions.len(), 1);
-    match &event.actions[0].action.kind {
-        ActionKind::BecomesSuchThat {
-            variables,
-            predicate,
-        } => {
-            assert_eq!(variables, &["x"]);
+    match event.actions[0]
+        .action
+        .assignment()
+        .map(rossi::Assignment::kind)
+    {
+        Some(AssignmentKind::BecomesSuchThat { idents, pred, .. }) => {
+            assert!(matches!(idents[0].kind(), ExpressionKind::FreeIdentifier(n) if n == "x"));
             assert!(
-                matches!(predicate.kind, PredicateKind::Comparison { .. }),
+                matches!(pred.kind(), PredicateKind::Relational { .. }),
                 "Expected Comparison predicate, got {:?}",
-                predicate
+                pred
             );
         }
         other => panic!("Expected BecomesSuchThat, got {:?}", other),
@@ -107,10 +111,10 @@ fn test_becomes_such_that() {
 fn test_inverse_tilde(axiom: &str) {
     let source = common::axiom_context("f, r", axiom);
     let rhs = common::parse_axiom_rhs(&source);
-    match &rhs.kind {
-        ExpressionKind::Unary { op, operand } => {
-            assert_eq!(*op, UnaryOp::Inverse);
-            assert!(matches!(&operand.kind, ExpressionKind::Identifier(n) if n == "f"));
+    match rhs.kind() {
+        ExpressionKind::Unary { op, child } => {
+            assert_eq!(*op, UnaryExprOp::Converse);
+            assert!(matches!(child.kind(), ExpressionKind::FreeIdentifier(n) if n == "f"));
         }
         other => panic!("Expected Unary Inverse, got {:?}", other),
     }
@@ -121,16 +125,16 @@ fn test_inverse_repeated() {
     // r∼∼ should parse as (r∼)∼
     let source = common::axiom_context("r, s", "s = r\u{223C}\u{223C}");
     let rhs = common::parse_axiom_rhs(&source);
-    match &rhs.kind {
+    match rhs.kind() {
         ExpressionKind::Unary {
-            op: UnaryOp::Inverse,
-            operand,
-        } => match &operand.kind {
+            op: UnaryExprOp::Converse,
+            child,
+        } => match child.kind() {
             ExpressionKind::Unary {
-                op: UnaryOp::Inverse,
-                operand: inner,
+                op: UnaryExprOp::Converse,
+                child: inner,
             } => {
-                assert!(matches!(&inner.kind, ExpressionKind::Identifier(n) if n == "r"));
+                assert!(matches!(inner.kind(), ExpressionKind::FreeIdentifier(n) if n == "r"));
             }
             other => panic!("Expected nested Inverse, got {:?}", other),
         },
@@ -144,8 +148,8 @@ fn test_inverse_relational_image() {
     let source = common::axiom_context("r, S, T", "T = r\u{223C}[S]");
     let rhs = common::parse_axiom_rhs(&source);
     assert!(
-        matches!(&rhs.kind, ExpressionKind::RelationalImage { relation, .. }
-            if matches!(&relation.kind, ExpressionKind::Unary { op: UnaryOp::Inverse, .. })),
+        matches!(rhs.kind(), ExpressionKind::Binary { op: BinaryExprOp::RelImage, left: relation, .. }
+            if matches!(relation.kind(), ExpressionKind::Unary { op: UnaryExprOp::Converse, .. })),
         "Expected RelationalImage with Inverse relation, got {:?}",
         rhs
     );
@@ -157,8 +161,8 @@ fn test_inverse_function_application() {
     let source = common::axiom_context("f, x, y", "y = f\u{223C}(x)");
     let rhs = common::parse_axiom_rhs(&source);
     assert!(
-        matches!(&rhs.kind, ExpressionKind::FunctionApplication { function, .. }
-            if matches!(&function.kind, ExpressionKind::Unary { op: UnaryOp::Inverse, .. })),
+        matches!(rhs.kind(), ExpressionKind::Binary { op: BinaryExprOp::FunImage, left: function, .. }
+            if matches!(function.kind(), ExpressionKind::Unary { op: UnaryExprOp::Converse, .. })),
         "Expected FunctionApplication with Inverse function, got {:?}",
         rhs
     );
@@ -173,13 +177,13 @@ fn test_forward_composition() {
     // In expression context (not action), semicolon is forward composition
     let source = common::axiom_context("f, g, r", "r = f ; g");
     let rhs = common::parse_axiom_rhs(&source);
-    match &rhs.kind {
-        ExpressionKind::Binary { op, left, right } => {
-            assert_eq!(*op, BinaryOp::Semicolon);
-            assert!(matches!(&left.kind, ExpressionKind::Identifier(n) if n == "f"));
-            assert!(matches!(&right.kind, ExpressionKind::Identifier(n) if n == "g"));
+    match rhs.kind() {
+        ExpressionKind::Associative { op, children } => {
+            assert_eq!(*op, AssocExprOp::FComp);
+            assert!(matches!(children[0].kind(), ExpressionKind::FreeIdentifier(n) if n == "f"));
+            assert!(matches!(children[1].kind(), ExpressionKind::FreeIdentifier(n) if n == "g"));
         }
-        other => panic!("Expected Binary Semicolon, got {:?}", other),
+        other => panic!("Expected forward composition, got {:?}", other),
     }
 }
 
@@ -206,21 +210,25 @@ fn test_forward_composition_parenthesized_in_action() {
     let m = common::parse_machine(source);
     let event = &m.events[0];
     assert_eq!(event.actions.len(), 1);
-    match &event.actions[0].action.kind {
-        ActionKind::Assignment { assignments } => {
-            assert_eq!(assignments.len(), 1);
-            assert_eq!(assignments[0].0, "x");
+    match event.actions[0]
+        .action
+        .assignment()
+        .map(rossi::Assignment::kind)
+    {
+        Some(AssignmentKind::BecomesEqualTo { idents, values }) => {
+            assert_eq!(idents.len(), 1);
+            assert!(matches!(idents[0].kind(), ExpressionKind::FreeIdentifier(n) if n == "x"));
             // The parenthesized (f ; g) should parse as forward composition
             assert!(
                 matches!(
-                    &assignments[0].1.kind,
-                    ExpressionKind::Binary {
-                        op: BinaryOp::Semicolon,
+                    values[0].kind(),
+                    ExpressionKind::Associative {
+                        op: AssocExprOp::FComp,
                         ..
                     }
                 ),
-                "Expected Semicolon composition in parens, got {:?}",
-                assignments[0].1
+                "Expected forward composition in parens, got {:?}",
+                values[0]
             );
         }
         other => panic!("Expected Assignment, got {:?}", other),
@@ -233,17 +241,20 @@ fn test_standalone_action_forward_composition_unparenthesized() {
     // attribute) has no following action to separate, so a bare semicolon
     // is forward composition.
     let action = rossi::parse_action_str("x ≔ f;g").expect("standalone action parses");
-    let ActionKind::Assignment { assignments } = &action.kind else {
+    let Some(assignment) = action.assignment() else {
         panic!("Expected Assignment, got {:?}", action);
     };
-    assert_eq!(assignments.len(), 1);
-    assert_eq!(assignments[0].0, "x");
-    let ExpressionKind::Binary { op, left, right } = &assignments[0].1.kind else {
-        panic!("Expected Binary, got {:?}", assignments[0].1);
+    let AssignmentKind::BecomesEqualTo { idents, values } = assignment.kind() else {
+        panic!("Expected becomes-equal-to, got {assignment:?}");
     };
-    assert_eq!(*op, BinaryOp::Semicolon);
-    assert!(matches!(&left.kind, ExpressionKind::Identifier(n) if n == "f"));
-    assert!(matches!(&right.kind, ExpressionKind::Identifier(n) if n == "g"));
+    assert_eq!(idents.len(), 1);
+    assert!(matches!(idents[0].kind(), ExpressionKind::FreeIdentifier(n) if n == "x"));
+    let ExpressionKind::Associative { op, children } = values[0].kind() else {
+        panic!("Expected composition, got {:?}", values[0]);
+    };
+    assert_eq!(*op, AssocExprOp::FComp);
+    assert!(matches!(children[0].kind(), ExpressionKind::FreeIdentifier(n) if n == "f"));
+    assert!(matches!(children[1].kind(), ExpressionKind::FreeIdentifier(n) if n == "g"));
 }
 
 #[test]
@@ -251,40 +262,44 @@ fn test_standalone_action_chained_composition_with_inverse() {
     // Left-associative chain mixing inverse and a parenthesized set
     // expression: h∼;(s ∪ t);h parses as (h∼;(s ∪ t));h.
     let action = rossi::parse_action_str("x ≔ h∼;(s ∪ t);h").expect("standalone action parses");
-    let ActionKind::Assignment { assignments } = &action.kind else {
+    let Some(assignment) = action.assignment() else {
         panic!("Expected Assignment, got {:?}", action);
     };
-    let ExpressionKind::Binary { op, left, right } = &assignments[0].1.kind else {
-        panic!("Expected Binary, got {:?}", assignments[0].1);
+    let AssignmentKind::BecomesEqualTo { values, .. } = assignment.kind() else {
+        panic!("Expected becomes-equal-to, got {assignment:?}");
     };
-    assert_eq!(*op, BinaryOp::Semicolon);
-    assert!(matches!(&right.kind, ExpressionKind::Identifier(n) if n == "h"));
-    let ExpressionKind::Binary { op, left, .. } = &left.kind else {
-        panic!("Expected nested Binary, got {:?}", left);
+    // The chain flattens into one n-ary composition: h∼ ; (s ∪ t) ; h.
+    let ExpressionKind::Associative { op, children } = values[0].kind() else {
+        panic!("Expected composition, got {:?}", values[0]);
     };
-    assert_eq!(*op, BinaryOp::Semicolon);
+    assert_eq!(*op, AssocExprOp::FComp);
+    assert_eq!(children.len(), 3);
     assert!(matches!(
-        &left.kind,
+        children[0].kind(),
         ExpressionKind::Unary {
-            op: UnaryOp::Inverse,
+            op: UnaryExprOp::Converse,
             ..
         }
     ));
+    assert!(matches!(children[2].kind(), ExpressionKind::FreeIdentifier(n) if n == "h"));
 }
 
 #[test]
 fn test_standalone_becomes_such_that_with_composition() {
     let action = rossi::parse_action_str("x :∣ x' = f;g").expect("standalone action parses");
-    let ActionKind::BecomesSuchThat { predicate, .. } = &action.kind else {
+    let Some(assignment) = action.assignment() else {
         panic!("Expected BecomesSuchThat, got {:?}", action);
     };
-    let PredicateKind::Comparison { right, .. } = &predicate.kind else {
-        panic!("Expected Comparison, got {:?}", predicate);
+    let AssignmentKind::BecomesSuchThat { pred, .. } = assignment.kind() else {
+        panic!("Expected becomes-such-that, got {assignment:?}");
+    };
+    let PredicateKind::Relational { right, .. } = pred.kind() else {
+        panic!("Expected Comparison, got {:?}", pred);
     };
     assert!(matches!(
-        right.kind,
-        ExpressionKind::Binary {
-            op: BinaryOp::Semicolon,
+        right.kind(),
+        ExpressionKind::Associative {
+            op: AssocExprOp::FComp,
             ..
         }
     ));
@@ -333,9 +348,9 @@ fn test_composition_circ_ascii() {
     let rhs = common::parse_axiom_rhs(&source);
     assert!(
         matches!(
-            &rhs.kind,
-            ExpressionKind::Binary {
-                op: BinaryOp::Composition,
+            rhs.kind(),
+            ExpressionKind::Associative {
+                op: AssocExprOp::BComp,
                 ..
             }
         ),
@@ -348,24 +363,24 @@ fn test_composition_circ_ascii() {
 // MEDIUM priority: Quantifiers with multiple variables
 // ============================================================================
 
-#[test_case("∀x, y · x > 0 ∧ y > 0 ⇒ x + y > 0", Quantifier::ForAll ; "forall")]
-#[test_case("∃x, y · x > 0 ∧ y > 0", Quantifier::Exists ; "exists")]
-fn test_quantifier_multiple_variables(axiom: &str, expected: Quantifier) {
+#[test_case("∀x, y · x > 0 ∧ y > 0 ⇒ x + y > 0", QuantPredOp::Forall ; "forall")]
+#[test_case("∃x, y · x > 0 ∧ y > 0", QuantPredOp::Exists ; "exists")]
+fn test_quantifier_multiple_variables(axiom: &str, expected: QuantPredOp) {
     let source = format!("\n    CONTEXT test\n    AXIOMS\n        @axm1 {axiom}\n    END\n    ");
 
     let ctx = common::parse_context(&source);
-    match &ctx.axioms[0].predicate.kind {
-        PredicateKind::Quantified {
-            quantifier,
-            identifiers,
-            predicate,
-        } => {
-            assert_eq!(*quantifier, expected);
-            assert_eq!(identifiers, &["x", "y"]);
+    match ctx.axioms[0].predicate.kind() {
+        PredicateKind::Quantified { op, decls, pred } => {
+            assert_eq!(*op, expected);
+            let names: Vec<&str> = decls.iter().map(|d| d.name()).collect();
+            assert_eq!(names, ["x", "y"]);
             assert!(
-                matches!(&predicate.kind, PredicateKind::Logical { .. }),
-                "Expected Logical predicate body, got {:?}",
-                predicate
+                matches!(
+                    pred.kind(),
+                    PredicateKind::Binary { .. } | PredicateKind::Associative { .. }
+                ),
+                "Expected a compound predicate body, got {:?}",
+                pred
             );
         }
         other => panic!("Expected Quantified {expected:?}, got {:?}", other),
@@ -382,24 +397,21 @@ fn test_nested_quantifiers() {
     "#;
 
     let ctx = common::parse_context(source);
-    match &ctx.axioms[0].predicate.kind {
-        PredicateKind::Quantified {
-            quantifier,
-            identifiers,
-            predicate,
-        } => {
-            assert_eq!(*quantifier, Quantifier::ForAll);
-            assert_eq!(identifiers, &["x"]);
+    match ctx.axioms[0].predicate.kind() {
+        PredicateKind::Quantified { op, decls, pred } => {
+            assert_eq!(*op, QuantPredOp::Forall);
+            let names: Vec<&str> = decls.iter().map(|d| d.name()).collect();
+            assert_eq!(names, ["x"]);
             assert!(
                 matches!(
-                    &predicate.kind,
+                    pred.kind(),
                     PredicateKind::Quantified {
-                        quantifier: Quantifier::Exists,
+                        op: QuantPredOp::Exists,
                         ..
                     }
                 ),
                 "Expected Quantified Exists inside ForAll, got {:?}",
-                predicate
+                pred
             );
         }
         other => panic!("Expected Quantified ForAll, got {:?}", other),
@@ -412,8 +424,6 @@ fn test_nested_quantifiers() {
 
 #[test]
 fn test_lambda_maplet_pattern() {
-    use rossi::IdentPattern;
-
     let source = r#"
     CONTEXT test
     CONSTANTS
@@ -424,23 +434,35 @@ fn test_lambda_maplet_pattern() {
     "#;
 
     let ctx = common::parse_context(source);
-    if let PredicateKind::Comparison { right, .. } = &ctx.axioms[0].predicate.kind {
-        match &right.kind {
-            ExpressionKind::Lambda {
-                pattern,
-                predicate,
-                expression,
+    if let PredicateKind::Relational { right, .. } = ctx.axioms[0].predicate.kind() {
+        match right.kind() {
+            ExpressionKind::Quantified {
+                op: QuantExprOp::CSet,
+                decls,
+                pred,
+                expr,
+                form: rossi::Form::Lambda,
             } => {
-                let ids = pattern.identifiers();
-                assert_eq!(ids, vec!["x", "y"]);
+                let names: Vec<&str> = decls.iter().map(|d| d.name()).collect();
+                assert_eq!(names, ["x", "y"]);
+                // The value is `pattern ↦ body`; the pattern is `x ↦ y`.
+                let ExpressionKind::Binary {
+                    op: BinaryExprOp::Mapsto,
+                    left: pattern,
+                    right: body,
+                } = expr.kind()
+                else {
+                    panic!("Expected the lambda value pair, got {:?}", expr);
+                };
                 assert!(matches!(
-                    pattern,
-                    IdentPattern::Maplet(l, r)
-                        if matches!(l.as_ref(), IdentPattern::Identifier(n) if n == "x")
-                        && matches!(r.as_ref(), IdentPattern::Identifier(n) if n == "y")
+                    pattern.kind(),
+                    ExpressionKind::Binary {
+                        op: BinaryExprOp::Mapsto,
+                        ..
+                    }
                 ));
-                assert!(matches!(&predicate.kind, PredicateKind::Logical { .. }));
-                assert!(matches!(&expression.kind, ExpressionKind::Binary { .. }));
+                assert!(matches!(pred.kind(), PredicateKind::Associative { .. }));
+                assert!(matches!(body.kind(), ExpressionKind::Associative { .. }));
             }
             other => panic!("Expected Lambda, got {:?}", other),
         }
@@ -451,8 +473,6 @@ fn test_lambda_maplet_pattern() {
 
 #[test]
 fn test_lambda_parenthesized_maplet_pattern() {
-    use rossi::IdentPattern;
-
     // This is a real-world corpus pattern that originally failed
     let source = r#"
     CONTEXT test
@@ -464,17 +484,16 @@ fn test_lambda_parenthesized_maplet_pattern() {
     "#;
 
     let ctx = common::parse_context(source);
-    if let PredicateKind::Comparison { right, .. } = &ctx.axioms[0].predicate.kind {
-        match &right.kind {
-            ExpressionKind::Lambda { pattern, .. } => {
-                let ids = pattern.identifiers();
-                assert_eq!(ids, vec!["x", "y"]);
-                assert!(matches!(
-                    pattern,
-                    IdentPattern::Maplet(l, r)
-                        if matches!(l.as_ref(), IdentPattern::Identifier(n) if n == "x")
-                        && matches!(r.as_ref(), IdentPattern::Identifier(n) if n == "y")
-                ));
+    if let PredicateKind::Relational { right, .. } = ctx.axioms[0].predicate.kind() {
+        match right.kind() {
+            ExpressionKind::Quantified {
+                op: QuantExprOp::CSet,
+                decls,
+                form: rossi::Form::Lambda,
+                ..
+            } => {
+                let names: Vec<&str> = decls.iter().map(|d| d.name()).collect();
+                assert_eq!(names, ["x", "y"]);
             }
             other => panic!("Expected Lambda, got {:?}", other),
         }
@@ -485,8 +504,6 @@ fn test_lambda_parenthesized_maplet_pattern() {
 
 #[test]
 fn test_lambda_triple_maplet_left_assoc() {
-    use rossi::IdentPattern;
-
     let source = r#"
     CONTEXT test
     CONSTANTS
@@ -497,29 +514,41 @@ fn test_lambda_triple_maplet_left_assoc() {
     "#;
 
     let ctx = common::parse_context(source);
-    if let PredicateKind::Comparison { right, .. } = &ctx.axioms[0].predicate.kind {
-        match &right.kind {
-            ExpressionKind::Lambda { pattern, .. } => {
-                let ids = pattern.identifiers();
-                assert_eq!(ids, vec!["x", "y", "z"]);
-                // Left-assoc: (x ↦ y) ↦ z
-                match pattern {
-                    IdentPattern::Maplet(left, right) => {
-                        assert!(matches!(right.as_ref(), IdentPattern::Identifier(n) if n == "z"));
-                        match left.as_ref() {
-                            IdentPattern::Maplet(ll, lr) => {
-                                assert!(
-                                    matches!(ll.as_ref(), IdentPattern::Identifier(n) if n == "x")
-                                );
-                                assert!(
-                                    matches!(lr.as_ref(), IdentPattern::Identifier(n) if n == "y")
-                                );
-                            }
-                            other => panic!("Expected inner Maplet, got {:?}", other),
-                        }
+    if let PredicateKind::Relational { right, .. } = ctx.axioms[0].predicate.kind() {
+        match right.kind() {
+            ExpressionKind::Quantified {
+                op: QuantExprOp::CSet,
+                decls,
+                expr,
+                form: rossi::Form::Lambda,
+                ..
+            } => {
+                let names: Vec<&str> = decls.iter().map(|d| d.name()).collect();
+                assert_eq!(names, ["x", "y", "z"]);
+                // The value's pattern side is left-assoc: (x ↦ y) ↦ z.
+                let ExpressionKind::Binary {
+                    op: BinaryExprOp::Mapsto,
+                    left: pattern,
+                    ..
+                } = expr.kind()
+                else {
+                    panic!("Expected the lambda value pair, got {:?}", expr);
+                };
+                let ExpressionKind::Binary {
+                    op: BinaryExprOp::Mapsto,
+                    left: inner,
+                    ..
+                } = pattern.kind()
+                else {
+                    panic!("Expected the outer pattern maplet, got {:?}", pattern);
+                };
+                assert!(matches!(
+                    inner.kind(),
+                    ExpressionKind::Binary {
+                        op: BinaryExprOp::Mapsto,
+                        ..
                     }
-                    other => panic!("Expected outer Maplet, got {:?}", other),
-                }
+                ));
             }
             other => panic!("Expected Lambda, got {:?}", other),
         }
@@ -536,18 +565,18 @@ fn test_lambda_triple_maplet_left_assoc() {
 fn test_set_comprehension_multiple_vars() {
     let source = common::invariant_machine("s", "s = {x, y · x ∈ ℕ ∧ y ∈ ℕ | x + y}");
     let m = common::parse_machine(&source);
-    if let PredicateKind::Comparison { right, .. } = &m.invariants[0].predicate.kind {
-        match &right.kind {
-            ExpressionKind::SetComprehension {
-                identifiers,
-                predicate,
-                expression,
+    if let PredicateKind::Relational { right, .. } = m.invariants[0].predicate.kind() {
+        match right.kind() {
+            ExpressionKind::Quantified {
+                op: QuantExprOp::CSet,
+                decls,
+                pred,
+                form: rossi::Form::Explicit,
+                ..
             } => {
-                assert_eq!(identifiers.len(), 2);
-                assert_eq!(identifiers[0], "x");
-                assert_eq!(identifiers[1], "y");
-                assert!(matches!(&predicate.kind, PredicateKind::Logical { .. }));
-                assert!(expression.is_some());
+                let names: Vec<&str> = decls.iter().map(|d| d.name()).collect();
+                assert_eq!(names, ["x", "y"]);
+                assert!(matches!(pred.kind(), PredicateKind::Associative { .. }));
             }
             other => panic!("Expected SetComprehension, got {:?}", other),
         }
@@ -573,37 +602,58 @@ fn test_primed_identifier_in_becomes_such_that() {
         .find(|e| e.name == "decrease")
         .expect("Expected 'decrease' event");
     assert_eq!(decrease.actions.len(), 1);
-    match &decrease.actions[0].action.kind {
-        ActionKind::BecomesSuchThat {
-            variables,
-            predicate,
-        } => {
-            assert_eq!(variables, &["abstract_state"]);
-            // The predicate should contain abstract_state' as an identifier
-            fn contains_primed_ident(pred: &Predicate) -> bool {
-                match &pred.kind {
-                    PredicateKind::Comparison { left, right, .. } => {
-                        has_primed_expr(left) || has_primed_expr(right)
-                    }
-                    PredicateKind::Logical { left, right, .. } => {
-                        contains_primed_ident(left) || contains_primed_ident(right)
-                    }
-                    _ => false,
-                }
-            }
-            fn has_primed_expr(expr: &Expression) -> bool {
-                match &expr.kind {
-                    ExpressionKind::Identifier(name) => name.ends_with('\''),
-                    ExpressionKind::Binary { left, right, .. } => {
-                        has_primed_expr(left) || has_primed_expr(right)
-                    }
-                    _ => false,
-                }
-            }
+    match decrease.actions[0]
+        .action
+        .assignment()
+        .map(rossi::Assignment::kind)
+    {
+        Some(AssignmentKind::BecomesSuchThat {
+            idents,
+            pred,
+            primed,
+        }) => {
             assert!(
-                contains_primed_ident(predicate),
-                "Expected predicate to contain primed identifier (abstract_state'), got {:?}",
-                predicate
+                matches!(idents[0].kind(), ExpressionKind::FreeIdentifier(n) if n == "abstract_state")
+            );
+            // The condition binds the primed after-state declarations:
+            // walking the whole assignment resolves `abstract_state'`
+            // reads to the primed declaration.
+            fn contains_primed_ident(assignment: &rossi::Assignment) -> bool {
+                use std::ops::ControlFlow;
+                struct Finder(bool);
+                impl rossi::formula::occurrences::OccurrenceVisitor for Finder {
+                    fn visit(
+                        &mut self,
+                        occ: rossi::formula::occurrences::Occurrence<'_>,
+                    ) -> ControlFlow<()> {
+                        if occ.role == rossi::formula::occurrences::Role::Usage
+                            && occ.name.ends_with('\'')
+                        {
+                            self.0 = true;
+                            return ControlFlow::Break(());
+                        }
+                        ControlFlow::Continue(())
+                    }
+                }
+                let mut finder = Finder(false);
+                let _ = rossi::formula::occurrences::walk_assignment(
+                    assignment,
+                    &mut Vec::new(),
+                    &mut finder,
+                );
+                finder.0
+            }
+            assert_eq!(primed.len(), 1);
+            assert_eq!(primed[0].name(), "abstract_state'");
+            let _ = pred;
+            assert!(
+                contains_primed_ident(
+                    decrease.actions[0]
+                        .action
+                        .assignment()
+                        .expect("an assignment")
+                ),
+                "Expected the condition to bind the primed after-state"
             );
         }
         other => panic!("Expected BecomesSuchThat, got {:?}", other),

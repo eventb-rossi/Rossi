@@ -120,8 +120,10 @@ fn round_trip_zip(path: &Path) -> Result<usize, String> {
         // The pretty printer debug_asserts that structural names are
         // re-lexable; a panic here is a real import/grammar disagreement —
         // contain it to a per-file failure so the whole run still reports.
-        let text = std::panic::catch_unwind(|| rossi::to_string(&named.component))
-            .map_err(|_| format!("{file}: print panicked (unparseable name reached the AST)"))?;
+        let text = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            rossi::to_string(&named.component)
+        }))
+        .map_err(|_| format!("{file}: print panicked (unparseable name reached the AST)"))?;
         let reparsed = rossi::parse(&text)
             .map_err(|e| format!("{file}: re-parse: {}", sanitize(&e.to_string())))?;
         let reprinted = rossi::to_string(&reparsed);

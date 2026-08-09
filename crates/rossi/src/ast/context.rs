@@ -80,7 +80,6 @@ impl SetDeclaration {
 
 /// An Event-B Context component
 #[derive(Debug, Clone, PartialEq, Eq)]
-#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct Context {
     /// Name of the context
     pub name: String,
@@ -106,7 +105,6 @@ pub struct Context {
 
     /// Source regions of the context's clause sections (textual parse only),
     /// used by structural LSP features such as folding.
-    #[cfg_attr(feature = "serde", serde(default))]
     pub clauses: Vec<ClauseRegion>,
 
     /// Comment from Rodin XML

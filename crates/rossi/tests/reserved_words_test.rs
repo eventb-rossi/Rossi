@@ -17,8 +17,8 @@
 
 mod common;
 
-use rossi::ast::Expression;
-use rossi::ast::expression::{AtomicBuiltinKind, UnaryOp};
+use rossi::Expression;
+use rossi::formula::tag::{AtomicOp, BinaryExprOp, UnaryExprOp};
 use rossi::parser::{parse_action_str, parse_predicate_str};
 use rossi::{ExpressionKind, ParseError, parse};
 
@@ -145,10 +145,18 @@ fn applied_builtin_forms_still_parse() {
 fn generic_atoms_still_parse_bare() {
     // id, prj1, prj2, pred, succ are generic atomic expressions in V2 —
     // legal bare, exactly as in Rodin, and carry a typed AtomicBuiltin handle.
-    for atom in ["id", "prj1", "prj2", "pred", "succ"] {
+    for (atom, op) in [
+        ("id", AtomicOp::KIdGen),
+        ("prj1", AtomicOp::KPrj1Gen),
+        ("prj2", AtomicOp::KPrj2Gen),
+        ("pred", AtomicOp::KPred),
+        ("succ", AtomicOp::KSucc),
+    ] {
         let rhs = common::parse_axiom_rhs(&common::axiom_context("f", &format!("f = {atom}")));
-        let kind = AtomicBuiltinKind::from_name(atom).expect("relational atom");
-        assert_eq!(rhs, ExpressionKind::AtomicBuiltin(kind).into());
+        assert!(
+            matches!(rhs.kind(), ExpressionKind::Atomic(o) if *o == op),
+            "expected the {atom} atom, got {rhs:?}"
+        );
     }
 }
 
@@ -207,9 +215,8 @@ fn reservation_is_exact_case() {
 fn keyword_prefix_is_identifier(ident: &str) {
     let source = common::axiom_context(ident, &format!("{ident} = 5"));
     let lhs = common::parse_expr_axiom(&source);
-    assert_eq!(
-        lhs,
-        ExpressionKind::Identifier(ident.to_string()).into(),
+    assert!(
+        matches!(lhs.kind(), ExpressionKind::FreeIdentifier(n) if n == ident),
         "{ident:?} should parse as an identifier, not a keyword/operator"
     );
 }
@@ -234,9 +241,9 @@ fn axiom_rhs(formula: &str) -> Expression {
 }
 
 #[track_caller]
-fn assert_is_unary(expr: &Expression, op: UnaryOp) {
+fn assert_is_unary(expr: &Expression, op: UnaryExprOp) {
     assert!(
-        matches!(&expr.kind, ExpressionKind::Unary { op: o, .. } if *o == op),
+        matches!(expr.kind(), ExpressionKind::Unary { op: o, .. } if *o == op),
         "expected Unary {op:?}, got {expr:?}"
     );
 }
@@ -246,27 +253,37 @@ fn postfix_operators_bind_outside_closed_dom() {
     // Rodin: dom(f)∼ = (dom(f))∼, not dom(f∼).
     let inverse = axiom_rhs("dom(f)∼");
     let ExpressionKind::Unary {
-        op: UnaryOp::Inverse,
-        operand,
-    } = inverse.kind
+        op: UnaryExprOp::Converse,
+        child,
+    } = inverse.kind()
     else {
         panic!("expected (dom(f))∼, got {inverse:?}");
     };
-    assert_is_unary(&operand, UnaryOp::Domain);
+    assert_is_unary(child, UnaryExprOp::KDom);
 
     // Rodin: dom(f)(x) = (dom(f))(x), not dom(f(x)).
     let applied = axiom_rhs("dom(f)(g)");
-    let ExpressionKind::FunctionApplication { function, .. } = applied.kind else {
+    let ExpressionKind::Binary {
+        op: BinaryExprOp::FunImage,
+        left: function,
+        ..
+    } = applied.kind()
+    else {
         panic!("expected (dom(f))(g), got {applied:?}");
     };
-    assert_is_unary(&function, UnaryOp::Domain);
+    assert_is_unary(function, UnaryExprOp::KDom);
 
     // Rodin: ran(f)[S] = (ran(f))[S], not ran(f[S]).
     let imaged = axiom_rhs("ran(f)[S]");
-    let ExpressionKind::RelationalImage { relation, .. } = imaged.kind else {
+    let ExpressionKind::Binary {
+        op: BinaryExprOp::RelImage,
+        left: relation,
+        ..
+    } = imaged.kind()
+    else {
         panic!("expected (ran(f))[S], got {imaged:?}");
     };
-    assert_is_unary(&relation, UnaryOp::Range);
+    assert_is_unary(relation, UnaryExprOp::KRan);
 }
 
 // ============================================================================

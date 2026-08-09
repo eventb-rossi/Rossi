@@ -829,7 +829,9 @@ fn parse_machine(pair: pest::iterators::Pair<Rule>) -> Result<Component, ParseEr
                         match vp.as_rule() {
                             Rule::kw_variant => {}
                             _ => {
-                                machine.variant = Some(parse_expression(vp)?);
+                                machine.variant = Some(crate::formula::lower::lower_expression(
+                                    &parse_expression(vp)?,
+                                ));
                             }
                         }
                     }
@@ -899,10 +901,11 @@ fn parse_labeled_predicate(
         }
     }
 
+    let predicate = predicate.ok_or(ParseError::MissingPredicate)?;
     Ok(LabeledPredicate {
         label,
         is_theorem,
-        predicate: predicate.ok_or(ParseError::MissingPredicate)?,
+        predicate: crate::formula::lower::lower_predicate(&predicate),
         span: Some(span),
         comment: None,
     })
@@ -1305,9 +1308,10 @@ fn parse_labeled_action(pair: pest::iterators::Pair<Rule>) -> Result<LabeledActi
         }
     }
 
+    let action = action.ok_or(ParseError::MissingAction)?;
     Ok(LabeledAction {
         label,
-        action: action.ok_or(ParseError::MissingAction)?,
+        action: crate::formula::lower::lower_action_body(&action),
         span: Some(span),
         comment: None,
     })
@@ -2462,7 +2466,13 @@ fn parse_predicate_inner(
 /// Parse a predicate from a string (used by XML parser)
 ///
 /// Uses `predicate_complete` (with SOI/EOI) to ensure the entire input is consumed.
-pub fn parse_predicate_str(input: &str) -> Result<Predicate, ParseError> {
+pub fn parse_predicate_str(input: &str) -> Result<crate::formula::Predicate, ParseError> {
+    parse_predicate_str_legacy(input).map(|p| crate::formula::lower::lower_predicate(&p))
+}
+
+/// The legacy-tree spelling of [`parse_predicate_str`], for the parser's
+/// own internals.
+pub(crate) fn parse_predicate_str_legacy(input: &str) -> Result<Predicate, ParseError> {
     let depth = nesting::check_nesting(input)?;
     let result = with_parser_stack(depth, || {
         let pairs = RossiParser::parse(Rule::predicate_complete, input)
@@ -2480,7 +2490,13 @@ pub fn parse_predicate_str(input: &str) -> Result<Predicate, ParseError> {
 /// Parse an expression from a string (used by XML parser)
 ///
 /// Uses `expression_complete` (with SOI/EOI) to ensure the entire input is consumed.
-pub fn parse_expression_str(input: &str) -> Result<Expression, ParseError> {
+pub fn parse_expression_str(input: &str) -> Result<crate::formula::Expression, ParseError> {
+    parse_expression_str_legacy(input).map(|e| crate::formula::lower::lower_expression(&e))
+}
+
+/// The legacy-tree spelling of [`parse_expression_str`], for the parser's
+/// own internals.
+pub(crate) fn parse_expression_str_legacy(input: &str) -> Result<Expression, ParseError> {
     let depth = nesting::check_nesting(input)?;
     with_parser_stack(depth, || {
         let pairs = RossiParser::parse(Rule::expression_complete, input)
@@ -2501,7 +2517,13 @@ pub fn parse_expression_str(input: &str) -> Result<Expression, ParseError> {
 /// THEN block it is parsed with the full expression grammar
 /// (`standalone_action`): a bare `;` is forward composition, not an
 /// action boundary.
-pub fn parse_action_str(input: &str) -> Result<Action, ParseError> {
+pub fn parse_action_str(input: &str) -> Result<crate::ast::ActionBody, ParseError> {
+    parse_action_str_legacy(input).map(|a| crate::formula::lower::lower_action_body(&a))
+}
+
+/// The legacy-tree spelling of [`parse_action_str`], for the parser's own
+/// internals.
+pub(crate) fn parse_action_str_legacy(input: &str) -> Result<Action, ParseError> {
     let depth = nesting::check_nesting(input)?;
     with_parser_stack(depth, || {
         let pairs = RossiParser::parse(Rule::action_complete, input)
@@ -2897,14 +2919,12 @@ fn recover_labeled_predicates(
         // `content` is a subslice of `raw`; its absolute document offset (masked
         // and original share a byte layout).
         let abs_start = seg_start + subslice_offset(raw, content);
-        match try_parse_labeled_predicate_from_text(content) {
+        match try_parse_labeled_predicate_from_text(content, abs_start) {
             Ok(mut pred) => {
-                // The segment was parsed in isolation with its span cleared:
-                // anchor the span at the segment extent and lift the formula
-                // spans to absolute document coordinates, as the AST visitor
-                // does for the multi-component path.
+                // The formula spans are already lifted to document
+                // coordinates by the lowering; anchor the label-inclusive
+                // span at the segment extent.
                 pred.span = Some(segment_span(abs_start, content));
-                SpanShifter(abs_start).visit_predicate(&mut pred.predicate);
                 result.push(pred);
             }
             Err(e) => push_recovery_error(errors, text, abs_start, content, label, e),
@@ -2981,11 +3001,10 @@ fn recover_predicates_in_range(
     errors: &mut Vec<ParseError>,
 ) -> Vec<LabeledPredicate> {
     recover_clause_in_range(text, from, to, label, errors, |content, abs_start| {
-        let mut pred = try_parse_labeled_predicate_from_text(content)?;
-        // The parsed span was cleared (segment-relative); anchor it at the
-        // label-inclusive segment extent, then lift the formula spans.
+        let mut pred = try_parse_labeled_predicate_from_text(content, abs_start)?;
+        // The formula spans are already in document coordinates; anchor
+        // the label-inclusive span at the segment extent.
         pred.span = Some(segment_span(abs_start, content));
-        SpanShifter(abs_start).visit_predicate(&mut pred.predicate);
         Ok(pred)
     })
 }
@@ -3305,7 +3324,12 @@ fn recover_components_after_error(
         let end = starts.get(i + 1).copied().unwrap_or(input.len());
         line_delta += input[prev_start..start].matches('\n').count();
         prev_start = start;
-        let result = parse_with_recovery(&input[start..end]);
+        // The lowering lifts formula spans to document coordinates as
+        // the slice parses; the visitor then shifts the remaining
+        // structural spans (names, clauses, labeled elements).
+        let result = crate::formula::lower::with_span_base(start, || {
+            parse_with_recovery(&input[start..end])
+        });
         errors.extend(
             result
                 .errors
@@ -3880,10 +3904,13 @@ impl RecoveryFormulaKind {
         match (self, keyword) {
             (Self::Component, KeywordId::Axioms | KeywordId::Invariants | KeywordId::Theorems)
             | (Self::Event, KeywordId::Where | KeywordId::With | KeywordId::Witness) => {
-                try_parse_labeled_predicate_from_text(content).is_ok()
+                // Parseability probe only — spans are discarded.
+                try_parse_labeled_predicate_from_text(content, 0).is_ok()
             }
             (Self::Component, KeywordId::Variant) => parse_expression_str(content).is_ok(),
-            (Self::Event, KeywordId::Then) => try_parse_labeled_action_from_text(content).is_ok(),
+            (Self::Event, KeywordId::Then) => {
+                try_parse_labeled_action_from_text(content, 0).is_ok()
+            }
             _ => true,
         }
     }
@@ -4410,9 +4437,16 @@ fn parse_labeled_predicate_str(input: &str) -> Result<LabeledPredicate, ParseErr
 /// from the grammar (issue #24; this includes the trailing-colon label
 /// spelling `@axm1: P`, where the colon belongs to the label). Only the
 /// grammar-external `label: P` colon form is handled heuristically on top.
-fn try_parse_labeled_predicate_from_text(text: &str) -> Result<LabeledPredicate, ParseError> {
+fn try_parse_labeled_predicate_from_text(
+    text: &str,
+    abs_start: usize,
+) -> Result<LabeledPredicate, ParseError> {
+    // The segment is parsed in isolation, so the lowering lifts the
+    // formula spans to document coordinates as they are produced.
     let text = text.trim();
-    let strict_error = match parse_labeled_predicate_str(text) {
+    let strict_error = match crate::formula::lower::with_span_base(abs_start, || {
+        parse_labeled_predicate_str(text)
+    }) {
         Ok(result) => return Ok(result),
         Err(e) => e,
     };
@@ -4429,7 +4463,9 @@ fn try_parse_labeled_predicate_from_text(text: &str) -> Result<LabeledPredicate,
             && potential_label
                 .chars()
                 .all(|c| c.is_alphanumeric() || c == '_')
-            && let Ok(predicate) = parse_predicate_str(text[colon_pos + 1..].trim())
+            && let Ok(predicate) = crate::formula::lower::with_span_base(abs_start, || {
+                parse_predicate_str(text[colon_pos + 1..].trim())
+            })
         {
             return Ok(LabeledPredicate {
                 label: Some(potential_label.to_string()),
@@ -4447,12 +4483,13 @@ fn try_parse_labeled_predicate_from_text(text: &str) -> Result<LabeledPredicate,
 /// Parse a labeled action from a string segment: `@label lhs := rhs` or
 /// bare `lhs := rhs`. Used by [`recover_actions_in_range`].
 ///
-/// Returns the parsed action together with the byte offset, within (trimmed)
-/// `text`, at which the action body begins. The `@label` prefix is stripped
-/// before parsing, so the action's spans are relative to that body offset, not
-/// to `text`; the caller adds the offset when shifting spans into absolute
-/// document coordinates.
-fn try_parse_labeled_action_from_text(text: &str) -> Result<(LabeledAction, usize), ParseError> {
+/// The `@label` prefix is stripped before parsing; the lowering lifts
+/// the body's formula spans straight to document coordinates (the body
+/// begins past the stripped label, at `abs_start` + its offset).
+fn try_parse_labeled_action_from_text(
+    text: &str,
+    abs_start: usize,
+) -> Result<LabeledAction, ParseError> {
     let text = text.trim();
 
     // Extract an optional `@label` prefix, mirroring how the strict grammar
@@ -4472,7 +4509,10 @@ fn try_parse_labeled_action_from_text(text: &str) -> Result<(LabeledAction, usiz
     // `action_text` is a subslice of `text`; this is the offset of the action
     // body past any `@label ` prefix that was stripped above.
     let body_offset = subslice_offset(text, action_text);
-    let action = parse_action_str(action_text).map_err(|error| {
+    let action = crate::formula::lower::with_span_base(abs_start + body_offset, || {
+        parse_action_str(action_text)
+    })
+    .map_err(|error| {
         // Keep recovery sources in the segment coordinate space documented by
         // `RecoverableError::source`. Arity diagnostics need their operator
         // span shifted past the optional label so consumers can combine it
@@ -4501,15 +4541,12 @@ fn try_parse_labeled_action_from_text(text: &str) -> Result<(LabeledAction, usiz
             error
         }
     })?;
-    Ok((
-        LabeledAction {
-            label,
-            action,
-            span: None,
-            comment: None,
-        },
-        body_offset,
-    ))
+    Ok(LabeledAction {
+        label,
+        action,
+        span: None,
+        comment: None,
+    })
 }
 
 /// Recover labeled actions from an explicit `[from, to)` byte range.
@@ -4525,11 +4562,10 @@ fn recover_actions_in_range(
     errors: &mut Vec<ParseError>,
 ) -> Vec<LabeledAction> {
     recover_clause_in_range(text, from, to, "action", errors, |content, abs_start| {
-        let (mut la, body_offset) = try_parse_labeled_action_from_text(content)?;
-        // The label-inclusive span anchors the action in the outline; its body
-        // spans are relative to the body, past the stripped label.
+        let mut la = try_parse_labeled_action_from_text(content, abs_start)?;
+        // The label-inclusive span anchors the action in the outline; the
+        // body's formula spans are already in document coordinates.
         la.span = Some(segment_span(abs_start, content));
-        SpanShifter(abs_start + body_offset).visit_action(&mut la.action);
         Ok(la)
     })
 }

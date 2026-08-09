@@ -18,7 +18,6 @@ pub enum EventStatus {
 
 /// An Event-B event
 #[derive(Debug, Clone, PartialEq, Eq)]
-#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct Event {
     /// Name of the event
     pub name: String,
@@ -52,10 +51,6 @@ pub struct Event {
 
     /// Source location of the `refines`/`extends` target name (the abstract
     /// event this one refines or extends), when one is present
-    #[cfg_attr(
-        feature = "serde",
-        serde(default, skip_serializing_if = "Option::is_none")
-    )]
     pub refines_span: Option<Span>,
 
     /// Comment from Rodin XML
@@ -88,7 +83,6 @@ impl Event {
 
 /// The INITIALISATION event
 #[derive(Debug, Clone, PartialEq, Eq)]
-#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct InitialisationEvent {
     /// Actions that initialize the variables
     pub actions: Vec<LabeledAction>,

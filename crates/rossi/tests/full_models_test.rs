@@ -2,8 +2,7 @@
 
 mod common;
 
-use rossi::ast::expression::AtomicBuiltinKind;
-use rossi::ast::predicate::BuiltinPredicate;
+use rossi::formula::tag::AtomicOp;
 use rossi::{Component, ExpressionKind, ParseError, PredicateKind, parse};
 
 #[test]
@@ -191,8 +190,8 @@ fn test_event_with_clause() {
     assert_eq!(event.with.len(), 1);
     assert_eq!(event.with[0].label, Some("abs_val".to_string()));
     assert!(matches!(
-        &event.with[0].predicate.kind,
-        rossi::PredicateKind::Comparison { .. }
+        event.with[0].predicate.kind(),
+        rossi::PredicateKind::Relational { .. }
     ));
 }
 
@@ -232,8 +231,8 @@ fn test_event_witness_clause() {
     assert_eq!(event.witnesses.len(), 1);
     assert_eq!(event.witnesses[0].label, Some("abs_param".to_string()));
     assert!(matches!(
-        &event.witnesses[0].predicate.kind,
-        rossi::PredicateKind::Comparison { .. }
+        event.witnesses[0].predicate.kind(),
+        rossi::PredicateKind::Relational { .. }
     ));
 }
 
@@ -307,17 +306,14 @@ fn test_variant_clause_simple_identifier() {
 
     let m = common::parse_machine(source);
     assert!(m.variant.is_some(), "Machine should have a variant");
-    assert_eq!(
-        m.variant.unwrap(),
-        ExpressionKind::Identifier("n".to_string()).into(),
+    assert!(
+        matches!(m.variant.as_ref().unwrap().kind(), ExpressionKind::FreeIdentifier(n) if n == "n"),
         "Variant should be identifier 'n'"
     );
 }
 
 #[test]
 fn test_variant_clause_arithmetic_expression() {
-    use rossi::ast::expression::BinaryOp;
-
     let source = r#"
     MACHINE test
     VARIABLES
@@ -338,13 +334,13 @@ fn test_variant_clause_arithmetic_expression() {
 
     let m = common::parse_machine(source);
     assert!(m.variant.is_some(), "Machine should have a variant");
-    match m.variant.unwrap().kind {
-        ExpressionKind::Binary { op, left, right } => {
-            assert_eq!(op, BinaryOp::Add);
-            assert!(matches!(left.kind, ExpressionKind::Identifier(ref n) if n == "x"));
-            assert!(matches!(right.kind, ExpressionKind::Identifier(ref n) if n == "y"));
+    match m.variant.as_ref().unwrap().kind() {
+        ExpressionKind::Associative { op, children } => {
+            assert_eq!(*op, rossi::formula::tag::AssocExprOp::Plus);
+            assert!(matches!(children[0].kind(), ExpressionKind::FreeIdentifier(n) if n == "x"));
+            assert!(matches!(children[1].kind(), ExpressionKind::FreeIdentifier(n) if n == "y"));
         }
-        other => panic!("Expected Binary expression for variant, got {:?}", other),
+        other => panic!("Expected a sum for the variant, got {:?}", other),
     }
 }
 
@@ -463,11 +459,15 @@ fn test_multiple_parallel_assignment() {
         .as_ref()
         .expect("Should have initialisation");
     assert_eq!(init.actions.len(), 1);
-    match &init.actions[0].action.kind {
-        rossi::ActionKind::Assignment { assignments } => {
-            assert_eq!(assignments.len(), 2);
-            assert_eq!(assignments[0].0, "x");
-            assert_eq!(assignments[1].0, "y");
+    match init.actions[0]
+        .action
+        .assignment()
+        .map(rossi::Assignment::kind)
+    {
+        Some(rossi::AssignmentKind::BecomesEqualTo { idents, .. }) => {
+            assert_eq!(idents.len(), 2);
+            assert!(matches!(idents[0].kind(), ExpressionKind::FreeIdentifier(n) if n == "x"));
+            assert!(matches!(idents[1].kind(), ExpressionKind::FreeIdentifier(n) if n == "y"));
         }
         other => panic!("Expected Assignment, got {:?}", other),
     }
@@ -476,11 +476,15 @@ fn test_multiple_parallel_assignment() {
     assert_eq!(m.events.len(), 1);
     let event = &m.events[0];
     assert_eq!(event.actions.len(), 1);
-    match &event.actions[0].action.kind {
-        rossi::ActionKind::Assignment { assignments } => {
-            assert_eq!(assignments.len(), 2);
-            assert_eq!(assignments[0].0, "x");
-            assert_eq!(assignments[1].0, "y");
+    match event.actions[0]
+        .action
+        .assignment()
+        .map(rossi::Assignment::kind)
+    {
+        Some(rossi::AssignmentKind::BecomesEqualTo { idents, .. }) => {
+            assert_eq!(idents.len(), 2);
+            assert!(matches!(idents[0].kind(), ExpressionKind::FreeIdentifier(n) if n == "x"));
+            assert!(matches!(idents[1].kind(), ExpressionKind::FreeIdentifier(n) if n == "y"));
         }
         other => panic!("Expected Assignment, got {:?}", other),
     }
@@ -498,17 +502,31 @@ fn test_quantified_union_inter(body: &str, is_union: bool, typed: bool) {
     let source = common::invariant_machine("s", body);
     let m = common::parse_machine(&source);
     let pred = &m.invariants[0].predicate;
-    let rossi::PredicateKind::Comparison { right, .. } = &pred.kind else {
+    let rossi::PredicateKind::Relational { right, .. } = pred.kind() else {
         panic!("Expected Comparison predicate for {body:?}");
     };
-    let identifiers = match (&right.kind, is_union) {
-        (ExpressionKind::QuantifiedUnion { identifiers, .. }, true)
-        | (ExpressionKind::QuantifiedInter { identifiers, .. }, false) => identifiers,
+    let decls = match (right.kind(), is_union) {
+        (
+            ExpressionKind::Quantified {
+                op: rossi::formula::tag::QuantExprOp::QUnion,
+                decls,
+                ..
+            },
+            true,
+        )
+        | (
+            ExpressionKind::Quantified {
+                op: rossi::formula::tag::QuantExprOp::QInter,
+                decls,
+                ..
+            },
+            false,
+        ) => decls,
         (other, _) => panic!("Expected quantified union/inter for {body:?}, got {other:?}"),
     };
-    assert_eq!(identifiers.len(), 1);
-    assert_eq!(identifiers[0].name, "x");
-    assert_eq!(identifiers[0].type_expr.is_some(), typed);
+    assert_eq!(decls.len(), 1);
+    assert_eq!(decls[0].name(), "x");
+    assert_eq!(decls[0].annotation().is_some(), typed);
 }
 
 // ============================================================================
@@ -526,13 +544,13 @@ fn test_typed_bound_vars_in_forall() {
     "#;
 
     let ctx = common::parse_context(source);
-    match &ctx.axioms[0].predicate.kind {
-        rossi::PredicateKind::Quantified { identifiers, .. } => {
-            assert_eq!(identifiers.len(), 2);
-            assert_eq!(identifiers[0].name, "ti");
-            assert!(identifiers[0].type_expr.is_some());
-            assert_eq!(identifiers[1].name, "pi");
-            assert!(identifiers[1].type_expr.is_none());
+    match ctx.axioms[0].predicate.kind() {
+        rossi::PredicateKind::Quantified { decls, .. } => {
+            assert_eq!(decls.len(), 2);
+            assert_eq!(decls[0].name(), "ti");
+            assert!(decls[0].annotation().is_some());
+            assert_eq!(decls[1].name(), "pi");
+            assert!(decls[1].annotation().is_none());
         }
         other => panic!("Expected Quantified, got {:?}", other),
     }
@@ -548,9 +566,9 @@ fn test_empty_set_spellings() {
         let source = common::invariant_machine("s", body);
         let m = common::parse_machine(&source);
         let pred = &m.invariants[0].predicate;
-        if let rossi::PredicateKind::Comparison { right, .. } = &pred.kind {
+        if let rossi::PredicateKind::Relational { right, .. } = pred.kind() {
             assert!(
-                matches!(right.kind, ExpressionKind::EmptySet),
+                matches!(right.kind(), ExpressionKind::Atomic(AtomicOp::EmptySet)),
                 "Expected EmptySet for {body:?}, got {:?}",
                 right
             );
@@ -567,19 +585,23 @@ fn test_empty_set_spellings() {
 /// The left-hand expression of a comparison predicate (panics otherwise).
 fn comparison_lhs(kind: &PredicateKind) -> &ExpressionKind {
     match kind {
-        PredicateKind::Comparison { left, .. } => &left.kind,
+        PredicateKind::Relational { left, .. } => left.kind(),
         other => panic!("Expected Comparison, got {other:?}"),
     }
 }
 
 /// Assert that `left` is the single-argument application of a relational atom —
 /// the V2 form `prj1(x)` = `FUNIMAGE(prj1, x)`.
-fn assert_applied_atom(left: &ExpressionKind, kind: AtomicBuiltinKind) {
+fn assert_applied_atom(left: &ExpressionKind, op: AtomicOp) {
     match left {
-        ExpressionKind::FunctionApplication { function, .. } => {
-            assert_eq!(function.kind, ExpressionKind::AtomicBuiltin(kind));
+        ExpressionKind::Binary {
+            op: rossi::formula::tag::BinaryExprOp::FunImage,
+            left: function,
+            ..
+        } => {
+            assert!(matches!(function.kind(), ExpressionKind::Atomic(o) if *o == op));
         }
-        other => panic!("Expected FunctionApplication(AtomicBuiltin({kind:?})), got {other:?}"),
+        other => panic!("Expected an applied {op:?} atom, got {other:?}"),
     }
 }
 
@@ -591,22 +613,22 @@ fn test_builtin_id_prj() {
     let ctx = common::parse_context(
         "CONTEXT test\nAXIOMS\n    @axm1 id(S) = S\n    @axm2 prj1(S ↦ T) = S\n    @axm3 prj2(S ↦ T) = T\n    @axm4 prj1(S) = T\n    @axm5 prj2(cv) = FALSE\nEND\n",
     );
-    let atom = |i: usize, k| assert_applied_atom(comparison_lhs(&ctx.axioms[i].predicate.kind), k);
-    atom(0, AtomicBuiltinKind::Id);
-    atom(1, AtomicBuiltinKind::Prj1);
-    atom(2, AtomicBuiltinKind::Prj2);
-    atom(3, AtomicBuiltinKind::Prj1);
-    atom(4, AtomicBuiltinKind::Prj2);
+    let atom = |i: usize, k| assert_applied_atom(comparison_lhs(ctx.axioms[i].predicate.kind()), k);
+    atom(0, AtomicOp::KIdGen);
+    atom(1, AtomicOp::KPrj1Gen);
+    atom(2, AtomicOp::KPrj2Gen);
+    atom(3, AtomicOp::KPrj1Gen);
+    atom(4, AtomicOp::KPrj2Gen);
 }
 
 #[test]
 fn test_bare_id_is_atomic_builtin() {
     let ctx = common::parse_context("CONTEXT test\nAXIOMS\n    @axm1 id = S\nEND\n");
-    if let PredicateKind::Comparison { left, .. } = &ctx.axioms[0].predicate.kind {
-        assert_eq!(
-            *left,
-            ExpressionKind::AtomicBuiltin(AtomicBuiltinKind::Id).into()
-        );
+    if let PredicateKind::Relational { left, .. } = ctx.axioms[0].predicate.kind() {
+        assert!(matches!(
+            left.kind(),
+            ExpressionKind::Atomic(AtomicOp::KIdGen)
+        ));
     } else {
         panic!("Expected Comparison predicate");
     }
@@ -704,15 +726,11 @@ fn test_builtin_partition_wrong_arity() {
 #[test]
 fn test_builtin_partition_many_args_ok() {
     let ctx = common::parse_context("CONTEXT test\nAXIOMS\n    @axm1 partition(S, A, B, C)\nEND\n");
-    match &ctx.axioms[0].predicate.kind {
-        PredicateKind::BuiltinApplication {
-            predicate,
-            arguments,
-        } => {
-            assert_eq!(*predicate, BuiltinPredicate::Partition);
+    match ctx.axioms[0].predicate.kind() {
+        PredicateKind::Multiple(arguments) => {
             assert_eq!(arguments.len(), 4);
         }
-        other => panic!("Expected BuiltinApplication(Partition), got {:?}", other),
+        other => panic!("Expected the partition predicate, got {:?}", other),
     }
 }
 
@@ -1161,7 +1179,7 @@ fn test_skip_action_in_event() {
     let event = &m.events[0];
     assert_eq!(event.actions.len(), 1);
     assert_eq!(event.actions[0].label, Some("act1".to_string()));
-    assert_eq!(event.actions[0].action, rossi::ActionKind::Skip.into());
+    assert!(event.actions[0].action.is_skip());
 }
 
 #[test]

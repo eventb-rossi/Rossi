@@ -4,11 +4,11 @@
 //! Signature help and smart selection query that shared hierarchy by byte
 //! offset without exposing Pest outside this crate.
 
-use crate::ast::{
-    ActionKind, Component, Expression, ExpressionKind, IdentPattern, Predicate, PredicateKind, Span,
-};
+use crate::ast::{ActionBody, Component, Span};
 use crate::comments::{self, LexicalSpans};
 use crate::error::ParseError;
+use crate::formula::tag::{BinaryExprOp, QuantExprOp, QuantPredOp};
+use crate::formula::{AssignmentKind, Expression, ExpressionKind, Form, Predicate, PredicateKind};
 use crate::names::is_valid_math_identifier;
 use crate::operators::{self, OperatorId};
 use crate::parser::{Rule, line_start, parse_components_guarded};
@@ -196,7 +196,7 @@ impl SyntaxSnapshot {
         while let Some(formula) = stack.pop() {
             match formula {
                 Formula::Predicate(predicate) => {
-                    if predicate.span.is_some_and(|span| !span.contains(offset)) {
+                    if predicate.span().is_some_and(|span| !span.contains(offset)) {
                         continue;
                     }
                     found = self
@@ -205,7 +205,7 @@ impl SyntaxSnapshot {
                     push_predicate_children(predicate, &mut stack);
                 }
                 Formula::Expression(expression) => {
-                    if expression.span.is_some_and(|span| !span.contains(offset)) {
+                    if expression.span().is_some_and(|span| !span.contains(offset)) {
                         continue;
                     }
                     found = self
@@ -213,7 +213,6 @@ impl SyntaxSnapshot {
                         .or(found);
                     push_expression_children(expression, &mut stack);
                 }
-                Formula::Pattern(pattern) => push_pattern_children(pattern, &mut stack),
             }
         }
         found
@@ -225,24 +224,19 @@ impl SyntaxSnapshot {
         predicate: &Predicate,
         offset: usize,
     ) -> Option<SyntaxAtOffset> {
-        let PredicateKind::Quantified {
-            quantifier,
-            predicate: body,
-            ..
-        } = &predicate.kind
-        else {
+        let PredicateKind::Quantified { op, pred: body, .. } = predicate.kind() else {
             return None;
         };
-        let span = predicate.span?;
-        let body_span = body.span?;
+        let span = predicate.span()?;
+        let body_span = body.span()?;
         if offset >= body_span.end {
             return None;
         }
         let dot_end =
             self.last_operator_end(source, span.start, body_span.start, OperatorId::Dot)?;
-        let construct = match quantifier {
-            crate::ast::predicate::Quantifier::ForAll => SyntaxConstruct::UniversalQuantifier,
-            crate::ast::predicate::Quantifier::Exists => SyntaxConstruct::ExistentialQuantifier,
+        let construct = match op {
+            QuantPredOp::Forall => SyntaxConstruct::UniversalQuantifier,
+            QuantPredOp::Exists => SyntaxConstruct::ExistentialQuantifier,
         };
         Some(SyntaxAtOffset {
             construct,
@@ -256,58 +250,68 @@ impl SyntaxSnapshot {
         expression: &Expression,
         offset: usize,
     ) -> Option<SyntaxAtOffset> {
-        let span = expression.span?;
-        match &expression.kind {
-            ExpressionKind::SetComprehension {
-                predicate,
-                expression,
-                ..
-            } => {
-                let predicate_span = predicate.span?;
-                let final_end = expression
-                    .as_deref()
-                    .and_then(|expression| expression.span)
-                    .map_or(predicate_span.end, |expression| expression.end);
+        let span = expression.span()?;
+        let ExpressionKind::Quantified {
+            op: QuantExprOp::CSet,
+            pred,
+            expr: value,
+            form,
+            ..
+        } = expression.kind()
+        else {
+            return None;
+        };
+        match form {
+            // `{x · P ∣ E}`
+            Form::Explicit => {
+                let predicate_span = pred.span()?;
+                let value_span = value.span();
+                let final_end = value_span.map_or(predicate_span.end, |value| value.end);
                 if offset >= final_end {
                     return None;
                 }
-                let pipe_start = if expression.is_some() {
-                    predicate_span.end
-                } else {
-                    span.start
-                };
-                let pipe_limit = expression
-                    .as_deref()
-                    .and_then(|expression| expression.span)
-                    .map_or(predicate_span.start, |expression| expression.start);
-                let pipe_end =
-                    self.last_operator_end(source, pipe_start, pipe_limit, OperatorId::Bar)?;
-                let (construct, dot_end) = if expression.is_some() {
-                    let dot_end = self.last_operator_end(
-                        source,
-                        span.start,
-                        predicate_span.start,
-                        OperatorId::Dot,
-                    )?;
-                    (SyntaxConstruct::ExtendedSetComprehension, Some(dot_end))
-                } else {
-                    (SyntaxConstruct::BasicSetComprehension, None)
-                };
+                let pipe_limit = value_span.map_or(predicate_span.start, |value| value.start);
+                let pipe_end = self.last_operator_end(
+                    source,
+                    predicate_span.end,
+                    pipe_limit,
+                    OperatorId::Bar,
+                )?;
+                let dot_end = self.last_operator_end(
+                    source,
+                    span.start,
+                    predicate_span.start,
+                    OperatorId::Dot,
+                )?;
+                let construct = SyntaxConstruct::ExtendedSetComprehension;
                 Some(SyntaxAtOffset {
                     construct,
-                    parameter: parameter_at(
-                        construct,
-                        dot_end.is_some_and(|dot| offset >= dot),
-                        offset >= pipe_end,
-                    ),
+                    parameter: parameter_at(construct, offset >= dot_end, offset >= pipe_end),
                 })
             }
-            ExpressionKind::SetBuilder {
-                member_expression,
-                predicate,
-            } => {
-                let member_span = member_expression.span?;
-                let predicate_span = predicate.span?;
+            // `{x, y ∣ P}` — the value is the synthesized identifier
+            // chain, not spelled in the source.
+            Form::IdentList => {
+                let predicate_span = pred.span()?;
+                if offset >= predicate_span.end {
+                    return None;
+                }
+                let pipe_end = self.last_operator_end(
+                    source,
+                    span.start,
+                    predicate_span.start,
+                    OperatorId::Bar,
+                )?;
+                let construct = SyntaxConstruct::BasicSetComprehension;
+                Some(SyntaxAtOffset {
+                    construct,
+                    parameter: parameter_at(construct, false, offset >= pipe_end),
+                })
+            }
+            // `{E ∣ P}`
+            Form::Implicit => {
+                let member_span = value.span()?;
+                let predicate_span = pred.span()?;
                 if offset >= predicate_span.end {
                     return None;
                 }
@@ -322,14 +326,19 @@ impl SyntaxSnapshot {
                     parameter: parameter_at(SyntaxConstruct::SetBuilder, false, offset >= pipe_end),
                 })
             }
-            ExpressionKind::Lambda {
-                predicate,
-                expression,
-                ..
-            } => {
-                let predicate_span = predicate.span?;
-                let expression_span = expression.span?;
-                if offset >= expression_span.end {
+            // `λ pattern · P ∣ E` — the value is `pattern ↦ E`.
+            Form::Lambda => {
+                let ExpressionKind::Binary {
+                    op: BinaryExprOp::Mapsto,
+                    right: body,
+                    ..
+                } = value.kind()
+                else {
+                    return None;
+                };
+                let predicate_span = pred.span()?;
+                let body_span = body.span()?;
+                if offset >= body_span.end {
                     return None;
                 }
                 let dot_end = self.last_operator_end(
@@ -341,7 +350,7 @@ impl SyntaxSnapshot {
                 let pipe_end = self.last_operator_end(
                     source,
                     predicate_span.end,
-                    expression_span.start,
+                    body_span.start,
                     OperatorId::Bar,
                 )?;
                 Some(SyntaxAtOffset {
@@ -353,7 +362,6 @@ impl SyntaxSnapshot {
                     ),
                 })
             }
-            _ => None,
         }
     }
 
@@ -616,7 +624,6 @@ fn last_leaf_end(mut node: &SyntaxNode) -> usize {
 enum Formula<'a> {
     Predicate(&'a Predicate),
     Expression(&'a Expression),
-    Pattern(&'a IdentPattern),
 }
 
 fn push_component_formulas<'a>(component: &'a Component, stack: &mut Vec<Formula<'a>>) {
@@ -646,7 +653,7 @@ fn push_component_formulas<'a>(component: &'a Component, stack: &mut Vec<Formula
                         .map(|predicate| Formula::Predicate(&predicate.predicate)),
                 );
                 for action in &initialisation.actions {
-                    push_action_formulas(&action.action.kind, stack);
+                    push_action_formulas(&action.action, stack);
                 }
             }
             for event in &machine.events {
@@ -659,158 +666,94 @@ fn push_component_formulas<'a>(component: &'a Component, stack: &mut Vec<Formula
                         .map(|predicate| Formula::Predicate(&predicate.predicate)),
                 );
                 for action in &event.actions {
-                    push_action_formulas(&action.action.kind, stack);
+                    push_action_formulas(&action.action, stack);
                 }
             }
         }
     }
 }
 
-fn push_action_formulas<'a>(kind: &'a ActionKind, stack: &mut Vec<Formula<'a>>) {
-    match kind {
-        ActionKind::Skip => {}
-        ActionKind::Assignment { assignments } => {
-            stack.extend(
-                assignments
-                    .iter()
-                    .map(|(_, expression)| Formula::Expression(expression)),
-            );
+fn push_action_formulas<'a>(body: &'a ActionBody, stack: &mut Vec<Formula<'a>>) {
+    let Some(assignment) = body.assignment() else {
+        return;
+    };
+    match assignment.kind() {
+        AssignmentKind::BecomesEqualTo { values, .. } => {
+            stack.extend(values.iter().map(Formula::Expression));
         }
-        ActionKind::BecomesIn { set, .. } => stack.push(Formula::Expression(set)),
-        ActionKind::BecomesSuchThat { predicate, .. } => {
-            stack.push(Formula::Predicate(predicate));
-        }
+        AssignmentKind::BecomesMemberOf { set, .. } => stack.push(Formula::Expression(set)),
+        AssignmentKind::BecomesSuchThat { pred, .. } => stack.push(Formula::Predicate(pred)),
     }
 }
 
 fn push_predicate_children<'a>(predicate: &'a Predicate, stack: &mut Vec<Formula<'a>>) {
-    match &predicate.kind {
-        PredicateKind::True | PredicateKind::False => {}
-        PredicateKind::Comparison { left, right, .. } => {
+    match predicate.kind() {
+        PredicateKind::Literal(_) | PredicateKind::PredicateVariable(_) => {}
+        PredicateKind::Relational { left, right, .. } => {
             stack.extend([Formula::Expression(left), Formula::Expression(right)]);
         }
-        PredicateKind::Not(inner) => stack.push(Formula::Predicate(inner)),
-        PredicateKind::Logical { left, right, .. } => {
+        PredicateKind::Binary { left, right, .. } => {
             stack.extend([Formula::Predicate(left), Formula::Predicate(right)]);
         }
-        PredicateKind::Quantified {
-            identifiers,
-            predicate,
-            ..
-        } => {
+        PredicateKind::Associative { children, .. } => {
+            stack.extend(children.iter().map(Formula::Predicate));
+        }
+        PredicateKind::Not(inner) => stack.push(Formula::Predicate(inner)),
+        PredicateKind::Quantified { decls, pred, .. } => {
             stack.extend(
-                identifiers
+                decls
                     .iter()
-                    .filter_map(|identifier| identifier.type_expr.as_deref())
+                    .filter_map(|decl| decl.annotation())
                     .map(Formula::Expression),
             );
-            stack.push(Formula::Predicate(predicate));
+            stack.push(Formula::Predicate(pred));
         }
-        PredicateKind::Application { arguments, .. }
-        | PredicateKind::BuiltinApplication { arguments, .. } => {
-            stack.extend(arguments.iter().map(Formula::Expression));
+        PredicateKind::Simple(expr) => stack.push(Formula::Expression(expr)),
+        PredicateKind::Multiple(exprs) => stack.extend(exprs.iter().map(Formula::Expression)),
+        PredicateKind::Application { args, .. } => {
+            stack.extend(args.iter().map(Formula::Expression));
+        }
+        PredicateKind::Extended { exprs, preds, .. } => {
+            stack.extend(exprs.iter().map(Formula::Expression));
+            stack.extend(preds.iter().map(Formula::Predicate));
         }
     }
 }
 
 fn push_expression_children<'a>(expression: &'a Expression, stack: &mut Vec<Formula<'a>>) {
-    match &expression.kind {
-        ExpressionKind::Integer(_)
-        | ExpressionKind::Identifier(_)
-        | ExpressionKind::True
-        | ExpressionKind::False
-        | ExpressionKind::EmptySet
-        | ExpressionKind::Naturals
-        | ExpressionKind::Naturals1
-        | ExpressionKind::Integers
-        | ExpressionKind::BoolType
-        | ExpressionKind::AtomicBuiltin(_) => {}
-        ExpressionKind::SetEnumeration(items) => {
+    match expression.kind() {
+        ExpressionKind::FreeIdentifier(_)
+        | ExpressionKind::BoundIdentifier(_)
+        | ExpressionKind::IntegerLiteral(_)
+        | ExpressionKind::Atomic(_) => {}
+        ExpressionKind::SetExtension(items) => {
             stack.extend(items.iter().map(Formula::Expression));
         }
-        ExpressionKind::SetComprehension {
-            identifiers,
-            predicate,
-            expression,
-        } => {
-            stack.extend(
-                identifiers
-                    .iter()
-                    .filter_map(|identifier| identifier.type_expr.as_deref())
-                    .map(Formula::Expression),
-            );
-            stack.push(Formula::Predicate(predicate));
-            if let Some(expression) = expression {
-                stack.push(Formula::Expression(expression));
-            }
-        }
-        ExpressionKind::SetBuilder {
-            member_expression,
-            predicate,
-        } => {
-            stack.extend([
-                Formula::Expression(member_expression),
-                Formula::Predicate(predicate),
-            ]);
-        }
-        ExpressionKind::RelationalImage { relation, set } => {
-            stack.extend([Formula::Expression(relation), Formula::Expression(set)]);
-        }
-        ExpressionKind::QuantifiedUnion {
-            identifiers,
-            predicate,
-            expression,
-        }
-        | ExpressionKind::QuantifiedInter {
-            identifiers,
-            predicate,
-            expression,
-        } => {
-            stack.extend(
-                identifiers
-                    .iter()
-                    .filter_map(|identifier| identifier.type_expr.as_deref())
-                    .map(Formula::Expression),
-            );
-            stack.extend([
-                Formula::Predicate(predicate),
-                Formula::Expression(expression),
-            ]);
-        }
-        ExpressionKind::Lambda {
-            pattern,
-            predicate,
-            expression,
-        } => {
-            stack.extend([
-                Formula::Pattern(pattern),
-                Formula::Predicate(predicate),
-                Formula::Expression(expression),
-            ]);
-        }
+        ExpressionKind::Bool(predicate) => stack.push(Formula::Predicate(predicate)),
         ExpressionKind::Binary { left, right, .. } => {
             stack.extend([Formula::Expression(left), Formula::Expression(right)]);
         }
-        ExpressionKind::Unary { operand, .. }
-        | ExpressionKind::BuiltinApplication {
-            argument: operand, ..
-        } => stack.push(Formula::Expression(operand)),
-        ExpressionKind::FunctionApplication { function, argument } => {
-            stack.extend([Formula::Expression(function), Formula::Expression(argument)]);
+        ExpressionKind::Associative { children, .. } => {
+            stack.extend(children.iter().map(Formula::Expression));
         }
-        ExpressionKind::Bool(predicate) => stack.push(Formula::Predicate(predicate)),
-    }
-}
-
-fn push_pattern_children<'a>(pattern: &'a IdentPattern, stack: &mut Vec<Formula<'a>>) {
-    match pattern {
-        IdentPattern::Identifier(identifier) => {
-            if let Some(expression) = identifier.type_expr.as_deref() {
-                stack.push(Formula::Expression(expression));
-            }
+        ExpressionKind::Unary { child, .. } => stack.push(Formula::Expression(child)),
+        ExpressionKind::Quantified {
+            decls, pred, expr, ..
+        } => {
+            stack.extend(
+                decls
+                    .iter()
+                    .filter_map(|decl| decl.annotation())
+                    .map(Formula::Expression),
+            );
+            stack.extend([Formula::Predicate(pred), Formula::Expression(expr)]);
         }
-        IdentPattern::Maplet(left, right) => {
-            stack.extend([Formula::Pattern(left), Formula::Pattern(right)]);
+        ExpressionKind::Ascription { expr, type_expr } => {
+            stack.extend([Formula::Expression(expr), Formula::Expression(type_expr)]);
+        }
+        ExpressionKind::Extended { exprs, preds, .. } => {
+            stack.extend(exprs.iter().map(Formula::Expression));
+            stack.extend(preds.iter().map(Formula::Predicate));
         }
     }
 }

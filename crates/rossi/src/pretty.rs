@@ -339,7 +339,13 @@ impl PrettyPrinter {
 
         if let Some(variant) = &machine.variant {
             writeln!(output, "VARIANT").unwrap();
-            writeln!(output, "{}{}", self.indent, self.print_expression(variant)).unwrap();
+            writeln!(
+                output,
+                "{}{}",
+                self.indent,
+                self.print_formula_expression(variant)
+            )
+            .unwrap();
         }
 
         if machine.initialisation.is_some() || !machine.events.is_empty() {
@@ -374,14 +380,14 @@ impl PrettyPrinter {
                 indent,
                 theorem_str,
                 label,
-                self.print_predicate(&lp.predicate)
+                self.print_formula_predicate(&lp.predicate)
             )
         } else {
             format!(
                 "{}{}{}",
                 indent,
                 theorem_str,
-                self.print_predicate(&lp.predicate)
+                self.print_formula_predicate(&lp.predicate)
             )
         };
         self.writeln_commented(output, &line, lp.comment.as_deref(), indent);
@@ -390,9 +396,14 @@ impl PrettyPrinter {
     /// Print a labeled action
     fn print_labeled_action(&self, output: &mut String, la: &LabeledAction, indent: &str) {
         let line = if let Some(label) = &la.label {
-            format!("{}@{} {}", indent, label, self.print_action(&la.action))
+            format!(
+                "{}@{} {}",
+                indent,
+                label,
+                self.print_action_body(&la.action)
+            )
         } else {
-            format!("{}{}", indent, self.print_action(&la.action))
+            format!("{}{}", indent, self.print_action_body(&la.action))
         };
         self.writeln_commented(output, &line, la.comment.as_deref(), indent);
     }
@@ -1132,6 +1143,16 @@ impl PrettyPrinter {
     }
 
     /// Convert an Action to text
+    /// Format an action body: `skip`, or the modelled assignment.
+    pub fn print_action_body(&self, body: &crate::ast::ActionBody) -> String {
+        match body {
+            crate::ast::ActionBody::Skip => "skip".to_string(),
+            crate::ast::ActionBody::Assignment(assignment) => {
+                self.print_formula_assignment(assignment)
+            }
+        }
+    }
+
     pub fn print_action(&self, action: &Action) -> String {
         let context = FormulaContext::Action;
         let assign = self.op(OperatorId::Assignment);

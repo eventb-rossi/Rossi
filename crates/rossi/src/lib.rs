@@ -58,15 +58,17 @@ pub mod selection;
 pub mod snippets;
 pub mod xml;
 
-// Re-export main types for convenience
+// Re-export main types for convenience. The formula types come from the
+// typed model; the legacy tree is internal to the parser (`ast::legacy`).
 pub use ast::{
-    Action, ActionKind, AtomicBuiltinKind, BuiltinFunction, BuiltinPredicate, Component, Context,
-    Event, EventStatus, Expression, ExpressionKind, FileMetadata, Ident, IdentPattern,
-    InitialisationEvent, LabeledAction, LabeledPredicate, Machine, NamedElement, Predicate,
-    PredicateKind, SetDeclaration, TypedIdentifier,
+    ActionBody, Component, Context, Event, EventStatus, FileMetadata, Ident, InitialisationEvent,
+    LabeledAction, LabeledPredicate, Machine, NamedElement, SetDeclaration, TypedIdentifier,
 };
 pub use deps::{ComponentId, ComponentKind, DependencyGraph, EdgeKind, RefinementAncestry};
 pub use error::{ParseError, ParseResult, Result};
+pub use formula::{
+    Assignment, AssignmentKind, Expression, ExpressionKind, Form, Predicate, PredicateKind,
+};
 pub use nesting::MAX_NESTING_DEPTH;
 pub use parser::{
     ComponentNameOccurrence, ComponentNameSite, ParseSnapshot, component_name_occurrences,

@@ -3,18 +3,23 @@
 /// Names that an action writes to (its LHS targets). Shared by the SC
 /// cascade-drop logic and the lint module's unmodified-variable / INIT
 /// completeness checks.
-pub(crate) fn lhs_variables(action: &rossi::Action) -> Vec<&str> {
-    use rossi::{ActionKind, Ident};
-    match &action.kind {
-        ActionKind::Skip => Vec::new(),
-        ActionKind::Assignment { assignments } => assignments
-            .iter()
-            .map(|(variable, _)| variable.as_str())
-            .collect(),
-        ActionKind::BecomesIn { variables, .. } | ActionKind::BecomesSuchThat { variables, .. } => {
-            variables.iter().map(Ident::as_str).collect()
-        }
-    }
+pub(crate) fn lhs_variables(body: &rossi::ActionBody) -> Vec<&str> {
+    use rossi::{AssignmentKind, ExpressionKind};
+    let Some(assignment) = body.assignment() else {
+        return Vec::new();
+    };
+    let idents = match assignment.kind() {
+        AssignmentKind::BecomesEqualTo { idents, .. }
+        | AssignmentKind::BecomesMemberOf { idents, .. }
+        | AssignmentKind::BecomesSuchThat { idents, .. } => idents,
+    };
+    idents
+        .iter()
+        .filter_map(|ident| match ident.kind() {
+            ExpressionKind::FreeIdentifier(name) => Some(name.as_str()),
+            _ => None,
+        })
+        .collect()
 }
 
 /// Source span of the named element called `name`, when present and located.

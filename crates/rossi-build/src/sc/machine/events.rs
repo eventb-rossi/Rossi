@@ -9,8 +9,8 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::rc::Rc;
 
 use rossi::{
-    Action, ActionKind, Event, Ident, InitialisationEvent, LabeledAction, LabeledPredicate,
-    NamedElement, PredicateKind,
+    ActionBody, AssignmentKind, Event, InitialisationEvent, LabeledAction, LabeledPredicate,
+    NamedElement,
 };
 
 use crate::checked_predicate::{
@@ -281,10 +281,10 @@ fn resolve_convergence(
 /// assigned variable's after-value open, so a refinement that drops that
 /// variable must witness it. A deterministic `x ≔ e` already pins the
 /// after-value and needs no witness.
-fn is_nondeterministic_assignment(action: &rossi::Action) -> bool {
+fn is_nondeterministic_assignment(action: &ActionBody) -> bool {
     matches!(
-        action.kind,
-        rossi::ActionKind::BecomesIn { .. } | rossi::ActionKind::BecomesSuchThat { .. }
+        action.assignment().map(rossi::Assignment::kind),
+        Some(AssignmentKind::BecomesMemberOf { .. } | AssignmentKind::BecomesSuchThat { .. })
     )
 }
 
@@ -477,10 +477,11 @@ fn synthesize_witness(
     event_label: &str,
     name: &str,
 ) -> WitnessDecl {
-    let predicate = PredicateKind::True.into();
+    let predicate = rossi::formula::FormulaFactory::default_factory()
+        .literal_predicate(rossi::formula::tag::LiteralPredOp::BTrue, None);
     WitnessDecl {
         label: name.to_string(),
-        typed: rossi::formula::lower::lower_predicate(&predicate),
+        typed: predicate.clone(),
         predicate,
         source: crate::sc::file_child_source(
             ids,
@@ -738,7 +739,7 @@ pub(super) fn build_event_decl(
     // variables are gathered into one combined action and the event (not the
     // machine) is marked inaccurate.
     if matches!(context.kind, EventKind::Init(_)) {
-        let unassigned: Vec<Ident> = {
+        let unassigned: Vec<String> = {
             let assigned: std::collections::HashSet<&str> = actions
                 .iter()
                 .flat_map(|a| lhs_variables(&a.action))
@@ -748,7 +749,7 @@ pub(super) fn build_event_decl(
                 .concrete_vars
                 .iter()
                 .filter(|v| !assigned.contains(v.as_str()))
-                .map(|v| Ident::from(v.clone()))
+                .cloned()
                 .collect()
         };
         if !unassigned.is_empty() {
@@ -794,20 +795,27 @@ fn fresh_gen_label(actions: &[ActionDecl]) -> String {
     label
 }
 
-/// Build the synthetic `<vars> :∣ ⊤` repair action. The assignment text is
-/// produced through the shared [`check_action`] canonicaliser, and the
-/// `source` points at the INITIALISATION event element (the generated action
-/// has no source clause of its own).
+/// Build the synthetic `<vars> :∣ ⊤` repair action. The assignment is
+/// constructed directly on the formula model, and the `source` points at
+/// the INITIALISATION event element (the generated action has no source
+/// clause of its own).
 fn build_repair_action(
     label: String,
     source: &HandleUri,
-    variables: Vec<Ident>,
+    variables: Vec<String>,
     env: &TypeEnv,
 ) -> ActionDecl {
-    let action = Action::from(ActionKind::BecomesSuchThat {
-        variables,
-        predicate: PredicateKind::True.into(),
-    });
+    let ff = rossi::formula::FormulaFactory::default_factory();
+    let idents = variables
+        .iter()
+        .map(|name| ff.free_identifier(name, None, None))
+        .collect();
+    let primed = variables
+        .iter()
+        .map(|name| ff.bound_ident_decl(format!("{name}'"), None, None, None))
+        .collect();
+    let top = ff.literal_predicate(rossi::formula::tag::LiteralPredOp::BTrue, None);
+    let action = ActionBody::Assignment(ff.becomes_such_that(idents, primed, top, None));
     let checked = check_action(&action, env);
     ActionDecl {
         label,
@@ -1143,8 +1151,10 @@ fn build_event_buckets(
         // Per-clause well-typedness drop: catches things like
         // `auctions ≔ auctions ∪ {a ↦ i}` where the two operands of `∪`
         // are at different power-set levels. Rodin emits the event
-        // `accurate=false` and skips the action.
-        if !crate::sc::typing::action_well_typed(scope, &checked.action) {
+        // `accurate=false` and skips the action. The verdict is already
+        // in hand from check_action: a real assignment without a typed
+        // rebuild failed its check.
+        if checked.action.assignment().is_some() && checked.typed.is_none() {
             context.diagnostics.push(Diagnostic {
                 severity: Severity::Error,
                 origin: clause_origin(machine.machine_name, label, act.label.as_deref(), "act"),

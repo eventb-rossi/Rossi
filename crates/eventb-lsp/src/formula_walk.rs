@@ -1,16 +1,22 @@
-//! Collect identifier occurrences from a component's formulas using the shared
-//! [`rossi::ast::walk`] walker, so find-references and rename resolve usage
-//! sites from the AST (with correct binder scoping) instead of scanning text.
+//! Collect identifier occurrences from a component's formulas using the
+//! formula model's occurrence walker, so find-references and rename resolve
+//! usage sites from the tree (with correct binder scoping) instead of
+//! scanning text.
 //!
-//! Event parameters are modelled as binders introduced at the event level: a
-//! usage inside the event is "bound" by the parameter, and a same-named global
-//! symbol is therefore correctly shadowed within that event.
+//! Event parameters are locals introduced at the event level: the model
+//! reads a parameter use as a free identifier, so the walker filters by
+//! name against the event's parameter list — a same-named global symbol is
+//! correctly shadowed within that event.
 
 use std::ops::ControlFlow;
 
 use rossi::ast::Span;
-use rossi::ast::walk::{self, Binder, IdentOccurrence, IdentRole, IdentVisitor};
+use rossi::formula::occurrences::{self, DeclRef, Occurrence, Resolution};
 use rossi::{Component, Event, Expression, Predicate};
+
+/// The role of an identifier occurrence, re-exported so consumers keep one
+/// vocabulary with the walker.
+pub use rossi::formula::occurrences::Role as IdentRole;
 
 /// How an occurrence of the target name resolves at its position.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -53,24 +59,53 @@ pub fn span_matches(text: &str, span: Span, name: &str) -> bool {
         && canonical(&text[span.start..span.end]) == name
 }
 
+/// Event-scope locals (`ANY` parameters): unprimed name plus declaration span.
+type Locals = Vec<(String, Option<Span>)>;
+
+/// The innermost local binding a free occurrence of `name` resolves to.
+fn local_binding(locals: &[(String, Option<Span>)], name: &str) -> Option<Option<Span>> {
+    locals
+        .iter()
+        .rev()
+        .find(|(local, _)| local == name)
+        .map(|(_, span)| *span)
+}
+
+/// An occurrence visitor that additionally tracks the event-scope locals in
+/// effect while [`drive`] traverses a component. The driver clears the
+/// locals by setting an empty list.
+trait WalkVisitor: occurrences::OccurrenceVisitor {
+    fn set_locals(&mut self, _locals: Locals) {}
+}
+
 struct Collector<'a> {
     target: &'a str,
+    locals: Locals,
     hits: Vec<Hit>,
 }
 
-impl IdentVisitor for Collector<'_> {
-    fn visit(&mut self, occ: IdentOccurrence<'_>) -> ControlFlow<()> {
+impl occurrences::OccurrenceVisitor for Collector<'_> {
+    fn visit(&mut self, occ: Occurrence<'_>) -> ControlFlow<()> {
         if canonical(occ.name) != self.target {
             return ControlFlow::Continue(());
         }
         let Some(span) = occ.span else {
             return ControlFlow::Continue(());
         };
-        // The innermost enclosing binder of the same (unprimed) name shadows the
-        // global symbol; binder names are always unprimed.
-        let scope = match occ.binders.iter().rev().find(|b| b.name == self.target) {
-            Some(b) => Scope::Bound(b.span),
-            None => Scope::Free,
+        // A bound occurrence resolves to its declaration — except an
+        // after-state read, which stays an occurrence of the global
+        // variable. A free occurrence may still be shadowed by an event
+        // parameter.
+        let scope = if occ.is_after_state_read() {
+            Scope::Free
+        } else {
+            match occ.resolution {
+                Resolution::Bound { .. } => Scope::Bound(occ.bound_decl().and_then(|d| d.span)),
+                Resolution::Free => match local_binding(&self.locals, self.target) {
+                    Some(declaration) => Scope::Bound(declaration),
+                    None => Scope::Free,
+                },
+            }
         };
         self.hits.push(Hit {
             span,
@@ -81,36 +116,55 @@ impl IdentVisitor for Collector<'_> {
     }
 }
 
-/// Drive the shared walker over every formula in `component`, seeding each
-/// event's parameters as binders. The single traversal both the targeted and
-/// the collect-all consumers share.
-fn drive<V: IdentVisitor>(component: &Component, v: &mut V) {
-    let mut binders: Vec<Binder> = Vec::new();
+impl WalkVisitor for Collector<'_> {
+    fn set_locals(&mut self, locals: Locals) {
+        self.locals = locals;
+    }
+}
+
+/// Drive the walker over every formula in `component`, with each event's
+/// parameters in effect as locals for its body. The single traversal both
+/// the targeted and the collect-all consumers share.
+fn drive<V: WalkVisitor>(component: &Component, v: &mut V) {
     match component {
         Component::Context(ctx) => {
             for ax in &ctx.axioms {
-                let _ = walk::walk_predicate(&ax.predicate, &mut binders, v);
+                let _ = occurrences::walk_predicate(&ax.predicate, &mut Vec::new(), v);
             }
         }
         Component::Machine(m) => {
             for inv in &m.invariants {
-                let _ = walk::walk_predicate(&inv.predicate, &mut binders, v);
+                let _ = occurrences::walk_predicate(&inv.predicate, &mut Vec::new(), v);
             }
             if let Some(variant) = &m.variant {
-                let _ = walk::walk_expression(variant, &mut binders, v);
+                let _ = occurrences::walk_expression(variant, &mut Vec::new(), v);
             }
             if let Some(init) = &m.initialisation {
                 for lp in init.with.iter().chain(&init.witnesses) {
-                    let _ = walk::walk_predicate(&lp.predicate, &mut binders, v);
+                    let _ = occurrences::walk_predicate(&lp.predicate, &mut Vec::new(), v);
                 }
                 for la in &init.actions {
-                    let _ = walk::walk_action(&la.action, &mut binders, v);
+                    walk_action_body(&la.action, v);
                 }
             }
             for event in &m.events {
-                collect_in_event(event, &mut binders, v);
+                let locals: Locals = event
+                    .parameters
+                    .iter()
+                    .map(|p| (p.name.clone(), p.span))
+                    .collect();
+                v.set_locals(locals);
+                walk_event_body(event, v);
+                v.set_locals(Locals::new());
             }
         }
+    }
+}
+
+/// Walk an action body's assignment, if any (`skip` has no formulas).
+fn walk_action_body<V: occurrences::OccurrenceVisitor>(body: &rossi::ActionBody, v: &mut V) {
+    if let Some(assignment) = body.assignment() {
+        let _ = occurrences::walk_assignment(assignment, &mut Vec::new(), v);
     }
 }
 
@@ -119,6 +173,7 @@ fn drive<V: IdentVisitor>(component: &Component, v: &mut V) {
 pub fn collect_in_component(component: &Component, target: &str) -> Vec<Hit> {
     let mut c = Collector {
         target,
+        locals: Vec::new(),
         hits: Vec::new(),
     };
     drive(component, &mut c);
@@ -132,8 +187,8 @@ struct MentionVisitor<'a> {
     found: bool,
 }
 
-impl IdentVisitor for MentionVisitor<'_> {
-    fn visit(&mut self, occ: IdentOccurrence<'_>) -> ControlFlow<()> {
+impl occurrences::OccurrenceVisitor for MentionVisitor<'_> {
+    fn visit(&mut self, occ: Occurrence<'_>) -> ControlFlow<()> {
         // A binder *declaration* of the same name (`∀ x · …`) shadows the symbol
         // rather than referencing it, so it is not a mention of the global `x`.
         if occ.role != IdentRole::Binder && canonical(occ.name) == self.target {
@@ -145,15 +200,15 @@ impl IdentVisitor for MentionVisitor<'_> {
 }
 
 /// True if any identifier occurrence in `predicate` names `name` (after-state
-/// `name'` matches the unprimed `name`). The single AST traversal — the same one
-/// that powers find-references — so "which clauses mention this symbol" cannot
-/// drift from "where is this symbol used".
+/// `name'` matches the unprimed `name`). The single tree traversal — the same
+/// one that powers find-references — so "which clauses mention this symbol"
+/// cannot drift from "where is this symbol used".
 pub fn predicate_mentions(predicate: &Predicate, name: &str) -> bool {
     let mut v = MentionVisitor {
         target: name,
         found: false,
     };
-    let _ = walk::walk_predicate(predicate, &mut Vec::new(), &mut v);
+    let _ = occurrences::walk_predicate(predicate, &mut Vec::new(), &mut v);
     v.found
 }
 
@@ -164,47 +219,36 @@ pub fn expression_mentions(expression: &Expression, name: &str) -> bool {
         target: name,
         found: false,
     };
-    let _ = walk::walk_expression(expression, &mut Vec::new(), &mut v);
+    let _ = occurrences::walk_expression(expression, &mut Vec::new(), &mut v);
     v.found
 }
 
 /// Walk an event's guards, `with` / witness predicates, and actions with the
-/// given binders in scope.
-fn walk_event_body<V: IdentVisitor>(event: &Event, binders: &mut Vec<Binder>, v: &mut V) {
+/// visitor's current locals in effect.
+fn walk_event_body<V: occurrences::OccurrenceVisitor>(event: &Event, v: &mut V) {
     for lp in event
         .guards
         .iter()
         .chain(&event.with)
         .chain(&event.witnesses)
     {
-        let _ = walk::walk_predicate(&lp.predicate, binders, v);
+        let _ = occurrences::walk_predicate(&lp.predicate, &mut Vec::new(), v);
     }
     for la in &event.actions {
-        let _ = walk::walk_action(&la.action, binders, v);
+        walk_action_body(&la.action, v);
     }
 }
 
-/// Walk a single event's body with `outer` binders already in scope, seeding the
-/// event's own parameters on top.
-fn collect_in_event<V: IdentVisitor>(event: &Event, outer: &mut Vec<Binder>, c: &mut V) {
-    let depth = outer.len();
-    outer.extend(event.parameters.iter().map(|p| Binder {
-        name: p.name.clone(),
-        span: p.span,
-    }));
-    walk_event_body(event, outer, c);
-    outer.truncate(depth);
-}
-
-/// Walk one event's body **without** seeding its parameters, collecting
+/// Walk one event's body **without** its parameters as locals, collecting
 /// occurrences of `target`. Used to find references to a parameter: its uses
 /// are free at event scope (an inner quantifier rebinding the name shadows it).
 pub fn collect_in_event_body(event: &Event, target: &str) -> Vec<Hit> {
     let mut c = Collector {
         target,
+        locals: Vec::new(),
         hits: Vec::new(),
     };
-    walk_event_body(event, &mut Vec::new(), &mut c);
+    walk_event_body(event, &mut c);
     c.hits
 }
 
@@ -234,8 +278,8 @@ pub fn parameter_occurrence_spans(event: &Event, target: &str) -> Vec<Span> {
 /// The binder-local resolution of a cursor sitting on a formula identifier.
 ///
 /// Produced when the cursor is on a binder declaration or a use bound by one — a
-/// quantifier (`∀`/`∃`), `λ`, set comprehension, quantified `⋃`/`⋂`, or a seeded
-/// event parameter. This is the single source of truth for "what scope does this
+/// quantifier (`∀`/`∃`), `λ`, set comprehension, quantified `⋃`/`⋂`, or an event
+/// parameter. This is the single source of truth for "what scope does this
 /// cursor bind to": rename rewrites [`spans`](Self::spans), go-to-definition
 /// jumps to [`declaration`](Self::declaration), and find-references reports
 /// [`spans`](Self::spans) as the in-scope locations.
@@ -247,10 +291,10 @@ pub struct BoundResolution {
     pub declaration: Option<Span>,
     /// The binder declaration plus every use it binds, within this one component.
     pub spans: Vec<Span>,
-    /// True when the binding binder is an event `ANY` parameter (seeded at event
-    /// scope) rather than a formula binder. Lets the definition / references /
-    /// hover providers keep an event parameter on its own symbol path, while
-    /// rename treats every binder uniformly.
+    /// True when the binding binder is an event `ANY` parameter (a local at
+    /// event scope) rather than a formula binder. Lets the definition /
+    /// references / hover providers keep an event parameter on its own symbol
+    /// path, while rename treats every binder uniformly.
     pub is_event_parameter: bool,
 }
 
@@ -316,17 +360,16 @@ pub(crate) fn resolve_bound_from_hits(
         .filter(|h| {
             // The binder's own declaration, plus every *use* it binds. An inner
             // binder of the same name re-declares (shadows) it: the inner
-            // declaration is emitted in this binder's scope
-            // (`Bound(Some(binder_span))`) yet introduces a new binding, not a
-            // use of this one, so it is excluded — renaming this binder must
-            // leave the shadowing inner binder and its body untouched.
+            // declaration introduces a new binding, not a use of this one, so
+            // it is excluded — renaming this binder must leave the shadowing
+            // inner binder and its body untouched.
             (h.role == IdentRole::Binder && h.span == binder_span)
                 || (h.role != IdentRole::Binder && h.scope == Scope::Bound(Some(binder_span)))
         })
         .map(|h| h.span)
         .collect();
-    // Event parameters are seeded as binders but not emitted as formula
-    // occurrences, so add the binder declaration span explicitly.
+    // Event parameters are locals, not formula occurrences, so add the
+    // declaration span explicitly.
     if !spans.contains(&binder_span) {
         spans.push(binder_span);
     }
@@ -338,8 +381,8 @@ pub(crate) fn resolve_bound_from_hits(
     })
 }
 
-/// Whether `span` is the declaration span of an event `ANY` parameter (seeded as
-/// a binder at event scope), as opposed to a formula binder
+/// Whether `span` is the declaration span of an event `ANY` parameter (a local
+/// at event scope), as opposed to a formula binder
 /// (`∀`/`∃`/`λ`/comprehension/`⋃`/`⋂`).
 fn is_event_parameter_span(component: &Component, span: Span) -> bool {
     let Component::Machine(machine) = component else {
@@ -367,14 +410,19 @@ pub struct AnyOccurrence {
 }
 
 struct AllCollector {
+    locals: Locals,
     occurrences: Vec<AnyOccurrence>,
 }
 
-impl IdentVisitor for AllCollector {
-    fn visit(&mut self, occ: IdentOccurrence<'_>) -> ControlFlow<()> {
+impl occurrences::OccurrenceVisitor for AllCollector {
+    fn visit(&mut self, occ: Occurrence<'_>) -> ControlFlow<()> {
         if let Some(span) = occ.span {
-            let base = canonical(occ.name);
-            let bound = occ.binders.iter().any(|b| b.name == base);
+            // An after-state read bound by its assignment's primed
+            // declaration is an occurrence of the global variable, not a
+            // local (see `Collector`).
+            let bound = (matches!(occ.resolution, Resolution::Bound { .. })
+                && !occ.is_after_state_read())
+                || local_binding(&self.locals, canonical(occ.name)).is_some();
             self.occurrences.push(AnyOccurrence {
                 name: occ.name.to_string(),
                 span,
@@ -386,10 +434,17 @@ impl IdentVisitor for AllCollector {
     }
 }
 
+impl WalkVisitor for AllCollector {
+    fn set_locals(&mut self, locals: Locals) {
+        self.locals = locals;
+    }
+}
+
 /// Every identifier occurrence in `component`'s formulas, in document order
 /// modulo the walker's traversal.
 pub fn collect_all_occurrences(component: &Component) -> Vec<AnyOccurrence> {
     let mut c = AllCollector {
+        locals: Vec::new(),
         occurrences: Vec::new(),
     };
     drive(component, &mut c);
@@ -404,12 +459,12 @@ struct ScopeCollector {
     names: Vec<String>,
 }
 
-impl IdentVisitor for ScopeCollector {
-    fn visit(&mut self, _occ: IdentOccurrence<'_>) -> ControlFlow<()> {
+impl occurrences::OccurrenceVisitor for ScopeCollector {
+    fn visit(&mut self, _occ: Occurrence<'_>) -> ControlFlow<()> {
         ControlFlow::Continue(())
     }
 
-    fn enter_scope(&mut self, frame: &[Binder], scope_span: Option<Span>) -> ControlFlow<()> {
+    fn enter_scope(&mut self, frame: &[DeclRef], scope_span: Option<Span>) -> ControlFlow<()> {
         // Inclusive end: a cursor at the very end of a half-typed body (the
         // common completion case) still counts as inside the scope.
         if let Some(span) = scope_span
@@ -426,12 +481,14 @@ impl IdentVisitor for ScopeCollector {
     }
 }
 
+impl WalkVisitor for ScopeCollector {}
+
 /// The names of every formula binder (`∀`/`∃`/`λ`/set-comprehension/`⋃`/`⋂`) in
 /// scope at byte `offset`, de-duplicated. One walk of the component keeps the
 /// binders whose body span contains the cursor (nested bodies nest, so an offset
 /// deep inside collects every enclosing binder). Event `ANY` parameters are
-/// seeded onto the occurrence stack rather than reported as scopes, so they
-/// never appear here — they are offered separately, scoped to their event.
+/// locals rather than reported scopes, so they never appear here — they are
+/// offered separately, scoped to their event.
 pub fn binders_in_scope_at_offset(component: &Component, offset: usize) -> Vec<String> {
     let mut c = ScopeCollector {
         offset,

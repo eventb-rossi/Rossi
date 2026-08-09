@@ -121,9 +121,8 @@ pub fn walk_machine<V: VisitMut + ?Sized>(visitor: &mut V, machine: &mut Machine
     for invariant in &mut machine.invariants {
         visitor.visit_labeled_predicate(invariant);
     }
-    if let Some(variant) = &mut machine.variant {
-        visitor.visit_expression(variant);
-    }
+    // The variant is a formula-model expression — immutable, out of this
+    // legacy visitor's reach.
     if let Some(initialisation) = &mut machine.initialisation {
         visitor.visit_initialisation(initialisation);
     }
@@ -152,12 +151,14 @@ pub fn walk_labeled_predicate<V: VisitMut + ?Sized>(
     visitor: &mut V,
     predicate: &mut LabeledPredicate,
 ) {
-    visitor.visit_predicate(&mut predicate.predicate);
+    // The formula itself is a formula-model tree — immutable, out of
+    // this legacy visitor's reach. Only the structural span is visited.
     visit_optional_span(visitor, &mut predicate.span);
 }
 
 pub fn walk_labeled_action<V: VisitMut + ?Sized>(visitor: &mut V, action: &mut LabeledAction) {
-    visitor.visit_action(&mut action.action);
+    // See `walk_labeled_predicate` — the assignment is a formula-model
+    // tree; only the structural span is visited.
     visit_optional_span(visitor, &mut action.span);
 }
 
@@ -398,13 +399,19 @@ mod tests {
     }
 
     #[test]
-    fn default_recursion_reaches_component_and_formula_spans() {
+    fn default_recursion_reaches_component_structural_spans() {
         let source = "CONTEXT C\nSETS\n  S\nCONSTANTS\n  k\nAXIOMS\n  @a1 k ∈ S\nEND\n\
                       MACHINE M\nSEES C\nVARIABLES\n  x\nINVARIANTS\n  @i1 x ∈ ℤ\n\
                       EVENTS\nEVENT INITIALISATION\nTHEN\n  @a1 x ≔ 0\nEND\n\
                       EVENT tick\nANY p\nWHERE\n  @g1 p ∈ ℤ\nTHEN\n  @a1 x ≔ p\nEND\nEND\n";
         let mut components = parse_components(source).expect("components parse");
         let original_machine_span = components[1].span().expect("machine span");
+        let original_invariant_span = {
+            let Component::Machine(machine) = &components[1] else {
+                panic!("expected machine");
+            };
+            machine.invariants[0].span.expect("invariant span")
+        };
         let mut shifter = SpanShifter {
             delta: 11,
             visited: 0,
@@ -425,10 +432,17 @@ mod tests {
                 end: original_machine_span.end + 11,
             })
         );
+        // Formula-model spans are immutable and out of this visitor's
+        // reach; the labeled element's own span is structural and moves.
         let Component::Machine(machine) = &components[1] else {
             panic!("expected machine");
         };
-        assert!(machine.events[0].actions[0].action.span.unwrap().start > 11);
-        assert!(machine.invariants[0].predicate.span.unwrap().start > 11);
+        assert_eq!(
+            machine.invariants[0].span,
+            Some(Span {
+                start: original_invariant_span.start + 11,
+                end: original_invariant_span.end + 11,
+            })
+        );
     }
 }

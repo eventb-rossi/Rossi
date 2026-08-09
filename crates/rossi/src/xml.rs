@@ -241,7 +241,7 @@ fn parse_predicate_attr(
     element_kind: &str,
     label: Option<&str>,
     attr_name: &str,
-) -> Result<crate::ast::Predicate> {
+) -> Result<crate::formula::Predicate> {
     parser::parse_predicate_str(value)
         .map_err(|e| wrap_attr_error(origin, element_kind, label, attr_name, value, e))
 }
@@ -253,7 +253,7 @@ fn parse_expression_attr(
     element_kind: &str,
     label: Option<&str>,
     attr_name: &str,
-) -> Result<crate::ast::Expression> {
+) -> Result<crate::formula::Expression> {
     parser::parse_expression_str(value)
         .map_err(|e| wrap_attr_error(origin, element_kind, label, attr_name, value, e))
 }
@@ -265,7 +265,7 @@ fn parse_action_attr(
     element_kind: &str,
     label: Option<&str>,
     attr_name: &str,
-) -> Result<crate::ast::Action> {
+) -> Result<crate::ast::ActionBody> {
     parser::parse_action_str(value)
         .map_err(|e| wrap_attr_error(origin, element_kind, label, attr_name, value, e))
 }
@@ -353,7 +353,7 @@ fn write_labeled_predicates_xml(
     indent: &str,
 ) {
     for (i, item) in items.iter().enumerate() {
-        let predicate_str = printer.print_predicate(&item.predicate);
+        let predicate_str = printer.print_formula_predicate(&item.predicate);
         let name = label_or_index(item.label.as_deref(), i);
         let label_attr = if let Some(label) = &item.label {
             format!(" org.eventb.core.label=\"{}\"", escape_xml(label))
@@ -991,7 +991,6 @@ struct EventBuilder {
 
 /// A named Event-B component with its source filename
 #[derive(Debug, Clone, PartialEq, Eq)]
-#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct NamedComponent {
     /// The filename (without path) where this component was found
     pub filename: String,
@@ -1007,7 +1006,6 @@ pub struct NamedComponent {
 /// without sibling components colliding. A single-project export uses the flat
 /// [`to_project_zip`] / [`write_project_directory`] writers instead.
 #[derive(Debug, Clone, PartialEq, Eq)]
-#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct NamedProject {
     /// The Rodin project name. Used both as the `<name>/` archive/directory
     /// prefix and as the `.project` descriptor's `<name>`.
@@ -1748,7 +1746,7 @@ fn machine_to_xml(machine: &Machine) -> String {
 
     // Variant
     if let Some(variant) = &machine.variant {
-        let expr_str = printer.print_expression(variant);
+        let expr_str = printer.print_formula_expression(variant);
         xml.push_str(&format!(
             "    <org.eventb.core.variant name=\"_vr\" org.eventb.core.expression=\"{}\"/>\n",
             escape_xml(&expr_str)
@@ -1838,7 +1836,7 @@ fn write_event_xml(xml: &mut String, event: &Event, printer: &PrettyPrinter) {
     // (_0, _1, …) are unique across all siblings within the event.
     let mut idx = 0usize;
     for guard in &event.guards {
-        let predicate_str = printer.print_predicate(&guard.predicate);
+        let predicate_str = printer.print_formula_predicate(&guard.predicate);
         let name = label_or_index(guard.label.as_deref(), idx);
         let label_attr = if let Some(label) = &guard.label {
             format!(" org.eventb.core.label=\"{}\"", escape_xml(label))
@@ -1883,7 +1881,7 @@ fn write_witness_xml(
     kind_witness: bool,
     idx: usize,
 ) {
-    let predicate_str = printer.print_predicate(&lp.predicate);
+    let predicate_str = printer.print_formula_predicate(&lp.predicate);
     let name = label_or_index(lp.label.as_deref(), idx);
     let label_attr = lp
         .label
@@ -1913,7 +1911,7 @@ fn write_action_xml(
     indent: &str,
     idx: usize,
 ) {
-    let action_str = printer.print_action(&action.action);
+    let action_str = printer.print_action_body(&action.action);
     let name = label_or_index(action.label.as_deref(), idx);
     let label_attr = if let Some(label) = &action.label {
         format!(" org.eventb.core.label=\"{}\"", escape_xml(label))
@@ -2169,12 +2167,7 @@ mod tests {
             axioms: vec![LabeledPredicate {
                 label: Some("axm1".to_string()),
                 is_theorem: false,
-                predicate: crate::ast::PredicateKind::Comparison {
-                    op: crate::ast::predicate::ComparisonOp::Equal,
-                    left: crate::ast::ExpressionKind::Identifier("max_value".to_string()).into(),
-                    right: crate::ast::ExpressionKind::Integer(100).into(),
-                }
-                .into(),
+                predicate: crate::parser::parse_predicate_str("max_value = 100").unwrap(),
                 span: None,
                 comment: None,
             }],
@@ -2259,13 +2252,7 @@ mod tests {
             initialisation: Some(InitialisationEvent {
                 actions: vec![LabeledAction {
                     label: Some("act1".to_string()),
-                    action: crate::ast::ActionKind::Assignment {
-                        assignments: vec![(
-                            "count".into(),
-                            crate::ast::ExpressionKind::Integer(0).into(),
-                        )],
-                    }
-                    .into(),
+                    action: crate::parser::parse_action_str("count ≔ 0").unwrap(),
                     span: None,
                     comment: None,
                 }],
@@ -2335,12 +2322,7 @@ mod tests {
             guards: vec![LabeledPredicate {
                 label: Some("grd1".to_string()),
                 is_theorem: false,
-                predicate: crate::ast::PredicateKind::Comparison {
-                    op: crate::ast::predicate::ComparisonOp::LessThan,
-                    left: crate::ast::ExpressionKind::Identifier("count".to_string()).into(),
-                    right: crate::ast::ExpressionKind::Identifier("max_value".to_string()).into(),
-                }
-                .into(),
+                predicate: crate::parser::parse_predicate_str("count < max_value").unwrap(),
                 span: None,
                 comment: None,
             }],
@@ -2348,20 +2330,7 @@ mod tests {
             witnesses: vec![],
             actions: vec![LabeledAction {
                 label: Some("act1".to_string()),
-                action: crate::ast::ActionKind::Assignment {
-                    assignments: vec![(
-                        "count".into(),
-                        crate::ast::ExpressionKind::Binary {
-                            op: crate::ast::expression::BinaryOp::Add,
-                            left: Box::new(
-                                crate::ast::ExpressionKind::Identifier("count".to_string()).into(),
-                            ),
-                            right: Box::new(crate::ast::ExpressionKind::Integer(1).into()),
-                        }
-                        .into(),
-                    )],
-                }
-                .into(),
+                action: crate::parser::parse_action_str("count ≔ count + 1").unwrap(),
                 span: None,
                 comment: None,
             }],
@@ -2483,12 +2452,7 @@ mod tests {
             axioms: vec![LabeledPredicate {
                 label: Some("axm1".to_string()),
                 is_theorem: false,
-                predicate: crate::ast::PredicateKind::Comparison {
-                    op: crate::ast::predicate::ComparisonOp::GreaterThan,
-                    left: crate::ast::ExpressionKind::Identifier("x".to_string()).into(),
-                    right: crate::ast::ExpressionKind::Integer(0).into(),
-                }
-                .into(),
+                predicate: crate::parser::parse_predicate_str("x > 0").unwrap(),
                 span: None,
                 comment: None,
             }],
@@ -2594,10 +2558,7 @@ mod tests {
             witnesses: vec![],
             actions: vec![LabeledAction {
                 label: None,
-                action: crate::ast::ActionKind::Assignment {
-                    assignments: vec![("x".into(), crate::ast::ExpressionKind::Integer(1).into())],
-                }
-                .into(),
+                action: crate::parser::parse_action_str("x ≔ 1").unwrap(),
                 span: None,
                 comment: None,
             }],
@@ -2668,8 +2629,6 @@ mod tests {
 
     #[test]
     fn test_xml_with_binding_write() {
-        use crate::ast::predicate::ComparisonOp;
-
         let event = Event {
             name: "refine_evt".to_string(),
             status: Some(EventStatus::Ordinary),
@@ -2679,12 +2638,7 @@ mod tests {
             with: vec![LabeledPredicate {
                 label: Some("x".to_string()),
                 is_theorem: false,
-                predicate: crate::ast::PredicateKind::Comparison {
-                    op: ComparisonOp::Equal,
-                    left: crate::ast::ExpressionKind::Identifier("x".to_string()).into(),
-                    right: crate::ast::ExpressionKind::Identifier("y".to_string()).into(),
-                }
-                .into(),
+                predicate: crate::parser::parse_predicate_str("x = y").unwrap(),
                 span: None,
                 comment: None,
             }],
@@ -2727,8 +2681,6 @@ mod tests {
 
     #[test]
     fn test_xml_with_binding_roundtrip() {
-        use crate::ast::predicate::ComparisonOp;
-
         let event = Event {
             name: "refine_evt".to_string(),
             status: Some(EventStatus::Ordinary),
@@ -2738,12 +2690,7 @@ mod tests {
             with: vec![LabeledPredicate {
                 label: Some("x".to_string()),
                 is_theorem: false,
-                predicate: crate::ast::PredicateKind::Comparison {
-                    op: ComparisonOp::Equal,
-                    left: crate::ast::ExpressionKind::Identifier("x".to_string()).into(),
-                    right: crate::ast::ExpressionKind::Identifier("y".to_string()).into(),
-                }
-                .into(),
+                predicate: crate::parser::parse_predicate_str("x = y").unwrap(),
                 span: None,
                 comment: None,
             }],
@@ -2860,21 +2807,24 @@ mod tests {
             assert_eq!(evt.with.len(), 1);
             assert_eq!(evt.with[0].label, Some("x".to_string()));
             // Verify the predicate is "x = y + 1"
-            match &evt.with[0].predicate.kind {
-                crate::ast::PredicateKind::Comparison { op, left, right } => {
-                    assert_eq!(*op, crate::ast::predicate::ComparisonOp::Equal);
+            match evt.with[0].predicate.kind() {
+                crate::formula::PredicateKind::Relational { op, left, right } => {
+                    assert_eq!(*op, crate::formula::tag::RelationalOp::Equal);
                     assert_eq!(
-                        *left,
-                        crate::ast::ExpressionKind::Identifier("x".to_string()).into()
+                        crate::PrettyPrinter::new().print_formula_expression(left),
+                        "x"
                     );
-                    match &right.kind {
-                        crate::ast::ExpressionKind::Binary { op, left, right } => {
-                            assert_eq!(*op, crate::ast::expression::BinaryOp::Add);
+                    match right.kind() {
+                        crate::formula::ExpressionKind::Associative { op, children } => {
+                            assert_eq!(*op, crate::formula::tag::AssocExprOp::Plus);
                             assert_eq!(
-                                **left,
-                                crate::ast::ExpressionKind::Identifier("y".to_string()).into()
+                                crate::PrettyPrinter::new().print_formula_expression(&children[0]),
+                                "y"
                             );
-                            assert_eq!(**right, crate::ast::ExpressionKind::Integer(1).into());
+                            assert_eq!(
+                                crate::PrettyPrinter::new().print_formula_expression(&children[1]),
+                                "1"
+                            );
                         }
                         other => panic!("Expected Binary expression, got {:?}", other),
                     }

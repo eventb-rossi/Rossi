@@ -188,9 +188,7 @@ mod tests {
             axioms: vec![AxiomDecl {
                 label: "axm1".into(),
                 source_index: 0,
-                typed: rossi::formula::lower::lower_predicate(
-                    &rossi::parse_predicate_str("c ∈ ℕ").unwrap(),
-                ),
+                typed: rossi::parse_predicate_str("c ∈ ℕ").unwrap(),
                 predicate: rossi::parse_predicate_str("c ∈ ℕ").unwrap(),
                 is_theorem: false,
                 source: mk_uri().child("org.eventb.core.axiom", "axm1"),
