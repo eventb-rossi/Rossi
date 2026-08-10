@@ -4,112 +4,23 @@
 
 pub mod context;
 pub mod event;
-pub(crate) mod legacy;
 pub mod machine;
+pub(crate) mod visit_mut;
 
-// The formula types live in `legacy` while the parser still builds its
-// IR on them; the historical crate-internal paths stay valid through
-// these re-exports. None of this is public API — the public formula
-// types are `crate::formula`'s.
-pub(crate) use legacy::{action, expression, predicate, visit_mut};
-
-pub(crate) use action::{Action, ActionKind};
 pub use context::{Context, SetDeclaration};
 pub use event::{Event, EventStatus, InitialisationEvent};
-pub(crate) use expression::{Expression, ExpressionKind, IdentPattern};
 pub use machine::Machine;
-pub(crate) use predicate::{Predicate, PredicateKind};
 pub(crate) use visit_mut::VisitMut;
 
 use crate::keywords::KeywordId;
 
-/// A bound variable with an optional type annotation (e.g., `x⦂ℤ`)
-///
-/// `span` locates the binder's name token in the source. Equality compares the
-/// name and type annotation only — the span is positional metadata — so two
-/// binders of the same name and type compare equal regardless of position.
-#[derive(Debug, Clone)]
-#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
-pub struct TypedIdentifier {
-    pub name: String,
-    pub type_expr: Option<Box<Expression>>,
-    /// Source span of the binder's name token, if known.
-    #[cfg_attr(
-        feature = "serde",
-        serde(default, skip_serializing_if = "Option::is_none")
-    )]
-    pub span: Option<Span>,
-}
-
-impl TypedIdentifier {
-    /// Create an untyped identifier (no type annotation)
-    pub fn untyped(name: String) -> Self {
-        Self {
-            name,
-            type_expr: None,
-            span: None,
-        }
-    }
-
-    /// Create a typed identifier with a type annotation
-    pub fn typed(name: String, type_expr: Expression) -> Self {
-        Self {
-            name,
-            type_expr: Some(Box::new(type_expr)),
-            span: None,
-        }
-    }
-
-    /// Set the binder's source span (builder style).
-    pub fn with_span(mut self, span: Span) -> Self {
-        self.span = Some(span);
-        self
-    }
-}
-
-/// Equality compares name and type annotation; the span is positional metadata.
-impl PartialEq for TypedIdentifier {
-    fn eq(&self, other: &Self) -> bool {
-        self.name == other.name && self.type_expr == other.type_expr
-    }
-}
-
-impl Eq for TypedIdentifier {}
-
-impl From<String> for TypedIdentifier {
-    fn from(name: String) -> Self {
-        Self::untyped(name)
-    }
-}
-
-impl From<&str> for TypedIdentifier {
-    fn from(name: &str) -> Self {
-        Self::untyped(name.to_string())
-    }
-}
-
-/// Matches only if names are equal AND there is no type annotation.
-/// A typed identifier `x⦂ℤ` does NOT equal `"x"`.
-impl PartialEq<&str> for TypedIdentifier {
-    fn eq(&self, other: &&str) -> bool {
-        self.name == *other && self.type_expr.is_none()
-    }
-}
-
-/// Matches only if names are equal AND there is no type annotation.
-impl PartialEq<str> for TypedIdentifier {
-    fn eq(&self, other: &str) -> bool {
-        self.name == other && self.type_expr.is_none()
-    }
-}
-
 /// An identifier occurrence with its source span.
 ///
-/// Used for identifier leaves that are not themselves a spanned [`Expression`]
-/// — assignment / `becomes` targets and predicate-application names. Equality,
+/// Used for identifier leaves that are not part of a formula — component
+/// name occurrences and similar structural references. Equality,
 /// ordering, and hashing are by name only; the span is positional metadata, so
 /// two occurrences of the same name compare equal regardless of where they
-/// appear (mirroring [`TypedIdentifier`]'s name-based comparisons).
+/// appear.
 #[derive(Debug, Clone)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct Ident {

@@ -59,7 +59,7 @@ pub mod snippets;
 pub mod xml;
 
 // Re-export main types for convenience. The formula types come from the
-// typed model; the legacy tree is internal to the parser (`ast::legacy`).
+// typed model; `ast` holds the structural component types.
 pub use ast::{
     ActionBody, Component, Context, Event, EventStatus, FileMetadata, Ident, InitialisationEvent,
     LabeledAction, LabeledPredicate, Machine, NamedElement, SetDeclaration,
