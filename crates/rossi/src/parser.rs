@@ -8,8 +8,204 @@ use pest_derive::Parser;
 use crate::ast::*;
 use crate::deps::{ComponentKind, EdgeKind};
 use crate::error::{ParseError, ParseResult};
+use crate::formula::tag::{
+    AssocExprOp, AssocPredOp, AtomicOp, BinaryExprOp, BinaryPredOp, LiteralPredOp, QuantExprOp,
+    QuantPredOp, RelationalOp, UnaryExprOp,
+};
+use crate::formula::{
+    BoundIdentDecl, Expression, ExpressionKind, Form, FormulaFactory, Predicate, PredicateKind,
+};
 use crate::nesting::{self, PARSER_STACK_SIZE, parser_stack_red_zone};
+use crate::operators::{
+    AtomicBuiltinKind, BinaryOp, BuiltinFunction, BuiltinPredicate, ComparisonOp, LogicalOp,
+    Quantifier, UnaryOp,
+};
 use crate::selection::SyntaxSnapshot;
+
+thread_local! {
+    static SPAN_BASE: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+}
+
+/// Runs `f` with the spans of every formula built inside shifted by
+/// `delta` beyond the enclosing scope's shift. Used by error recovery,
+/// which parses clause segments out of their document position: the
+/// formula model is immutable, so its spans must be born in document
+/// coordinates.
+fn with_span_base<T>(delta: usize, f: impl FnOnce() -> T) -> T {
+    let previous = SPAN_BASE.with(|base| base.get());
+    SPAN_BASE.with(|base| base.set(previous + delta));
+    let result = f();
+    SPAN_BASE.with(|base| base.set(previous));
+    result
+}
+
+/// Context for building formula-model nodes during the descent: the
+/// factory, the names bound by enclosing binders (innermost last), and
+/// the span base (see [`with_span_base`]).
+struct Fx {
+    ff: FormulaFactory,
+    binders: Vec<String>,
+    base: usize,
+}
+
+impl Fx {
+    fn new() -> Self {
+        Fx {
+            ff: FormulaFactory::default_factory(),
+            binders: Vec::new(),
+            base: SPAN_BASE.with(|base| base.get()),
+        }
+    }
+
+    /// A pest span lifted into the enclosing document's coordinates.
+    fn at(&self, span: pest::Span<'_>) -> Option<Span> {
+        Some(Span {
+            start: span.start() + self.base,
+            end: span.end() + self.base,
+        })
+    }
+
+    /// A name occurrence: bound if a binder is in scope, free otherwise.
+    fn identifier(&self, name: &str, span: Option<Span>) -> Expression {
+        match self.binders.iter().rev().position(|b| b == name) {
+            Some(index) => self.ff.bound_identifier(index as u32, span, None),
+            None => self.ff.free_identifier(name, span, None),
+        }
+    }
+
+    fn push(&mut self, names: impl IntoIterator<Item = String>) -> usize {
+        let depth = self.binders.len();
+        self.binders.extend(names);
+        depth
+    }
+
+    /// Pushes the declarations' names as binders; pair with a later
+    /// `binders.truncate(depth)` on the success path.
+    fn push_decls(&mut self, decls: &[BoundIdentDecl]) -> usize {
+        self.push(decls.iter().map(|d| d.name().to_string()))
+    }
+
+    /// Build an expression for a bare `identifier` token. A reserved
+    /// relational atom (`id`, `prj1`, `prj2`, `pred`, `succ` — exact case)
+    /// becomes the typed atomic builtin; every other word is an ordinary
+    /// (bound or free) identifier occurrence. Applying an atom (`prj1(x)`)
+    /// is then ordinary function application over that value.
+    fn atom_or_identifier(&self, name: &str, span: Option<Span>) -> Expression {
+        match AtomicBuiltinKind::from_name(name) {
+            Some(AtomicBuiltinKind::Id) => self.ff.atomic_expression(AtomicOp::KIdGen, span, None),
+            Some(AtomicBuiltinKind::Prj1) => {
+                self.ff.atomic_expression(AtomicOp::KPrj1Gen, span, None)
+            }
+            Some(AtomicBuiltinKind::Prj2) => {
+                self.ff.atomic_expression(AtomicOp::KPrj2Gen, span, None)
+            }
+            Some(AtomicBuiltinKind::Pred) => self.ff.atomic_expression(AtomicOp::KPred, span, None),
+            Some(AtomicBuiltinKind::Succ) => self.ff.atomic_expression(AtomicOp::KSucc, span, None),
+            None => self.identifier(name, span),
+        }
+    }
+}
+
+/// The model spelling of a true binary operator (the associative and
+/// ascription operators are mapped before this).
+fn binary_of(op: BinaryOp) -> BinaryExprOp {
+    match op {
+        BinaryOp::Subtract => BinaryExprOp::Minus,
+        BinaryOp::Divide => BinaryExprOp::Div,
+        BinaryOp::Modulo => BinaryExprOp::Mod,
+        BinaryOp::Exponent => BinaryExprOp::Expn,
+        BinaryOp::Range => BinaryExprOp::UpTo,
+        BinaryOp::Difference => BinaryExprOp::SetMinus,
+        BinaryOp::CartesianProduct => BinaryExprOp::CProd,
+        BinaryOp::Relation => BinaryExprOp::Rel,
+        BinaryOp::TotalRelation => BinaryExprOp::TRel,
+        BinaryOp::SurjectiveRelation => BinaryExprOp::SRel,
+        BinaryOp::TotalSurjectiveRelation => BinaryExprOp::STRel,
+        BinaryOp::TotalFunction => BinaryExprOp::TFun,
+        BinaryOp::PartialFunction => BinaryExprOp::PFun,
+        BinaryOp::TotalInjection => BinaryExprOp::TInj,
+        BinaryOp::PartialInjection => BinaryExprOp::PInj,
+        BinaryOp::TotalSurjection => BinaryExprOp::TSur,
+        BinaryOp::PartialSurjection => BinaryExprOp::PSur,
+        BinaryOp::Bijection => BinaryExprOp::TBij,
+        BinaryOp::DomainRestriction => BinaryExprOp::DomRes,
+        BinaryOp::DomainSubtraction => BinaryExprOp::DomSub,
+        BinaryOp::RangeRestriction => BinaryExprOp::RanRes,
+        BinaryOp::RangeSubtraction => BinaryExprOp::RanSub,
+        BinaryOp::DirectProduct => BinaryExprOp::DProd,
+        BinaryOp::ParallelProduct => BinaryExprOp::PProd,
+        BinaryOp::Maplet => BinaryExprOp::Mapsto,
+        BinaryOp::Add
+        | BinaryOp::Multiply
+        | BinaryOp::Union
+        | BinaryOp::Intersection
+        | BinaryOp::Overwrite
+        | BinaryOp::Composition
+        | BinaryOp::Semicolon
+        | BinaryOp::OfType => unreachable!("handled before the binary mapping"),
+    }
+}
+
+/// The associative model operator behind a binary spelling, if any.
+fn assoc_of(op: BinaryOp) -> Option<AssocExprOp> {
+    match op {
+        BinaryOp::Add => Some(AssocExprOp::Plus),
+        BinaryOp::Multiply => Some(AssocExprOp::Mul),
+        BinaryOp::Union => Some(AssocExprOp::BUnion),
+        BinaryOp::Intersection => Some(AssocExprOp::BInter),
+        BinaryOp::Overwrite => Some(AssocExprOp::Ovr),
+        BinaryOp::Composition => Some(AssocExprOp::BComp),
+        BinaryOp::Semicolon => Some(AssocExprOp::FComp),
+        _ => None,
+    }
+}
+
+fn relational_of(op: ComparisonOp) -> RelationalOp {
+    match op {
+        ComparisonOp::Equal => RelationalOp::Equal,
+        ComparisonOp::NotEqual => RelationalOp::NotEqual,
+        ComparisonOp::LessThan => RelationalOp::Lt,
+        ComparisonOp::LessEqual => RelationalOp::Le,
+        ComparisonOp::GreaterThan => RelationalOp::Gt,
+        ComparisonOp::GreaterEqual => RelationalOp::Ge,
+        ComparisonOp::In => RelationalOp::In,
+        ComparisonOp::NotIn => RelationalOp::NotIn,
+        // The surface names use `Subset` for the inclusive operator;
+        // the model reserves it for the strict one.
+        ComparisonOp::Subset => RelationalOp::SubsetEq,
+        ComparisonOp::NotSubset => RelationalOp::NotSubsetEq,
+        ComparisonOp::SubsetStrict => RelationalOp::Subset,
+        ComparisonOp::NotSubsetStrict => RelationalOp::NotSubset,
+    }
+}
+
+fn unary_of(op: UnaryOp) -> UnaryExprOp {
+    match op {
+        UnaryOp::Minus => UnaryExprOp::UnMinus,
+        UnaryOp::PowerSet => UnaryExprOp::Pow,
+        UnaryOp::PowerSet1 => UnaryExprOp::Pow1,
+        UnaryOp::Domain => UnaryExprOp::KDom,
+        UnaryOp::Range => UnaryExprOp::KRan,
+        UnaryOp::Inverse => UnaryExprOp::Converse,
+    }
+}
+
+fn builtin_unary_of(function: BuiltinFunction) -> UnaryExprOp {
+    match function {
+        BuiltinFunction::Card => UnaryExprOp::KCard,
+        BuiltinFunction::Min => UnaryExprOp::KMin,
+        BuiltinFunction::Max => UnaryExprOp::KMax,
+        BuiltinFunction::Union => UnaryExprOp::KUnion,
+        BuiltinFunction::Inter => UnaryExprOp::KInter,
+    }
+}
+
+fn quant_of(quantifier: Quantifier) -> QuantPredOp {
+    match quantifier {
+        Quantifier::ForAll => QuantPredOp::Forall,
+        Quantifier::Exists => QuantPredOp::Exists,
+    }
+}
 
 /// Source, recovered AST, and owned syntax data from one revision.
 #[derive(Debug)]
@@ -234,50 +430,53 @@ fn reject_reserved_operator_word(pair: &pest::iterators::Pair<Rule>) -> Result<(
     Ok(())
 }
 
-/// Parse a typed_identifier rule into a TypedIdentifier
-fn parse_typed_identifier(
+/// Parse a typed_identifier rule into a bound declaration. The type
+/// annotation is an expression of the *enclosing* scope, so this must
+/// run before the declared names are pushed onto the binder stack.
+fn parse_bound_decl(
     pair: pest::iterators::Pair<Rule>,
-) -> Result<TypedIdentifier, ParseError> {
+    fx: &mut Fx,
+) -> Result<BoundIdentDecl, ParseError> {
     let mut inner = pair.into_inner();
     let name_pair = inner.next().ok_or(ParseError::MissingVariable)?;
-    let span = Some(Span::from_pest(name_pair.as_span()));
+    let span = fx.at(name_pair.as_span());
     let name = declared_name(&name_pair)?;
     // Skip op_oftype if present, then parse the type expression
-    let mut type_expr = None;
+    let mut annotation = None;
     for p in inner {
         match p.as_rule() {
             Rule::op_oftype => {}
             Rule::ident_binder_type => {
-                type_expr = Some(Box::new(parse_expression(p)?));
+                annotation = Some(parse_expression(p, fx)?);
             }
             _ => {}
         }
     }
-    Ok(TypedIdentifier {
-        name,
-        type_expr,
-        span,
-    })
+    Ok(fx.ff.bound_ident_decl(name, span, annotation, None))
 }
 
-/// Collect typed identifiers from a quantifier, returning identifiers and the body predicate.
+/// Collect bound declarations from a quantifier, then parse the body
+/// under them, returning both.
 ///
 /// Shared by `negation_predicate` and `quantified_predicate` handlers.
-fn collect_typed_identifiers_and_predicate(
+fn collect_decls_and_body(
     inner: &mut pest::iterators::Pairs<Rule>,
     bracketed: bool,
-) -> Result<(Vec<TypedIdentifier>, Predicate), ParseError> {
-    let mut identifiers = Vec::new();
+    fx: &mut Fx,
+) -> Result<(Vec<BoundIdentDecl>, Predicate), ParseError> {
+    let mut decls = Vec::new();
     for p in inner.by_ref() {
         match p.as_rule() {
             Rule::typed_identifier => {
-                identifiers.push(parse_typed_identifier(p)?);
+                decls.push(parse_bound_decl(p, fx)?);
             }
             Rule::predicate | Rule::predicate_no_semi => {
                 // A quantifier body shares the enclosing closing bracket (if
                 // any), so it inherits `bracketed`.
-                let predicate = parse_predicate_inner(p, bracketed)?;
-                return Ok((identifiers, predicate));
+                let depth = fx.push_decls(&decls);
+                let body = parse_predicate_inner(p, bracketed, fx);
+                fx.binders.truncate(depth);
+                return Ok((decls, body?));
             }
             Rule::comma | Rule::dot => {}
             _ => {
@@ -829,9 +1028,7 @@ fn parse_machine(pair: pest::iterators::Pair<Rule>) -> Result<Component, ParseEr
                         match vp.as_rule() {
                             Rule::kw_variant => {}
                             _ => {
-                                machine.variant = Some(crate::formula::lower::lower_expression(
-                                    &parse_expression(vp)?,
-                                ));
+                                machine.variant = Some(parse_expression(vp, &mut Fx::new())?);
                             }
                         }
                     }
@@ -905,7 +1102,7 @@ fn parse_labeled_predicate(
     Ok(LabeledPredicate {
         label,
         is_theorem,
-        predicate: crate::formula::lower::lower_predicate(&predicate),
+        predicate,
         span: Some(span),
         comment: None,
     })
@@ -1137,16 +1334,18 @@ fn parse_action_list(pair: pest::iterators::Pair<Rule>) -> Result<Vec<LabeledAct
 }
 
 /// Parse a single action (supports multiple variables: x, y := e1, e2)
-fn parse_action(pair: pest::iterators::Pair<Rule>) -> Result<Action, ParseError> {
-    let action_span = Some(Span::from_pest(pair.as_span()));
+fn parse_action(pair: pest::iterators::Pair<Rule>) -> Result<ActionBody, ParseError> {
+    let mut fx = Fx::new();
+    let action_span = fx.at(pair.as_span());
     // Peek at the first inner token: if it is kw_skip this is a skip action.
     let mut inner = pair.into_inner().peekable();
     if inner.peek().map(|p| p.as_rule()) == Some(Rule::kw_skip) {
-        return Ok(Action::new(ActionKind::Skip, action_span));
+        return Ok(ActionBody::Skip);
     }
     let inner = inner;
+    let fx = &mut fx;
 
-    let mut variables = Vec::new();
+    let mut variables: Vec<(String, Option<Span>)> = Vec::new();
     let mut op: Option<pest::iterators::Pair<Rule>> = None;
     let mut rhs_pairs = Vec::new();
     let mut is_func_override = false;
@@ -1158,8 +1357,8 @@ fn parse_action(pair: pest::iterators::Pair<Rule>) -> Result<Action, ParseError>
                 // Assignment targets are uses of *declared* variables, so no
                 // reserved word can name one: `pred ≔ 0` is as invalid as
                 // `dom ≔ 0`.
-                let var_span = Some(Span::from_pest(p.as_span()));
-                variables.push(Ident::new(declared_name(&p)?, var_span));
+                let var_span = fx.at(p.as_span());
+                variables.push((declared_name(&p)?, var_span));
             }
             Rule::comma if op.is_none() => {} // separator between LHS identifiers/arguments
             Rule::lparen if op.is_none() => {
@@ -1186,11 +1385,17 @@ fn parse_action(pair: pest::iterators::Pair<Rule>) -> Result<Action, ParseError>
 
     let op_pair = op.ok_or(ParseError::MissingOperator)?;
 
+    let target_idents = |fx: &Fx, variables: &[(String, Option<Span>)]| -> Vec<Expression> {
+        variables
+            .iter()
+            .map(|(name, span)| fx.ff.free_identifier(name, *span, None))
+            .collect()
+    };
+
     if is_func_override {
         // f(x) ≔ E  →  f ≔ f\u{E103}{x ↦ E}. Function override takes a single
         // argument (Rodin's FUNIMAGE is binary); a pair is the maplet `f(x ↦ y)`.
-        use crate::ast::expression::BinaryOp;
-        let function = variables
+        let (function, function_span) = variables
             .into_iter()
             .next()
             .ok_or(ParseError::MissingValue)?;
@@ -1198,30 +1403,29 @@ fn parse_action(pair: pest::iterators::Pair<Rule>) -> Result<Action, ParseError>
             .into_iter()
             .next()
             .ok_or(ParseError::MissingValue)?;
-        let domain = parse_expression(arg_pair)?;
+        let domain = parse_expression(arg_pair, fx)?;
         let rhs_pair = rhs_pairs
             .into_iter()
             .next()
             .ok_or(ParseError::MissingValue)?;
-        let expression = parse_expression(rhs_pair)?;
-        let maplet: Expression = ExpressionKind::Binary {
-            op: BinaryOp::Maplet,
-            left: Box::new(domain),
-            right: Box::new(expression),
-        }
-        .into();
-        let overwrite_rhs: Expression = ExpressionKind::Binary {
-            op: BinaryOp::Overwrite,
-            left: Box::new(ExpressionKind::Identifier(function.name.clone()).into()),
-            right: Box::new(ExpressionKind::SetEnumeration(vec![maplet]).into()),
-        }
-        .into();
-        return Ok(Action::new(
-            ActionKind::Assignment {
-                assignments: vec![(function, overwrite_rhs)],
-            },
+        let expression = parse_expression(rhs_pair, fx)?;
+        let maplet = fx
+            .ff
+            .binary_expression(BinaryExprOp::Mapsto, domain, expression, None);
+        let overwrite_rhs = fx.ff.associative_expression(
+            AssocExprOp::Ovr,
+            vec![
+                fx.ff.free_identifier(&function, None, None),
+                fx.ff.set_extension(vec![maplet], None),
+            ],
+            None,
+        );
+        let target = fx.ff.free_identifier(&function, function_span, None);
+        return Ok(ActionBody::Assignment(fx.ff.becomes_equal_to(
+            vec![target],
+            vec![overwrite_rhs],
             action_span,
-        ));
+        )));
     }
 
     match op_pair.as_rule() {
@@ -1240,40 +1444,52 @@ fn parse_action(pair: pest::iterators::Pair<Rule>) -> Result<Action, ParseError>
                     span: Some(Span::from_pest(span)),
                 });
             }
-            let assignments = variables
+            let values = rhs_pairs
                 .into_iter()
-                .zip(rhs_pairs)
-                .map(|(variable, rhs)| Ok((variable, parse_expression(rhs)?)))
+                .map(|rhs| parse_expression(rhs, fx))
                 .collect::<Result<Vec<_>, ParseError>>()?;
-            Ok(Action::new(
-                ActionKind::Assignment { assignments },
+            let idents = target_idents(fx, &variables);
+            Ok(ActionBody::Assignment(fx.ff.becomes_equal_to(
+                idents,
+                values,
                 action_span,
-            ))
+            )))
         }
         Rule::op_becomes_in => {
             let rhs = rhs_pairs
                 .into_iter()
                 .next()
                 .ok_or(ParseError::MissingValue)?;
-            let set = parse_expression(rhs)?;
-            Ok(Action::new(
-                ActionKind::BecomesIn { variables, set },
+            let set = parse_expression(rhs, fx)?;
+            let idents = target_idents(fx, &variables);
+            Ok(ActionBody::Assignment(fx.ff.becomes_member_of(
+                idents,
+                set,
                 action_span,
-            ))
+            )))
         }
         Rule::op_becomes_such => {
             let rhs = rhs_pairs
                 .into_iter()
                 .next()
                 .ok_or(ParseError::MissingValue)?;
-            let predicate = parse_predicate(rhs)?;
-            Ok(Action::new(
-                ActionKind::BecomesSuchThat {
-                    variables,
-                    predicate,
-                },
+            // The condition reads the after state through the primed
+            // names, so one primed declaration per target is bound over
+            // it and `x'` occurrences resolve to those declarations.
+            let idents = target_idents(fx, &variables);
+            let primed: Vec<BoundIdentDecl> = variables
+                .iter()
+                .map(|(name, _)| fx.ff.bound_ident_decl(format!("{name}'"), None, None, None))
+                .collect();
+            let depth = fx.push_decls(&primed);
+            let pred = parse_predicate_inner(rhs, false, fx);
+            fx.binders.truncate(depth);
+            Ok(ActionBody::Assignment(fx.ff.becomes_such_that(
+                idents,
+                primed,
+                pred?,
                 action_span,
-            ))
+            )))
         }
         _ => Err(ParseError::UnexpectedRule {
             expected: "assignment operator".to_string(),
@@ -1311,15 +1527,14 @@ fn parse_labeled_action(pair: pest::iterators::Pair<Rule>) -> Result<LabeledActi
     let action = action.ok_or(ParseError::MissingAction)?;
     Ok(LabeledAction {
         label,
-        action: crate::formula::lower::lower_action_body(&action),
+        action,
         span: Some(span),
         comment: None,
     })
 }
 
 /// Map a grammar operator rule to a BinaryOp
-fn rule_to_binary_op(rule: Rule) -> Option<crate::ast::expression::BinaryOp> {
-    use crate::ast::expression::BinaryOp;
+fn rule_to_binary_op(rule: Rule) -> Option<BinaryOp> {
     match rule {
         // Additive operators
         Rule::op_plus => Some(BinaryOp::Add),
@@ -1368,8 +1583,7 @@ fn rule_to_binary_op(rule: Rule) -> Option<crate::ast::expression::BinaryOp> {
 }
 
 /// Map a grammar operator rule to a UnaryOp
-fn rule_to_unary_op(rule: Rule) -> Option<crate::ast::expression::UnaryOp> {
-    use crate::ast::expression::UnaryOp;
+fn rule_to_unary_op(rule: Rule) -> Option<UnaryOp> {
     match rule {
         Rule::op_minus => Some(UnaryOp::Minus),
         Rule::op_powerset => Some(UnaryOp::PowerSet),
@@ -1382,15 +1596,20 @@ fn rule_to_unary_op(rule: Rule) -> Option<crate::ast::expression::UnaryOp> {
 }
 
 /// Parse a binary expression (additive, multiplicative, or relational)
-fn parse_binary_expr(pair: pest::iterators::Pair<Rule>) -> Result<Expression, ParseError> {
-    use crate::ast::expression::BinaryOp;
+fn parse_binary_expr(
+    pair: pest::iterators::Pair<Rule>,
+    fx: &mut Fx,
+) -> Result<Expression, ParseError> {
     use crate::op_info;
 
     let mut inner = pair.into_inner();
 
-    // Get the first operand
+    // Get the first operand. The accumulator holds the operands of an
+    // open same-operator associative run (`run_op`), or — between runs —
+    // exactly the folded left operand.
     let first = inner.next().ok_or(ParseError::EmptyExpression)?;
-    let mut left = parse_expression(first)?;
+    let mut operands = vec![parse_expression(first, fx)?];
+    let mut run_op: Option<AssocExprOp> = None;
 
     // The operator binding the accumulated left operand (its root operator),
     // kept by `Rule` so the display spelling is built only on the error path.
@@ -1423,22 +1642,68 @@ fn parse_binary_expr(pair: pest::iterators::Pair<Rule>) -> Result<Expression, Pa
         }
 
         let right_pair = inner.next().ok_or(ParseError::EmptyExpression)?;
-        let right = parse_expression(right_pair)?;
-        // The folded node spans from the start of its left operand to the end
-        // of its right operand — no single pest pair covers it.
-        let span = fold_span(left.span, right.span);
-        left = Expression::new(
-            ExpressionKind::Binary {
-                op,
-                left: Box::new(left),
-                right: Box::new(right),
-            },
-            span,
-        );
+        let right = parse_expression(right_pair, fx)?;
+        match assoc_of(op).filter(|_| op != BinaryOp::OfType) {
+            // A same-operator chain folds into one n-ary node: operands
+            // accumulate in the run and the node is built once when the
+            // run ends, so an n-operand chain costs one construction
+            // instead of n incremental rebuilds.
+            Some(assoc) if run_op == Some(assoc) => operands.push(right),
+            Some(assoc) => {
+                collapse_run(&mut operands, &mut run_op, fx);
+                run_op = Some(assoc);
+                operands.push(right);
+            }
+            None => {
+                collapse_run(&mut operands, &mut run_op, fx);
+                let left = operands
+                    .pop()
+                    .expect("the accumulator holds the left operand");
+                // The folded node spans from the start of its left operand
+                // to the end of its right operand — no single pest pair
+                // covers it.
+                let span = fold_span(left.span(), right.span());
+                operands.push(if op == BinaryOp::OfType {
+                    fx.ff.ascription(left, right, span)
+                } else {
+                    fx.ff.binary_expression(binary_of(op), left, right, span)
+                });
+            }
+        }
         prev = Some((op, op_rule));
     }
 
-    Ok(left)
+    collapse_run(&mut operands, &mut run_op, fx);
+    Ok(operands.pop().expect("the accumulator holds the result"))
+}
+
+/// Ends an associative-operator run: replaces the accumulated operands
+/// with the single n-ary node over them, spanning first through last.
+///
+/// A same-operator node in the run's first position — a parenthesized
+/// left chain like `(a+b)` in `(a+b)+c` — splices into the new node:
+/// the left-associative spine is one flat n-ary node regardless of
+/// explicit grouping, which is the shape the printer renders flat. A
+/// same-operator *right* operand (`a+(b+c)`) stays nested.
+fn collapse_run(operands: &mut Vec<Expression>, run_op: &mut Option<AssocExprOp>, fx: &Fx) {
+    if let Some(op) = run_op.take() {
+        let span = fold_span(
+            operands.first().and_then(Expression::span),
+            operands.last().and_then(Expression::span),
+        );
+        let mut children = std::mem::take(operands);
+        if let ExpressionKind::Associative {
+            op: first_op,
+            children: inner,
+        } = children[0].kind()
+        {
+            if *first_op == op {
+                let inner = inner.clone();
+                children.splice(0..1, inner);
+            }
+        }
+        operands.push(fx.ff.associative_expression(op, children, span));
+    }
 }
 
 /// Span covering a left operand's start through a right operand's end, when both
@@ -1450,19 +1715,6 @@ fn fold_span(left: Option<Span>, right: Option<Span>) -> Option<Span> {
             end: r.end,
         }),
         _ => None,
-    }
-}
-
-/// Build an expression for a bare `identifier` token. A reserved relational
-/// atom (`id`, `prj1`, `prj2`, `pred`, `succ` — exact case) becomes the typed
-/// [`ExpressionKind::AtomicBuiltin`]; every other word is an ordinary
-/// identifier. Applying an atom (`prj1(x)`) is then handled by the surrounding
-/// `function_application`, which wraps it in a `FunctionApplication` — matching
-/// Rodin's atomic-expression + `FUNIMAGE` structure.
-fn identifier_expression(name: &str, span: Option<Span>) -> Expression {
-    match crate::ast::expression::AtomicBuiltinKind::from_name(name) {
-        Some(kind) => Expression::new(ExpressionKind::AtomicBuiltin(kind), span),
-        None => Expression::new(ExpressionKind::Identifier(name.to_string()), span),
     }
 }
 
@@ -1492,7 +1744,10 @@ fn incompatible_operators(span: pest::Span<'_>, left: String, right: String) -> 
 /// (e.g. file-system's `C ∖ {x ↦ y ∣ y ∈ dom(f(x))}[C] ≠ ∅`). Instead we
 /// unwrap single-child wrappers iteratively below, only recursing for actual
 /// structural work.
-fn parse_expression(pair: pest::iterators::Pair<Rule>) -> Result<Expression, ParseError> {
+fn parse_expression(
+    pair: pest::iterators::Pair<Rule>,
+    fx: &mut Fx,
+) -> Result<Expression, ParseError> {
     let mut pair = pair;
     let rule = loop {
         let r = pair.as_rule();
@@ -1524,7 +1779,7 @@ fn parse_expression(pair: pest::iterators::Pair<Rule>) -> Result<Expression, Par
                 let mut probe = pair.clone().into_inner();
                 let first = probe.next().ok_or(ParseError::EmptyExpression)?;
                 if probe.next().is_some() {
-                    return parse_binary_expr(pair);
+                    return parse_binary_expr(pair, fx);
                 }
                 pair = first;
             }
@@ -1544,7 +1799,7 @@ fn parse_expression(pair: pest::iterators::Pair<Rule>) -> Result<Expression, Par
     let span = pair.as_span();
     // Span of the whole expression dispatched at this node. Leaf and structural
     // arms below attach it so every constructed node carries a source location.
-    let node_span = Some(Span::from_pest(span));
+    let node_span = fx.at(span);
 
     match rule {
         Rule::quantified_union_expr
@@ -1555,16 +1810,20 @@ fn parse_expression(pair: pest::iterators::Pair<Rule>) -> Result<Expression, Par
             let is_union =
                 rule == Rule::quantified_union_expr || rule == Rule::quantified_union_expr_no_semi;
             let mut inner = pair.into_inner();
-            let mut identifiers = Vec::new();
+            let mut decls = Vec::new();
 
             // Collect typed identifiers until we hit the predicate
             for p in inner.by_ref() {
                 match p.as_rule() {
                     Rule::typed_identifier => {
-                        identifiers.push(parse_typed_identifier(p)?);
+                        decls.push(parse_bound_decl(p, fx)?);
                     }
                     Rule::predicate => {
-                        let predicate = parse_predicate(p)?;
+                        // An error return abandons the whole formula (each
+                        // formula parses in a fresh context), so the binder
+                        // stack only needs truncating on the success path.
+                        let depth = fx.push_decls(&decls);
+                        let predicate = parse_predicate_inner(p, false, fx)?;
                         // Skip pipe token, then get expression
                         let expr_pair = loop {
                             let next = inner.next().ok_or(ParseError::EmptyExpression)?;
@@ -1579,26 +1838,21 @@ fn parse_expression(pair: pest::iterators::Pair<Rule>) -> Result<Expression, Par
                                 }
                             }
                         };
-                        let expression = parse_expression(expr_pair)?;
-                        return if is_union {
-                            Ok(Expression::new(
-                                ExpressionKind::QuantifiedUnion {
-                                    identifiers,
-                                    predicate: Box::new(predicate),
-                                    expression: Box::new(expression),
-                                },
-                                node_span,
-                            ))
+                        let expression = parse_expression(expr_pair, fx)?;
+                        fx.binders.truncate(depth);
+                        let op = if is_union {
+                            QuantExprOp::QUnion
                         } else {
-                            Ok(Expression::new(
-                                ExpressionKind::QuantifiedInter {
-                                    identifiers,
-                                    predicate: Box::new(predicate),
-                                    expression: Box::new(expression),
-                                },
-                                node_span,
-                            ))
+                            QuantExprOp::QInter
                         };
+                        return Ok(fx.ff.quantified_expression(
+                            op,
+                            decls,
+                            predicate,
+                            expression,
+                            node_span,
+                            Form::Explicit,
+                        ));
                     }
                     Rule::kw_UNION | Rule::kw_INTER | Rule::comma | Rule::dot => {}
                     _ => {
@@ -1621,14 +1875,8 @@ fn parse_expression(pair: pest::iterators::Pair<Rule>) -> Result<Expression, Par
                     expected: "unary operator".to_string(),
                     found: format!("{:?}", first.as_rule()),
                 })?;
-            let operand = parse_expression(inner.next().ok_or(ParseError::EmptyExpression)?)?;
-            Ok(Expression::new(
-                ExpressionKind::Unary {
-                    op,
-                    operand: Box::new(operand),
-                },
-                node_span,
-            ))
+            let operand = parse_expression(inner.next().ok_or(ParseError::EmptyExpression)?, fx)?;
+            Ok(fx.ff.unary_expression(unary_of(op), operand, node_span))
         }
         Rule::closed_unary_expr => {
             // Fixed layout: op ~ lparen ~ expression ~ rparen.
@@ -1640,13 +1888,8 @@ fn parse_expression(pair: pest::iterators::Pair<Rule>) -> Result<Expression, Par
                     found: format!("{:?}", op_pair.as_rule()),
                 })?;
             let operand_pair = inner.nth(1).ok_or(ParseError::EmptyExpression)?;
-            Ok(Expression::new(
-                ExpressionKind::Unary {
-                    op,
-                    operand: Box::new(parse_expression(operand_pair)?),
-                },
-                node_span,
-            ))
+            let operand = parse_expression(operand_pair, fx)?;
+            Ok(fx.ff.unary_expression(unary_of(op), operand, node_span))
         }
         Rule::lambda_expr | Rule::lambda_expr_no_semi => {
             // Lambda expression: λ pattern · P ∣ E
@@ -1654,14 +1897,35 @@ fn parse_expression(pair: pest::iterators::Pair<Rule>) -> Result<Expression, Par
             let mut inner = pair.into_inner();
             let mut pattern = None;
             let mut predicate = None;
+            let mut decls = Vec::new();
+            let mut depth = 0;
 
             for p in inner.by_ref() {
                 match p.as_rule() {
                     Rule::ident_pattern => {
-                        pattern = Some(parse_ident_pattern(p)?);
+                        // Declarations (and their annotations) belong to the
+                        // enclosing scope; the pattern's identifier tree is
+                        // rebuilt over the new declarations below.
+                        let parsed = parse_ident_pattern(p, fx)?;
+                        pattern_decls(&parsed, &mut decls);
+                        // A lambda pattern declaring the same name twice is
+                        // rejected: the duplicate leaves would otherwise both
+                        // resolve to the innermost declaration, silently
+                        // producing a different formula than written.
+                        for (i, d) in decls.iter().enumerate() {
+                            if decls[..i].iter().any(|e| e.name() == d.name()) {
+                                return Err(ParseError::UnsupportedIdentifier {
+                                    name: d.name().to_string(),
+                                    origin: "lambda pattern".to_string(),
+                                    reason: "declared more than once".to_string(),
+                                });
+                            }
+                        }
+                        depth = fx.push_decls(&decls);
+                        pattern = Some(parsed);
                     }
                     Rule::predicate => {
-                        predicate = Some(parse_predicate(p)?);
+                        predicate = Some(parse_predicate_inner(p, false, fx)?);
                         break;
                     }
                     Rule::dot => {}
@@ -1686,14 +1950,19 @@ fn parse_expression(pair: pest::iterators::Pair<Rule>) -> Result<Expression, Par
                     }
                 }
             };
-            let expression = parse_expression(expr_pair)?;
-            Ok(Expression::new(
-                ExpressionKind::Lambda {
-                    pattern,
-                    predicate: Box::new(predicate),
-                    expression: Box::new(expression),
-                },
+            let body = parse_expression(expr_pair, fx)?;
+            let pattern_expr = pattern_expression(&pattern, fx);
+            fx.binders.truncate(depth);
+            let value = fx
+                .ff
+                .binary_expression(BinaryExprOp::Mapsto, pattern_expr, body, None);
+            Ok(fx.ff.quantified_expression(
+                QuantExprOp::CSet,
+                decls,
+                predicate,
+                value,
                 node_span,
+                Form::Lambda,
             ))
         }
         Rule::function_application => {
@@ -1702,7 +1971,7 @@ fn parse_expression(pair: pest::iterators::Pair<Rule>) -> Result<Expression, Par
             // Parse the base expression (function)
             let base_pair = inner.next().ok_or(ParseError::EmptyExpression)?;
             let base_span = base_pair.as_span();
-            let base = parse_expression(base_pair)?;
+            let base = parse_expression(base_pair, fx)?;
 
             // Check if there are any function applications or relational images
             let remaining: Vec<_> = inner.collect();
@@ -1714,13 +1983,13 @@ fn parse_expression(pair: pest::iterators::Pair<Rule>) -> Result<Expression, Par
             // identifier (see `builtins::RESERVED_OPERATOR_WORDS`). This is
             // the expression-position check; predicate applications,
             // assignment targets, and declarations have sibling checks.
-            if let ExpressionKind::Identifier(ref name) = base.kind
+            if let ExpressionKind::FreeIdentifier(name) = base.kind()
                 && crate::builtins::is_reserved_operator_word(name)
             {
                 let resolves = remaining
                     .first()
                     .is_some_and(|p| p.as_rule() == Rule::lparen)
-                    && crate::ast::expression::BuiltinFunction::from_name(name).is_some();
+                    && BuiltinFunction::from_name(name).is_some();
                 if !resolves {
                     return Err(reserved_word_error(name, base_span));
                 }
@@ -1742,7 +2011,7 @@ fn parse_expression(pair: pest::iterators::Pair<Rule>) -> Result<Expression, Par
                     // with a maplet (`f(x ↦ y)`), never a comma list.
                     let argument =
                         if i < remaining.len() && remaining[i].as_rule() == Rule::expression {
-                            let a = parse_expression(remaining[i].clone())?;
+                            let a = parse_expression(remaining[i].clone(), fx)?;
                             i += 1;
                             a
                         } else {
@@ -1753,39 +2022,31 @@ fn parse_expression(pair: pest::iterators::Pair<Rule>) -> Result<Expression, Par
 
                     // A closed builtin (card/min/max/union/inter) applied to its
                     // single argument; every other head is plain application.
-                    if let ExpressionKind::Identifier(ref name) = result.kind
-                        && let Some(builtin) =
-                            crate::ast::expression::BuiltinFunction::from_name(name)
-                    {
-                        result = Expression::new(
-                            ExpressionKind::BuiltinApplication {
-                                function: builtin,
-                                argument: Box::new(argument),
-                            },
+                    let builtin = match result.kind() {
+                        ExpressionKind::FreeIdentifier(name) => BuiltinFunction::from_name(name),
+                        _ => None,
+                    };
+                    result = match builtin {
+                        Some(builtin) => {
+                            fx.ff
+                                .unary_expression(builtin_unary_of(builtin), argument, node_span)
+                        }
+                        None => fx.ff.binary_expression(
+                            BinaryExprOp::FunImage,
+                            result,
+                            argument,
                             node_span,
-                        );
-                        continue;
-                    }
-                    result = Expression::new(
-                        ExpressionKind::FunctionApplication {
-                            function: Box::new(result),
-                            argument: Box::new(argument),
-                        },
-                        node_span,
-                    );
+                        ),
+                    };
                 } else if remaining[i].as_rule() == Rule::lbracket {
                     i += 1; // Skip lbracket
                     // Relational image: r[S]
                     if i < remaining.len() && remaining[i].as_rule() == Rule::expression {
-                        let set = parse_expression(remaining[i].clone())?;
+                        let set = parse_expression(remaining[i].clone(), fx)?;
                         i += 1;
-                        result = Expression::new(
-                            ExpressionKind::RelationalImage {
-                                relation: Box::new(result),
-                                set: Box::new(set),
-                            },
-                            node_span,
-                        );
+                        result =
+                            fx.ff
+                                .binary_expression(BinaryExprOp::RelImage, result, set, node_span);
                     }
                     // Skip rbracket
                     if i < remaining.len() && remaining[i].as_rule() == Rule::rbracket {
@@ -1794,14 +2055,14 @@ fn parse_expression(pair: pest::iterators::Pair<Rule>) -> Result<Expression, Par
                 } else if remaining[i].as_rule() == Rule::lbrace {
                     // Function update: f{x ↦ y, ...} == f <+ {x ↦ y, ...}.
                     // Rodin's static checker can emit this compact form for
-                    // f(x) := y actions; we lower it to the same AST as the
-                    // explicit <+ operator so semantic comparison converges.
+                    // f(x) := y actions; we build the same AST as the explicit
+                    // <+ operator so semantic comparison converges.
                     i += 1; // skip lbrace
                     let mut elements = Vec::new();
                     while i < remaining.len() && remaining[i].as_rule() != Rule::rbrace {
                         match remaining[i].as_rule() {
                             Rule::expression => {
-                                elements.push(parse_expression(remaining[i].clone())?);
+                                elements.push(parse_expression(remaining[i].clone(), fx)?);
                             }
                             Rule::comma => {}
                             _ => {
@@ -1814,26 +2075,30 @@ fn parse_expression(pair: pest::iterators::Pair<Rule>) -> Result<Expression, Par
                         i += 1;
                     }
                     i += 1; // skip rbrace
-                    result = Expression::new(
-                        ExpressionKind::Binary {
-                            op: crate::ast::expression::BinaryOp::Overwrite,
-                            left: Box::new(result),
-                            right: Box::new(Expression::new(
-                                ExpressionKind::SetEnumeration(elements),
-                                node_span,
-                            )),
-                        },
-                        node_span,
-                    );
+                    let update = fx.ff.set_extension(elements, node_span);
+                    // Chained updates extend one n-ary override node, the
+                    // shape a spelled-out `<+` chain folds to.
+                    result = match result.kind() {
+                        ExpressionKind::Associative {
+                            op: AssocExprOp::Ovr,
+                            children,
+                        } => {
+                            let mut children = children.clone();
+                            children.push(update);
+                            fx.ff
+                                .associative_expression(AssocExprOp::Ovr, children, node_span)
+                        }
+                        _ => fx.ff.associative_expression(
+                            AssocExprOp::Ovr,
+                            vec![result, update],
+                            node_span,
+                        ),
+                    };
                 } else if remaining[i].as_rule() == Rule::op_inverse {
                     // Postfix inverse: r∼
-                    result = Expression::new(
-                        ExpressionKind::Unary {
-                            op: crate::ast::expression::UnaryOp::Inverse,
-                            operand: Box::new(result),
-                        },
-                        node_span,
-                    );
+                    result = fx
+                        .ff
+                        .unary_expression(UnaryExprOp::Converse, result, node_span);
                     i += 1;
                 } else {
                     return Err(ParseError::UnexpectedRule {
@@ -1849,12 +2114,16 @@ fn parse_expression(pair: pest::iterators::Pair<Rule>) -> Result<Expression, Par
             let mut inner = pair.into_inner();
             let first = inner.next().ok_or(ParseError::EmptyExpression)?;
             match first.as_rule() {
-                Rule::kw_bool_true => Ok(Expression::new(ExpressionKind::True, node_span)),
-                Rule::kw_bool_false => Ok(Expression::new(ExpressionKind::False, node_span)),
-                Rule::op_emptyset => Ok(Expression::new(ExpressionKind::EmptySet, node_span)),
-                Rule::kw_nat => Ok(Expression::new(ExpressionKind::Naturals, node_span)),
-                Rule::kw_nat1 => Ok(Expression::new(ExpressionKind::Naturals1, node_span)),
-                Rule::kw_int => Ok(Expression::new(ExpressionKind::Integers, node_span)),
+                Rule::kw_bool_true => Ok(fx.ff.atomic_expression(AtomicOp::True, node_span, None)),
+                Rule::kw_bool_false => {
+                    Ok(fx.ff.atomic_expression(AtomicOp::False, node_span, None))
+                }
+                Rule::op_emptyset => {
+                    Ok(fx.ff.atomic_expression(AtomicOp::EmptySet, node_span, None))
+                }
+                Rule::kw_nat => Ok(fx.ff.atomic_expression(AtomicOp::Natural, node_span, None)),
+                Rule::kw_nat1 => Ok(fx.ff.atomic_expression(AtomicOp::Natural1, node_span, None)),
+                Rule::kw_int => Ok(fx.ff.atomic_expression(AtomicOp::Integer, node_span, None)),
                 Rule::bool_expr => {
                     // bool(P): extract the predicate child
                     let mut bool_inner = first.into_inner();
@@ -1864,32 +2133,29 @@ fn parse_expression(pair: pest::iterators::Pair<Rule>) -> Result<Expression, Par
                     bool_inner.next();
                     let pred_pair = bool_inner.next().ok_or(ParseError::MissingPredicate)?;
                     // bool(P) closes with `)`, so a trailing quantifier in P is bounded.
-                    let predicate = parse_predicate_inner(pred_pair, true)?;
-                    Ok(Expression::new(
-                        ExpressionKind::Bool(Box::new(predicate)),
-                        node_span,
-                    ))
+                    let predicate = parse_predicate_inner(pred_pair, true, fx)?;
+                    Ok(fx.ff.bool_expression(predicate, node_span))
                 }
-                Rule::kw_bool_type => Ok(Expression::new(ExpressionKind::BoolType, node_span)),
+                Rule::kw_bool_type => Ok(fx.ff.atomic_expression(AtomicOp::Bool, node_span, None)),
                 Rule::integer => {
                     let value = first
                         .as_str()
                         .parse::<i64>()
                         .map_err(|_| ParseError::InvalidInteger(first.as_str().to_string()))?;
-                    Ok(Expression::new(ExpressionKind::Integer(value), node_span))
+                    Ok(fx.ff.integer_literal(value, node_span))
                 }
-                Rule::identifier => Ok(identifier_expression(first.as_str(), node_span)),
-                Rule::expression => parse_expression(first),
+                Rule::identifier => Ok(fx.atom_or_identifier(first.as_str(), node_span)),
+                Rule::expression => parse_expression(first, fx),
                 Rule::lparen => {
                     // Parenthesized expression: lparen ~ expression ~ rparen
                     let expr_pair = inner.next().ok_or(ParseError::EmptyExpression)?;
-                    parse_expression(expr_pair)
+                    parse_expression(expr_pair, fx)
                 }
                 Rule::set_enumeration => {
                     let mut elements = Vec::new();
                     for p in first.into_inner() {
                         match p.as_rule() {
-                            Rule::expression => elements.push(parse_expression(p)?),
+                            Rule::expression => elements.push(parse_expression(p, fx)?),
                             Rule::lbrace | Rule::rbrace | Rule::comma => {}
                             _ => {
                                 return Err(ParseError::UnexpectedRule {
@@ -1899,13 +2165,14 @@ fn parse_expression(pair: pest::iterators::Pair<Rule>) -> Result<Expression, Par
                             }
                         }
                     }
-                    Ok(Expression::new(
-                        ExpressionKind::SetEnumeration(elements),
-                        node_span,
-                    ))
+                    if elements.is_empty() {
+                        // An empty enumeration denotes the empty set.
+                        return Ok(fx.ff.atomic_expression(AtomicOp::EmptySet, node_span, None));
+                    }
+                    Ok(fx.ff.set_extension(elements, node_span))
                 }
                 Rule::set_comprehension => {
-                    let mut identifiers = Vec::new();
+                    let mut decls = Vec::new();
 
                     let inner_pairs: Vec<_> = first.into_inner().collect();
                     let mut iter = inner_pairs.into_iter();
@@ -1913,20 +2180,22 @@ fn parse_expression(pair: pest::iterators::Pair<Rule>) -> Result<Expression, Par
                     while let Some(p) = iter.next() {
                         match p.as_rule() {
                             Rule::typed_identifier => {
-                                identifiers.push(parse_typed_identifier(p)?);
+                                decls.push(parse_bound_decl(p, fx)?);
                             }
                             Rule::dot => {
                                 // Extended form: {x · P | E}
                                 // Next should be predicate, then pipe, then expression
+                                let depth = fx.push_decls(&decls);
                                 let mut predicate = None;
                                 let mut expression = None;
                                 for rest in iter.by_ref() {
                                     match rest.as_rule() {
                                         Rule::predicate => {
-                                            predicate = Some(parse_predicate(rest)?);
+                                            predicate =
+                                                Some(parse_predicate_inner(rest, false, fx)?);
                                         }
                                         Rule::expression => {
-                                            expression = Some(parse_expression(rest)?);
+                                            expression = Some(parse_expression(rest, fx)?);
                                         }
                                         Rule::pipe | Rule::rbrace => {}
                                         _ => {
@@ -1938,43 +2207,69 @@ fn parse_expression(pair: pest::iterators::Pair<Rule>) -> Result<Expression, Par
                                         }
                                     }
                                 }
-                                return Ok(Expression::new(
-                                    ExpressionKind::SetComprehension {
-                                        identifiers,
-                                        predicate: Box::new(
-                                            predicate.ok_or(ParseError::MissingPredicate)?,
-                                        ),
-                                        expression: Some(Box::new(
-                                            expression.ok_or(ParseError::EmptyExpression)?,
-                                        )),
-                                    },
+                                fx.binders.truncate(depth);
+                                return Ok(fx.ff.quantified_expression(
+                                    QuantExprOp::CSet,
+                                    decls,
+                                    predicate.ok_or(ParseError::MissingPredicate)?,
+                                    expression.ok_or(ParseError::EmptyExpression)?,
                                     node_span,
+                                    Form::Explicit,
                                 ));
                             }
                             Rule::predicate => {
                                 // Basic form: {x | P}. The predicate closes with
                                 // `}`, so a trailing quantifier in P is bounded.
-                                let predicate = parse_predicate_inner(p, true)?;
-                                return Ok(Expression::new(
-                                    ExpressionKind::SetComprehension {
-                                        identifiers,
-                                        predicate: Box::new(predicate),
-                                        expression: None,
-                                    },
+                                // The value is the canonical maplet chain over
+                                // the declared identifiers.
+                                let depth = fx.push_decls(&decls);
+                                let predicate = parse_predicate_inner(p, true, fx)?;
+                                fx.binders.truncate(depth);
+                                let value = fx.ff.bound_ident_chain(decls.len());
+                                return Ok(fx.ff.quantified_expression(
+                                    QuantExprOp::CSet,
+                                    decls,
+                                    predicate,
+                                    value,
                                     node_span,
+                                    Form::IdentList,
                                 ));
                             }
                             Rule::expression => {
-                                // Expression form: {E | P}
-                                // This is the third alternative in the grammar
-                                let member_expression = parse_expression(p)?;
-                                // Skip pipe, then parse predicate. The predicate
-                                // closes with `}`, so a trailing quantifier is bounded.
+                                // Expression form: {E | P}. Every identifier
+                                // free in E becomes a declaration, in first-
+                                // occurrence order; occurrences already bound
+                                // by an enclosing binder stay references to it.
+                                // E is parsed in the enclosing scope and the
+                                // fresh names are then bound over it, shifting
+                                // enclosing-binder references past the new
+                                // declarations.
+                                let member = parse_expression(p, fx)?;
+                                let names = first_free_names(&member);
+                                // The declaration carries the span of the
+                                // name's first occurrence in E — there is no
+                                // declaration site, so that occurrence stands
+                                // in for one (rename and find-references
+                                // anchor on it).
+                                let decls: Vec<BoundIdentDecl> = names
+                                    .iter()
+                                    .map(|(name, span)| {
+                                        fx.ff.bound_ident_decl(name, *span, None, None)
+                                    })
+                                    .collect();
+                                let name_refs: Vec<&str> =
+                                    names.iter().map(|(name, _)| name.as_str()).collect();
+                                let value = member.bind_idents(&name_refs);
+                                // Skip pipe, then parse predicate under the new
+                                // declarations. The predicate closes with `}`,
+                                // so a trailing quantifier is bounded.
+                                let depth = fx.push_decls(&decls);
                                 let mut predicate = None;
                                 for rest in iter.by_ref() {
                                     match rest.as_rule() {
                                         Rule::predicate => {
-                                            predicate = Some(parse_predicate_inner(rest, true)?);
+                                            predicate =
+                                                Some(parse_predicate_inner(rest, true, fx)?);
                                         }
                                         Rule::pipe | Rule::rbrace => {}
                                         _ => {
@@ -1985,14 +2280,14 @@ fn parse_expression(pair: pest::iterators::Pair<Rule>) -> Result<Expression, Par
                                         }
                                     }
                                 }
-                                return Ok(Expression::new(
-                                    ExpressionKind::SetBuilder {
-                                        member_expression: Box::new(member_expression),
-                                        predicate: Box::new(
-                                            predicate.ok_or(ParseError::MissingPredicate)?,
-                                        ),
-                                    },
+                                fx.binders.truncate(depth);
+                                return Ok(fx.ff.quantified_expression(
+                                    QuantExprOp::CSet,
+                                    decls,
+                                    predicate.ok_or(ParseError::MissingPredicate)?,
+                                    value,
                                     node_span,
+                                    Form::Implicit,
                                 ));
                             }
                             Rule::lbrace | Rule::rbrace | Rule::comma | Rule::pipe => {}
@@ -2019,14 +2314,14 @@ fn parse_expression(pair: pest::iterators::Pair<Rule>) -> Result<Expression, Par
             // raw identifier pair (formula identifiers arrive wrapped in
             // function_application, which carries the position-aware check).
             reject_reserved_operator_word(&pair)?;
-            Ok(identifier_expression(pair.as_str(), node_span))
+            Ok(fx.atom_or_identifier(pair.as_str(), node_span))
         }
         Rule::integer => {
             let value = pair
                 .as_str()
                 .parse::<i64>()
                 .map_err(|_| ParseError::InvalidInteger(pair.as_str().to_string()))?;
-            Ok(Expression::new(ExpressionKind::Integer(value), node_span))
+            Ok(fx.ff.integer_literal(value, node_span))
         }
         _ => Err(ParseError::UnexpectedRule {
             expected: "expression".to_string(),
@@ -2036,8 +2331,11 @@ fn parse_expression(pair: pest::iterators::Pair<Rule>) -> Result<Expression, Par
 }
 
 /// Parse a predicate application (e.g., finite(S), partition(A, B, C))
-fn parse_predicate_application(pair: pest::iterators::Pair<Rule>) -> Result<Predicate, ParseError> {
-    let pred_span = Some(Span::from_pest(pair.as_span()));
+fn parse_predicate_application(
+    pair: pest::iterators::Pair<Rule>,
+    fx: &mut Fx,
+) -> Result<Predicate, ParseError> {
+    let pred_span = fx.at(pair.as_span());
     let mut inner = pair.into_inner();
     let function_pair = inner.next().ok_or(ParseError::MissingVariable)?;
     let function_span = function_pair.as_span();
@@ -2045,7 +2343,7 @@ fn parse_predicate_application(pair: pest::iterators::Pair<Rule>) -> Result<Pred
     let mut arguments = Vec::new();
     for p in inner {
         match p.as_rule() {
-            Rule::expression => arguments.push(parse_expression(p)?),
+            Rule::expression => arguments.push(parse_expression(p, fx)?),
             Rule::lparen | Rule::rparen | Rule::comma => {}
             _ => {
                 return Err(ParseError::UnexpectedRule {
@@ -2056,7 +2354,7 @@ fn parse_predicate_application(pair: pest::iterators::Pair<Rule>) -> Result<Pred
         }
     }
 
-    if let Some(builtin) = crate::ast::predicate::BuiltinPredicate::from_name(&function) {
+    if let Some(builtin) = BuiltinPredicate::from_name(&function) {
         if !builtin.check_arity(arguments.len()) {
             return Err(ParseError::ArityMismatch {
                 name: builtin.name().to_string(),
@@ -2068,13 +2366,13 @@ fn parse_predicate_application(pair: pest::iterators::Pair<Rule>) -> Result<Pred
                 actual: arguments.len(),
             });
         }
-        Ok(Predicate::new(
-            PredicateKind::BuiltinApplication {
-                predicate: builtin,
-                arguments,
-            },
-            pred_span,
-        ))
+        Ok(match builtin {
+            BuiltinPredicate::Finite => {
+                let arg = arguments.into_iter().next().expect("arity checked");
+                fx.ff.simple_predicate(arg, pred_span)
+            }
+            BuiltinPredicate::Partition => fx.ff.multiple_predicate(arguments, pred_span),
+        })
     } else if crate::builtins::is_reserved_word(&function) {
         // A reserved word applied where no builtin predicate resolves it:
         // the expression-only forms (`dom(x)`, `mod(x)`) and the generic
@@ -2083,21 +2381,14 @@ fn parse_predicate_application(pair: pest::iterators::Pair<Rule>) -> Result<Pred
         // application named by a reserved word.
         Err(reserved_word_error(&function, function_span))
     } else {
-        Ok(Predicate::new(
-            PredicateKind::Application {
-                function: Ident::new(function, Some(Span::from_pest(function_span))),
-                arguments,
-            },
-            pred_span,
-        ))
+        Ok(fx
+            .ff
+            .predicate_application(function, fx.at(function_span), arguments, pred_span))
     }
 }
 
 /// Map a grammar comparison operator rule to a [`ComparisonOp`].
-///
-/// [`ComparisonOp`]: crate::ast::predicate::ComparisonOp
-fn rule_to_comparison_op(rule: Rule) -> Option<crate::ast::predicate::ComparisonOp> {
-    use crate::ast::predicate::ComparisonOp;
+fn rule_to_comparison_op(rule: Rule) -> Option<ComparisonOp> {
     match rule {
         Rule::op_eq => Some(ComparisonOp::Equal),
         Rule::op_neq => Some(ComparisonOp::NotEqual),
@@ -2116,10 +2407,7 @@ fn rule_to_comparison_op(rule: Rule) -> Option<crate::ast::predicate::Comparison
 }
 
 /// Map a grammar quantifier rule to a [`Quantifier`].
-///
-/// [`Quantifier`]: crate::ast::predicate::Quantifier
-fn rule_to_quantifier(rule: Rule) -> Option<crate::ast::predicate::Quantifier> {
-    use crate::ast::predicate::Quantifier;
+fn rule_to_quantifier(rule: Rule) -> Option<Quantifier> {
     match rule {
         Rule::op_forall => Some(Quantifier::ForAll),
         Rule::op_exists => Some(Quantifier::Exists),
@@ -2127,12 +2415,15 @@ fn rule_to_quantifier(rule: Rule) -> Option<crate::ast::predicate::Quantifier> {
     }
 }
 
-fn parse_comparison_predicate(pair: pest::iterators::Pair<Rule>) -> Result<Predicate, ParseError> {
-    let pred_span = Some(Span::from_pest(pair.as_span()));
+fn parse_comparison_predicate(
+    pair: pest::iterators::Pair<Rule>,
+    fx: &mut Fx,
+) -> Result<Predicate, ParseError> {
+    let pred_span = fx.at(pair.as_span());
     let mut inner = pair.into_inner();
-    let left_expr = parse_expression(inner.next().ok_or(ParseError::EmptyExpression)?)?;
+    let left_expr = parse_expression(inner.next().ok_or(ParseError::EmptyExpression)?, fx)?;
     let op_pair = inner.next().ok_or(ParseError::MissingOperator)?;
-    let right_expr = parse_expression(inner.next().ok_or(ParseError::EmptyExpression)?)?;
+    let right_expr = parse_expression(inner.next().ok_or(ParseError::EmptyExpression)?, fx)?;
 
     let op =
         rule_to_comparison_op(op_pair.as_rule()).ok_or_else(|| ParseError::UnexpectedRule {
@@ -2140,19 +2431,13 @@ fn parse_comparison_predicate(pair: pest::iterators::Pair<Rule>) -> Result<Predi
             found: format!("{:?}", op_pair.as_rule()),
         })?;
 
-    Ok(Predicate::new(
-        PredicateKind::Comparison {
-            op,
-            left: left_expr,
-            right: right_expr,
-        },
-        pred_span,
-    ))
+    Ok(fx
+        .ff
+        .relational_predicate(relational_of(op), left_expr, right_expr, pred_span))
 }
 
 /// Map a grammar logical operator rule to a LogicalOp
-fn rule_to_logical_op(rule: Rule) -> Option<crate::ast::predicate::LogicalOp> {
-    use crate::ast::predicate::LogicalOp;
+fn rule_to_logical_op(rule: Rule) -> Option<LogicalOp> {
     match rule {
         Rule::op_and => Some(LogicalOp::And),
         Rule::op_or => Some(LogicalOp::Or),
@@ -2209,15 +2494,18 @@ fn leading_quantifier(pair: &pest::iterators::Pair<Rule>) -> Option<String> {
 fn parse_binary_predicate(
     pair: pest::iterators::Pair<Rule>,
     bracketed: bool,
+    fx: &mut Fx,
 ) -> Result<Predicate, ParseError> {
-    use crate::ast::predicate::LogicalOp;
     use crate::op_info;
 
     let mut inner = pair.into_inner();
 
-    // Get the first operand
+    // Get the first operand. As in `parse_binary_expr`, the accumulator
+    // holds an open ∧/∨ run's operands, or exactly the folded left
+    // operand between runs.
     let first = inner.next().ok_or(ParseError::EmptyPredicate)?;
-    let mut left = parse_predicate_inner(first, bracketed)?;
+    let mut operands = vec![parse_predicate_inner(first, bracketed, fx)?];
+    let mut run_op: Option<AssocPredOp> = None;
 
     // The operator binding the accumulated left operand, kept by `Rule` so the
     // display spelling is built only on the error path.
@@ -2257,51 +2545,162 @@ fn parse_binary_predicate(
                 ));
             }
 
-            let right = parse_predicate_inner(right_pair, bracketed)?;
-            let span = fold_span(left.span, right.span);
-            left = Predicate::new(
-                PredicateKind::Logical {
-                    op,
-                    left: Box::new(left),
-                    right: Box::new(right),
-                },
-                span,
-            );
+            let right = parse_predicate_inner(right_pair, bracketed, fx)?;
+            match op {
+                // A same-operator ∧/∨ chain folds into one n-ary node,
+                // built once when the run ends.
+                LogicalOp::And | LogicalOp::Or => {
+                    let assoc = if op == LogicalOp::And {
+                        AssocPredOp::LAnd
+                    } else {
+                        AssocPredOp::LOr
+                    };
+                    if run_op != Some(assoc) {
+                        collapse_pred_run(&mut operands, &mut run_op, fx);
+                        run_op = Some(assoc);
+                    }
+                    operands.push(right);
+                }
+                LogicalOp::Implies | LogicalOp::Equivalent => {
+                    collapse_pred_run(&mut operands, &mut run_op, fx);
+                    let left = operands
+                        .pop()
+                        .expect("the accumulator holds the left operand");
+                    let span = fold_span(left.span(), right.span());
+                    let new_op = if op == LogicalOp::Implies {
+                        BinaryPredOp::LImp
+                    } else {
+                        BinaryPredOp::LEqv
+                    };
+                    operands.push(fx.ff.binary_predicate(new_op, left, right, span));
+                }
+            }
             prev = Some((op, op_rule));
         }
     }
 
-    Ok(left)
+    collapse_pred_run(&mut operands, &mut run_op, fx);
+    Ok(operands.pop().expect("the accumulator holds the result"))
+}
+
+/// Ends a ∧/∨ run; see [`collapse_run`] (including the leading-operand
+/// splice).
+fn collapse_pred_run(operands: &mut Vec<Predicate>, run_op: &mut Option<AssocPredOp>, fx: &Fx) {
+    if let Some(op) = run_op.take() {
+        let span = fold_span(
+            operands.first().and_then(Predicate::span),
+            operands.last().and_then(Predicate::span),
+        );
+        let mut children = std::mem::take(operands);
+        if let PredicateKind::Associative {
+            op: first_op,
+            children: inner,
+        } = children[0].kind()
+        {
+            if *first_op == op {
+                let inner = inner.clone();
+                children.splice(0..1, inner);
+            }
+        }
+        operands.push(fx.ff.associative_predicate(op, children, span));
+    }
+}
+
+/// A lambda parameter pattern: the leaves are bound declarations
+/// (parsed in the enclosing scope, before the names come into scope),
+/// and the maplet shape is rebuilt over their bound identifiers once
+/// they do.
+enum PatternTree {
+    Leaf(BoundIdentDecl),
+    Maplet(Box<PatternTree>, Box<PatternTree>),
 }
 
 /// Parse a lambda ident-pattern: `ident_pattern_atom ~ (op_maplet ~ ident_pattern_atom)*`
-fn parse_ident_pattern(pair: pest::iterators::Pair<Rule>) -> Result<IdentPattern, ParseError> {
+fn parse_ident_pattern(
+    pair: pest::iterators::Pair<Rule>,
+    fx: &mut Fx,
+) -> Result<PatternTree, ParseError> {
     let mut inner = pair.into_inner();
     let first = inner.next().ok_or(ParseError::EmptyExpression)?;
-    let mut result = parse_ident_pattern_atom(first)?;
+    let mut result = parse_ident_pattern_atom(first, fx)?;
 
     while let Some(next) = inner.next() {
         if next.as_rule() == Rule::op_maplet {
             let right_pair = inner.next().ok_or(ParseError::EmptyExpression)?;
-            let right = parse_ident_pattern_atom(right_pair)?;
-            result = IdentPattern::Maplet(Box::new(result), Box::new(right));
+            let right = parse_ident_pattern_atom(right_pair, fx)?;
+            result = PatternTree::Maplet(Box::new(result), Box::new(right));
         }
     }
     Ok(result)
 }
 
 /// Parse a lambda ident-pattern atom: `lparen ~ ident_pattern ~ rparen | typed_identifier`
-fn parse_ident_pattern_atom(pair: pest::iterators::Pair<Rule>) -> Result<IdentPattern, ParseError> {
+fn parse_ident_pattern_atom(
+    pair: pest::iterators::Pair<Rule>,
+    fx: &mut Fx,
+) -> Result<PatternTree, ParseError> {
     for inner in pair.into_inner() {
         match inner.as_rule() {
             Rule::typed_identifier => {
-                return Ok(IdentPattern::Identifier(parse_typed_identifier(inner)?));
+                return Ok(PatternTree::Leaf(parse_bound_decl(inner, fx)?));
             }
-            Rule::ident_pattern => return parse_ident_pattern(inner),
+            Rule::ident_pattern => return parse_ident_pattern(inner, fx),
             _ => {} // skip lparen, rparen
         }
     }
     Err(ParseError::EmptyExpression)
+}
+
+/// The pattern's leaf declarations, left to right.
+fn pattern_decls(pattern: &PatternTree, out: &mut Vec<BoundIdentDecl>) {
+    match pattern {
+        PatternTree::Leaf(decl) => out.push(decl.clone()),
+        PatternTree::Maplet(left, right) => {
+            pattern_decls(left, out);
+            pattern_decls(right, out);
+        }
+    }
+}
+
+/// Free-identifier names of an expression in first-occurrence order,
+/// deduped, each with the span of that first occurrence — the implicit
+/// declarations of a `{E ∣ P}` comprehension, whose first occurrence
+/// stands in for the declaration site. Occurrences bound by enclosing
+/// binders are already resolved to indices in the built tree, so only
+/// what is free at this point in the descent is reported.
+fn first_free_names(expr: &Expression) -> Vec<(String, Option<Span>)> {
+    use std::ops::ControlFlow;
+
+    struct Collector {
+        names: Vec<(String, Option<Span>)>,
+    }
+    impl crate::formula::occurrences::OccurrenceVisitor for Collector {
+        fn visit(&mut self, occ: crate::formula::occurrences::Occurrence<'_>) -> ControlFlow<()> {
+            if occ.role == crate::formula::occurrences::Role::Usage
+                && occ.resolution == crate::formula::occurrences::Resolution::Free
+                && !self.names.iter().any(|(n, _)| n == occ.name)
+            {
+                self.names.push((occ.name.to_string(), occ.span));
+            }
+            ControlFlow::Continue(())
+        }
+    }
+    let mut collector = Collector { names: Vec::new() };
+    let _ = crate::formula::occurrences::walk_expression(expr, &mut Vec::new(), &mut collector);
+    collector.names
+}
+
+/// The pattern as an expression over its (now in-scope) declarations.
+fn pattern_expression(pattern: &PatternTree, fx: &Fx) -> Expression {
+    match pattern {
+        PatternTree::Leaf(decl) => fx.identifier(decl.name(), decl.span()),
+        PatternTree::Maplet(left, right) => {
+            let left = pattern_expression(left, fx);
+            let right = pattern_expression(right, fx);
+            fx.ff
+                .binary_expression(BinaryExprOp::Mapsto, left, right, None)
+        }
+    }
 }
 
 /// Parse a predicate
@@ -2317,7 +2716,7 @@ fn parse_predicate(pair: pest::iterators::Pair<Rule>) -> Result<Predicate, Parse
     // Top-level entry: a formula attribute (axiom, guard, invariant, …) is not
     // bounded by a closing bracket, so a bare quantifier as a ∧/∨ operand is
     // rejected.
-    parse_predicate_inner(pair, false)
+    parse_predicate_inner(pair, false, &mut Fx::new())
 }
 
 /// Parse a predicate, tracking whether it is bounded on the right by a closing
@@ -2330,6 +2729,7 @@ fn parse_predicate(pair: pest::iterators::Pair<Rule>) -> Result<Predicate, Parse
 fn parse_predicate_inner(
     pair: pest::iterators::Pair<Rule>,
     bracketed: bool,
+    fx: &mut Fx,
 ) -> Result<Predicate, ParseError> {
     let mut pair = pair;
     let rule = loop {
@@ -2345,7 +2745,7 @@ fn parse_predicate_inner(
                 let mut probe = pair.clone().into_inner();
                 let first = probe.next().ok_or(ParseError::EmptyPredicate)?;
                 if probe.next().is_some() {
-                    return parse_binary_predicate(pair, bracketed);
+                    return parse_binary_predicate(pair, bracketed, fx);
                 }
                 pair = first;
             }
@@ -2372,7 +2772,7 @@ fn parse_predicate_inner(
         }
     };
     // Span of the whole predicate dispatched at this node.
-    let node_span = Some(Span::from_pest(pair.as_span()));
+    let node_span = fx.at(pair.as_span());
 
     match rule {
         Rule::negation_predicate | Rule::negation_predicate_no_semi => {
@@ -2382,30 +2782,22 @@ fn parse_predicate_inner(
                 let pred = parse_predicate_inner(
                     inner.next().ok_or(ParseError::EmptyPredicate)?,
                     bracketed,
+                    fx,
                 )?;
-                Ok(Predicate::new(
-                    PredicateKind::Not(Box::new(pred)),
-                    node_span,
-                ))
+                Ok(fx.ff.not_predicate(pred, node_span))
             } else if let Some(quantifier) = rule_to_quantifier(first.as_rule()) {
                 // A quantified predicate appearing as a sub-formula operand,
                 // e.g. a nested quantifier body. A bare quantifier directly
                 // under a logical connective (`∧`/`∨`/`⇒`/`⇔`) is rejected
                 // earlier in `parse_binary_predicate` unless a closing bracket
                 // bounds it.
-                let (identifiers, predicate) =
-                    collect_typed_identifiers_and_predicate(&mut inner, bracketed)?;
-                Ok(Predicate::new(
-                    PredicateKind::Quantified {
-                        quantifier,
-                        identifiers,
-                        predicate: Box::new(predicate),
-                    },
-                    node_span,
-                ))
+                let (decls, body) = collect_decls_and_body(&mut inner, bracketed, fx)?;
+                Ok(fx
+                    .ff
+                    .quantified_predicate(quant_of(quantifier), decls, body, node_span))
             } else {
                 // Loop should have unwrapped the no-op alternative; defensive.
-                parse_predicate_inner(first, bracketed)
+                parse_predicate_inner(first, bracketed, fx)
             }
         }
         Rule::quantified_predicate | Rule::quantified_predicate_no_semi => {
@@ -2418,34 +2810,28 @@ fn parse_predicate_inner(
                     expected: "∀ or ∃".to_string(),
                     found: format!("{:?}", first.as_rule()),
                 })?;
-            let (identifiers, predicate) =
-                collect_typed_identifiers_and_predicate(&mut inner, bracketed)?;
-            Ok(Predicate::new(
-                PredicateKind::Quantified {
-                    quantifier,
-                    identifiers,
-                    predicate: Box::new(predicate),
-                },
-                node_span,
-            ))
+            let (decls, body) = collect_decls_and_body(&mut inner, bracketed, fx)?;
+            Ok(fx
+                .ff
+                .quantified_predicate(quant_of(quantifier), decls, body, node_span))
         }
         Rule::atomic_predicate | Rule::atomic_predicate_no_semi => {
             let mut inner = pair.into_inner();
             let first = inner.next().ok_or(ParseError::EmptyPredicate)?;
             match first.as_rule() {
-                Rule::kw_true => Ok(Predicate::new(PredicateKind::True, node_span)),
-                Rule::kw_false => Ok(Predicate::new(PredicateKind::False, node_span)),
+                Rule::kw_true => Ok(fx.ff.literal_predicate(LiteralPredOp::BTrue, node_span)),
+                Rule::kw_false => Ok(fx.ff.literal_predicate(LiteralPredOp::BFalse, node_span)),
                 // Only reachable for a parenthesised predicate, so it is bracketed.
-                Rule::predicate => parse_predicate_inner(first, true),
-                Rule::predicate_application => parse_predicate_application(first),
+                Rule::predicate => parse_predicate_inner(first, true, fx),
+                Rule::predicate_application => parse_predicate_application(first, fx),
                 Rule::comparison_predicate | Rule::comparison_predicate_no_semi => {
-                    parse_comparison_predicate(first)
+                    parse_comparison_predicate(first, fx)
                 }
                 Rule::lparen => {
                     // Parenthesized predicate: lparen ~ predicate ~ rparen. The
                     // closing `)` bounds it, so a trailing quantifier is allowed.
                     let predicate_pair = inner.next().ok_or(ParseError::EmptyPredicate)?;
-                    parse_predicate_inner(predicate_pair, true)
+                    parse_predicate_inner(predicate_pair, true, fx)
                 }
                 _ => Err(ParseError::UnexpectedRule {
                     expected: "atomic predicate".to_string(),
@@ -2454,7 +2840,7 @@ fn parse_predicate_inner(
             }
         }
         Rule::comparison_predicate | Rule::comparison_predicate_no_semi => {
-            parse_comparison_predicate(pair)
+            parse_comparison_predicate(pair, fx)
         }
         _ => Err(ParseError::UnexpectedRule {
             expected: "predicate".to_string(),
@@ -2466,13 +2852,7 @@ fn parse_predicate_inner(
 /// Parse a predicate from a string (used by XML parser)
 ///
 /// Uses `predicate_complete` (with SOI/EOI) to ensure the entire input is consumed.
-pub fn parse_predicate_str(input: &str) -> Result<crate::formula::Predicate, ParseError> {
-    parse_predicate_str_legacy(input).map(|p| crate::formula::lower::lower_predicate(&p))
-}
-
-/// The legacy-tree spelling of [`parse_predicate_str`], for the parser's
-/// own internals.
-pub(crate) fn parse_predicate_str_legacy(input: &str) -> Result<Predicate, ParseError> {
+pub fn parse_predicate_str(input: &str) -> Result<Predicate, ParseError> {
     let depth = nesting::check_nesting(input)?;
     let result = with_parser_stack(depth, || {
         let pairs = RossiParser::parse(Rule::predicate_complete, input)
@@ -2490,13 +2870,7 @@ pub(crate) fn parse_predicate_str_legacy(input: &str) -> Result<Predicate, Parse
 /// Parse an expression from a string (used by XML parser)
 ///
 /// Uses `expression_complete` (with SOI/EOI) to ensure the entire input is consumed.
-pub fn parse_expression_str(input: &str) -> Result<crate::formula::Expression, ParseError> {
-    parse_expression_str_legacy(input).map(|e| crate::formula::lower::lower_expression(&e))
-}
-
-/// The legacy-tree spelling of [`parse_expression_str`], for the parser's
-/// own internals.
-pub(crate) fn parse_expression_str_legacy(input: &str) -> Result<Expression, ParseError> {
+pub fn parse_expression_str(input: &str) -> Result<Expression, ParseError> {
     let depth = nesting::check_nesting(input)?;
     with_parser_stack(depth, || {
         let pairs = RossiParser::parse(Rule::expression_complete, input)
@@ -2506,7 +2880,7 @@ pub(crate) fn parse_expression_str_legacy(input: &str) -> Result<Expression, Par
             .into_iter()
             .next()
             .ok_or(ParseError::EmptyExpression)?;
-        parse_expression(expression_pair)
+        parse_expression(expression_pair, &mut Fx::new())
     })
 }
 
@@ -2517,13 +2891,7 @@ pub(crate) fn parse_expression_str_legacy(input: &str) -> Result<Expression, Par
 /// THEN block it is parsed with the full expression grammar
 /// (`standalone_action`): a bare `;` is forward composition, not an
 /// action boundary.
-pub fn parse_action_str(input: &str) -> Result<crate::ast::ActionBody, ParseError> {
-    parse_action_str_legacy(input).map(|a| crate::formula::lower::lower_action_body(&a))
-}
-
-/// The legacy-tree spelling of [`parse_action_str`], for the parser's own
-/// internals.
-pub(crate) fn parse_action_str_legacy(input: &str) -> Result<Action, ParseError> {
+pub fn parse_action_str(input: &str) -> Result<ActionBody, ParseError> {
     let depth = nesting::check_nesting(input)?;
     with_parser_stack(depth, || {
         let pairs = RossiParser::parse(Rule::action_complete, input)
@@ -3327,9 +3695,7 @@ fn recover_components_after_error(
         // The lowering lifts formula spans to document coordinates as
         // the slice parses; the visitor then shifts the remaining
         // structural spans (names, clauses, labeled elements).
-        let result = crate::formula::lower::with_span_base(start, || {
-            parse_with_recovery(&input[start..end])
-        });
+        let result = with_span_base(start, || parse_with_recovery(&input[start..end]));
         errors.extend(
             result
                 .errors
@@ -4444,9 +4810,7 @@ fn try_parse_labeled_predicate_from_text(
     // The segment is parsed in isolation, so the lowering lifts the
     // formula spans to document coordinates as they are produced.
     let text = text.trim();
-    let strict_error = match crate::formula::lower::with_span_base(abs_start, || {
-        parse_labeled_predicate_str(text)
-    }) {
+    let strict_error = match with_span_base(abs_start, || parse_labeled_predicate_str(text)) {
         Ok(result) => return Ok(result),
         Err(e) => e,
     };
@@ -4463,7 +4827,7 @@ fn try_parse_labeled_predicate_from_text(
             && potential_label
                 .chars()
                 .all(|c| c.is_alphanumeric() || c == '_')
-            && let Ok(predicate) = crate::formula::lower::with_span_base(abs_start, || {
+            && let Ok(predicate) = with_span_base(abs_start, || {
                 parse_predicate_str(text[colon_pos + 1..].trim())
             })
         {
@@ -4509,38 +4873,36 @@ fn try_parse_labeled_action_from_text(
     // `action_text` is a subslice of `text`; this is the offset of the action
     // body past any `@label ` prefix that was stripped above.
     let body_offset = subslice_offset(text, action_text);
-    let action = crate::formula::lower::with_span_base(abs_start + body_offset, || {
-        parse_action_str(action_text)
-    })
-    .map_err(|error| {
-        // Keep recovery sources in the segment coordinate space documented by
-        // `RecoverableError::source`. Arity diagnostics need their operator
-        // span shifted past the optional label so consumers can combine it
-        // with the outer recovery span; recompute line/column from that span
-        // instead of applying a byte-only shift to every nested error.
-        if let ParseError::AssignmentArityMismatch {
-            targets,
-            expressions,
-            span: Some(span),
-            ..
-        } = error
-        {
-            let span = Span {
-                start: body_offset + span.start,
-                end: body_offset + span.end,
-            };
-            let (line, column) = offset_to_line_col(text, span.start);
-            ParseError::AssignmentArityMismatch {
+    let action = with_span_base(abs_start + body_offset, || parse_action_str(action_text))
+        .map_err(|error| {
+            // Keep recovery sources in the segment coordinate space documented by
+            // `RecoverableError::source`. Arity diagnostics need their operator
+            // span shifted past the optional label so consumers can combine it
+            // with the outer recovery span; recompute line/column from that span
+            // instead of applying a byte-only shift to every nested error.
+            if let ParseError::AssignmentArityMismatch {
                 targets,
                 expressions,
-                line,
-                column,
                 span: Some(span),
+                ..
+            } = error
+            {
+                let span = Span {
+                    start: body_offset + span.start,
+                    end: body_offset + span.end,
+                };
+                let (line, column) = offset_to_line_col(text, span.start);
+                ParseError::AssignmentArityMismatch {
+                    targets,
+                    expressions,
+                    line,
+                    column,
+                    span: Some(span),
+                }
+            } else {
+                error
             }
-        } else {
-            error
-        }
-    })?;
+        })?;
     Ok(LabeledAction {
         label,
         action,

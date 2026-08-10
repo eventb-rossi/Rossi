@@ -12,8 +12,8 @@
 //! table prevents the parser, printer, and renderers from drifting
 //! apart when the grammar evolves.
 
-use crate::ast::expression::BinaryOp;
-use crate::ast::predicate::LogicalOp;
+use crate::operators::BinaryOp;
+use crate::operators::LogicalOp;
 
 /// Precedence level of a binary expression operator (higher = binds
 /// tighter).

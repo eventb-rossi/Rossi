@@ -42,12 +42,12 @@
 //! ```
 
 use crate::ast::context::SetDeclaration;
-use crate::ast::expression::{BinaryOp, UnaryOp};
-use crate::ast::predicate::{ComparisonOp, LogicalOp, Quantifier};
 use crate::ast::*;
 use crate::comments;
 use crate::op_info;
 use crate::operators::{self, OperatorId};
+use crate::operators::{BinaryOp, UnaryOp};
+use crate::operators::{ComparisonOp, LogicalOp, Quantifier};
 use std::fmt::Write;
 
 /// Debug guard: a structural name about to be emitted must be re-lexable by
