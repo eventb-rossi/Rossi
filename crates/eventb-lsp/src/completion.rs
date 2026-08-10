@@ -254,7 +254,10 @@ impl CompletionProvider {
         items.extend(self.get_keyword_completions(keyword_scope, offer_status_values));
 
         // Add operator completions
-        items.extend(self.get_operator_completions(format_config.use_unicode));
+        items.extend(self.get_operator_completions(
+            format_config.use_unicode,
+            operator_prefix_range(line_text, position),
+        ));
 
         // Add identifier completions
         items.extend(self.get_identifier_completions(&completion_ctx, &word_at_cursor));
@@ -295,7 +298,11 @@ impl CompletionProvider {
     }
 
     /// Get operator completions (Unicode or ASCII based on config)
-    fn get_operator_completions(&self, use_unicode: bool) -> Vec<CompletionItem> {
+    fn get_operator_completions(
+        &self,
+        use_unicode: bool,
+        replace_range: Option<Range>,
+    ) -> Vec<CompletionItem> {
         operators::OPERATOR_SPELLINGS
             .iter()
             .filter(|entry| entry.completion)
@@ -307,7 +314,13 @@ impl CompletionProvider {
                 } else {
                     alternative
                 };
-                create_operator_item(label, alternative, entry.description)
+                create_operator_item(
+                    label,
+                    entry.ascii,
+                    alternative,
+                    entry.description,
+                    replace_range,
+                )
             })
             .collect()
     }
@@ -506,7 +519,13 @@ fn push_keyword_items<'a>(
     }
 }
 
-fn create_operator_item(operator: &str, alternative: &str, description: &str) -> CompletionItem {
+fn create_operator_item(
+    operator: &str,
+    ascii: &str,
+    alternative: &str,
+    description: &str,
+    replace_range: Option<Range>,
+) -> CompletionItem {
     let detail = if alternative.is_empty() {
         "Operator".to_string()
     } else {
@@ -518,6 +537,13 @@ fn create_operator_item(operator: &str, alternative: &str, description: &str) ->
         kind: Some(CompletionItemKind::OPERATOR),
         detail: Some(detail),
         documentation: Some(Documentation::String(description.to_string())),
+        filter_text: Some(ascii.to_string()),
+        text_edit: replace_range.map(|range| {
+            CompletionTextEdit::Edit(TextEdit {
+                range,
+                new_text: operator.to_string(),
+            })
+        }),
         ..Default::default()
     }
 }
@@ -546,6 +572,31 @@ fn get_word_at_position(line: &str, char_pos: usize) -> String {
         .last()
         .unwrap_or("")
         .to_string()
+}
+
+/// The longest symbolic ASCII operator prefix ending at the cursor. Completion
+/// items use this range explicitly because editor word ranges exclude operator
+/// punctuation such as `:`, which would otherwise be left before the inserted
+/// label. The prefix is drawn only from completion-enabled canonical spellings;
+/// eager-input aliases remain an input-method concern.
+fn operator_prefix_range(line: &str, position: Position) -> Option<Range> {
+    let cursor_byte = utf16_to_byte(line, position.character as usize)?;
+    let before_cursor = &line[..cursor_byte];
+    let mut longest = 0;
+
+    for entry in operators::OPERATOR_SPELLINGS
+        .iter()
+        .filter(|entry| entry.completion && entry.is_symbolic())
+    {
+        for len in 1..=entry.ascii.len() {
+            if before_cursor.ends_with(&entry.ascii[..len]) {
+                longest = longest.max(len);
+            }
+        }
+    }
+
+    let start = position.character.checked_sub(longest as u32)?;
+    (longest > 0).then(|| Range::new(Position::new(position.line, start), position))
 }
 
 /// The range of the (possibly hyphenated) word ending at the cursor, used as a
@@ -927,7 +978,7 @@ mod tests {
     #[test]
     fn test_operator_completions_unicode() {
         let provider = CompletionProvider::new();
-        let items = provider.get_operator_completions(true);
+        let items = provider.get_operator_completions(true, None);
 
         // Should include Unicode operators
         assert!(items.iter().any(|item| item.label == "∧"));
@@ -955,7 +1006,8 @@ mod tests {
     #[test]
     fn test_operator_completions_ascii() {
         let provider = CompletionProvider::new();
-        let items = provider.get_operator_completions(false);
+        let range = Range::new(Position::new(0, 2), Position::new(0, 4));
+        let items = provider.get_operator_completions(false, Some(range));
 
         // Should include ASCII operators
         assert!(items.iter().any(|item| item.label == "&"));
@@ -963,6 +1015,81 @@ mod tests {
         assert!(items.iter().any(|item| item.label == "=>"));
         assert!(items.iter().any(|item| item.label == ":"));
         assert!(items.iter().any(|item| item.label == "::"));
+
+        let item = items.iter().find(|item| item.label == "::").unwrap();
+        assert_eq!(item.filter_text.as_deref(), Some("::"));
+        match item.text_edit.as_ref().unwrap() {
+            CompletionTextEdit::Edit(edit) => {
+                assert_eq!(edit.range, range);
+                assert_eq!(edit.new_text, "::");
+            }
+            other => panic!("expected a plain TextEdit, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn operator_completion_after_colon_replaces_the_trigger() {
+        let provider = CompletionProvider::new();
+        let text = ":";
+        let params = CompletionParams {
+            text_document_position: crate::lsp_types::TextDocumentPositionParams {
+                text_document: crate::lsp_types::TextDocumentIdentifier {
+                    uri: crate::lsp_types::Url::parse("file:///test.eventb").unwrap(),
+                },
+                position: Position::new(0, 1),
+            },
+            work_done_progress_params: Default::default(),
+            partial_result_params: Default::default(),
+            context: None,
+        };
+
+        let Some(CompletionResponse::Array(items)) = provider.complete(
+            &params,
+            text,
+            &CompletionConfig::default(),
+            &FormatConfig::default(),
+        ) else {
+            panic!("expected completion items");
+        };
+
+        for (label, ascii) in [
+            ("∈", ":"),
+            (":∈", "::"),
+            (":∣", ":|"),
+            (";", ";"),
+            ("<->>", "<->>"),
+        ] {
+            let item = items
+                .iter()
+                .find(|item| item.kind == Some(CompletionItemKind::OPERATOR) && item.label == label)
+                .unwrap_or_else(|| panic!("missing operator completion {label:?}"));
+            assert_eq!(item.filter_text.as_deref(), Some(ascii));
+            match item
+                .text_edit
+                .as_ref()
+                .unwrap_or_else(|| panic!("{label:?} must replace the typed colon"))
+            {
+                CompletionTextEdit::Edit(edit) => {
+                    assert_eq!(edit.range.start, Position::new(0, 0));
+                    assert_eq!(edit.range.end, Position::new(0, 1));
+                    assert_eq!(edit.new_text, label);
+                }
+                other => panic!("expected a plain TextEdit, got {other:?}"),
+            }
+        }
+    }
+
+    #[test]
+    fn operator_prefix_range_is_longest_and_utf16_correct() {
+        assert_eq!(
+            operator_prefix_range("x::", Position::new(0, 3)),
+            Some(Range::new(Position::new(0, 1), Position::new(0, 3)))
+        );
+        assert_eq!(
+            operator_prefix_range("𝔹/=", Position::new(0, 4)),
+            Some(Range::new(Position::new(0, 2), Position::new(0, 4)))
+        );
+        assert_eq!(operator_prefix_range("NAT", Position::new(0, 3)), None);
     }
 
     #[test]
