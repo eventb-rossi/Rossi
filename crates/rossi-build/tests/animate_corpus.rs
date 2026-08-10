@@ -1,11 +1,14 @@
 //! Corpus integration test — regenerate every model with our static checker,
-//! then load it in ProB via the `eventb-animate` CLI and compare the outcome
-//! (`success` / `invariant_violation` / `load_error` / `deadlock` / `timeout`)
-//! against the reference `animate_results.tsv`.
+//! then model-check it in ProB via the `eventb-animate` CLI and compare the
+//! outcome (`success` / `invariant_violation` / `deadlock` / `state_error` /
+//! `incomplete` / `load_error` / `timeout`) against the reference
+//! `animate_results.tsv`.
 //!
-//! Requires `eventb-animate` v5.0+, which exits 0 on success and 1 on load
-//! error, deadlock, or invariant violation (v4.x treated deadlock as exit 0,
-//! so since v5.0 `deadlock` is a first-class reference outcome).
+//! Requires `eventb-animate` v6.2+ and mirrors the corpus's own recording
+//! procedure (`scripts/animate-all.sh` there): a bounded consistency check
+//! (`--time-limit`, default 120 s) with the outcome classified from the
+//! format-3 JSON report (`--json -`), plus an outer watchdog 15 s past the
+//! internal limit as a process-failure fallback.
 //!
 //! `#[ignore]` by default: the corpus and animate executable live outside the
 //! repo. Run locally:
@@ -15,7 +18,7 @@
 //! Environment overrides:
 //!   EVENTB_CORPUS_DIR   — external Event-B model corpus directory
 //!   EVENTB_ANIMATE      — eventb-animate executable (default: eventb-animate)
-//!   EVENTB_ANIMATE_TIMEOUT_SECS — default 120
+//!   EVENTB_ANIMATE_TIMEOUT_SECS — internal model-check limit (default 120)
 //! Relative executable paths are resolved from the workspace root.
 //!
 //! Per-model metadata comes from the corpus itself: column 4 of
@@ -29,20 +32,32 @@
 //!   target/rossi-build-animate-corpus.tsv     — model | expected | actual | verdict
 //!
 //! Verdicts:
-//!   match   — actual outcome matches the reference TSV
-//!   known   — mismatch on a model flagged `defective` (broken source),
-//!             `unsupported` (needs an Event-B extension rossi doesn't
-//!             support yet, e.g. the theory plugin), or `rodin_rejected`
-//!             (Rodin's own static checker rejects the pristine archive, so
-//!             it ships `accurate="false"` artifacts; the pristine animates
-//!             only because ProB tolerates Rodin's degraded output, and the
-//!             regenerated archive's animate outcome is undefined) in the
-//!             corpus `model_flags.tsv` (does not fail)
-//!   flaky   — success ↔ invariant_violation ↔ deadlock drift on a model
-//!             flagged `nondeterministic` (random animation can hit a
-//!             reachable invariant violation, or reach a terminal state
-//!             before the requested steps complete) (does not fail)
-//!   regress — unexpected mismatch (fails the test)
+//!   match    — actual outcome matches the reference TSV
+//!   known    — mismatch on a model flagged `defective` (broken source),
+//!              `unsupported` (needs an Event-B extension rossi doesn't
+//!              support yet, e.g. the theory plugin), `rodin_rejected`
+//!              (Rodin's own static checker rejects the pristine archive, so
+//!              it ships `accurate="false"` artifacts; the pristine loads
+//!              only because ProB tolerates Rodin's degraded output, and the
+//!              regenerated archive's outcome is undefined), or
+//!              `keyword_identifier` (declares a name rossi's textual
+//!              grammar cannot express, so regeneration itself fails) in
+//!              the corpus `model_flags.tsv` (does not fail)
+//!   improved — the pristine archive does not load (reference `load_error`:
+//!              stale statically-checked files, unsupported proof
+//!              annotations, …) while the regenerated archive loads and
+//!              produces a checked verdict. There is no behavioral
+//!              reference to regress against — content fidelity is gated by
+//!              the semantic-equivalence harness (does not fail)
+//!   flaky    — drift between checked outcomes (success /
+//!              invariant_violation / deadlock / state_error / incomplete)
+//!              on a model flagged `nondeterministic`: a bounded check over
+//!              identical semantics can cut off at a different frontier
+//!              because the archives' element ordering differs, changing
+//!              which finding (if any) is reached within the limit (does not
+//!              fail). A structural failure (`load_error` / `regen_error`)
+//!              is never tolerated.
+//!   regress  — unexpected mismatch (fails the test)
 
 mod common;
 
@@ -90,7 +105,9 @@ fn animate_regenerated_corpus_matches_reference() {
 
     let regen_dir = workspace_target().join("eventb-models-regen");
     std::fs::create_dir_all(&regen_dir).expect("create regen dir");
-    let timeout = Duration::from_secs(
+    // The internal model-check limit; the outer watchdog adds
+    // [`WATCHDOG_GRACE_SECS`] on top (see `animate_one`).
+    let limit = Duration::from_secs(
         std::env::var("EVENTB_ANIMATE_TIMEOUT_SECS")
             .ok()
             .and_then(|s| s.parse().ok())
@@ -121,7 +138,7 @@ fn animate_regenerated_corpus_matches_reference() {
                 &animate,
                 &regen_zip,
                 machines.get(model.as_str()).map(String::as_str),
-                timeout,
+                limit,
             ),
             Err(e) => Outcome::Regen(e.to_string()),
         };
@@ -136,8 +153,16 @@ fn animate_regenerated_corpus_matches_reference() {
         } else if has_flag(&model, "defective")
             || has_flag(&model, "unsupported")
             || has_flag(&model, "rodin_rejected")
+            || has_flag(&model, "keyword_identifier")
         {
             "known"
+        } else if expected_outcome == "load_error" && is_checked_verdict(actual_str) {
+            // The pristine archive does not load (stale statically-checked
+            // files, unsupported proof annotations, …) while the regenerated
+            // one — carrying freshly generated artifacts — loads and checks.
+            // There is no behavioral reference to regress against; content
+            // fidelity is gated by the semantic-equivalence harness.
+            "improved"
         } else if has_flag(&model, "nondeterministic")
             && is_tolerated_drift(&expected_outcome, actual_str)
         {
@@ -184,6 +209,8 @@ enum Outcome {
     Success,
     InvariantViolation,
     Deadlock,
+    StateError,
+    Incomplete,
     LoadError(String),
     Timeout,
     Regen(String),
@@ -195,6 +222,8 @@ impl Outcome {
             Outcome::Success => "success",
             Outcome::InvariantViolation => "invariant_violation",
             Outcome::Deadlock => "deadlock",
+            Outcome::StateError => "state_error",
+            Outcome::Incomplete => "incomplete",
             Outcome::LoadError(_) => "load_error",
             Outcome::Timeout => "timeout",
             Outcome::Regen(_) => "regen_error",
@@ -214,9 +243,17 @@ fn locate_animate() -> Option<PathBuf> {
     resolve_program(&configured)
 }
 
-fn animate_one(animate: &Path, zip: &Path, machine: Option<&str>, timeout: Duration) -> Outcome {
+/// How much longer than the internal model-check limit the outer watchdog
+/// waits before declaring a process failure, matching the corpus recording
+/// script's 120 s limit / 135 s watchdog split.
+const WATCHDOG_GRACE_SECS: u64 = 15;
+
+fn animate_one(animate: &Path, zip: &Path, machine: Option<&str>, limit: Duration) -> Outcome {
     let mut cmd = Command::new(animate);
-    cmd.arg("--steps").arg("10").arg("--invariants");
+    cmd.arg("--time-limit")
+        .arg(limit.as_secs().to_string())
+        .arg("--json")
+        .arg("-");
     if let Some(m) = machine {
         cmd.arg("--machine").arg(m);
     }
@@ -228,39 +265,73 @@ fn animate_one(animate: &Path, zip: &Path, machine: Option<&str>, timeout: Durat
         Ok(c) => c,
         Err(e) => return Outcome::LoadError(format!("spawn: {e}")),
     };
-    match wait_with_timeout(child, timeout) {
-        Ok((status, stdout, stderr)) => classify(status.code(), &stdout, &stderr),
+    match wait_with_timeout(child, limit + Duration::from_secs(WATCHDOG_GRACE_SECS)) {
+        Ok((_status, stdout, stderr)) => classify(&stdout, &stderr),
         Err(WaitError::Timeout) => Outcome::Timeout,
         Err(WaitError::Io(e)) => Outcome::LoadError(format!("wait: {e}")),
     }
 }
 
-/// True when both outcomes are reachable end-states of the same random walk —
-/// the drift the `nondeterministic` flag tolerates. `eventb-animate` has no
-/// seed flag, so a 10-step walk over identical semantics can finish all steps
-/// (`success`), hit a reachable invariant violation (`invariant_violation`),
-/// or reach a state with no enabled events (`deadlock`); which one depends on
-/// the random path, and the path differs between the pristine and regenerated
-/// archives purely because their byte layout differs (element names/ordering).
-/// A structural failure (`load_error`/`regen_error`) is never tolerated here.
-fn is_tolerated_drift(expected: &str, actual: &str) -> bool {
-    const DRIFT: [&str; 3] = ["success", "invariant_violation", "deadlock"];
-    DRIFT.contains(&expected) && DRIFT.contains(&actual)
+/// A verdict the checker produced after loading the model — as opposed to
+/// the structural failures (`load_error`, `regen_error`, `timeout`).
+fn is_checked_verdict(outcome: &str) -> bool {
+    matches!(
+        outcome,
+        "success" | "invariant_violation" | "deadlock" | "state_error" | "incomplete"
+    )
 }
 
-fn classify(exit: Option<i32>, stdout: &str, stderr: &str) -> Outcome {
-    // eventb-animate v5.0 exit contract: 0 = success; 1 = load error,
-    // deadlock, or invariant violation, distinguished by the output text.
-    if exit == Some(0) {
-        return Outcome::Success;
+/// True when both outcomes are bounded-check verdicts over the same
+/// semantics — the drift the `nondeterministic` flag tolerates. A bounded
+/// check of the pristine and regenerated archives can cut off at different
+/// frontiers purely because the archives' element ordering differs, changing
+/// which finding (if any) falls inside the explored region. A structural
+/// failure (`load_error`/`regen_error`) is never tolerated here.
+fn is_tolerated_drift(expected: &str, actual: &str) -> bool {
+    is_checked_verdict(expected) && is_checked_verdict(actual)
+}
+
+/// Classify a finished run from its format-3 JSON report, mirroring the
+/// corpus recording script (`scripts/animate-all.sh`) so the regenerated
+/// archives are judged by exactly the rules the reference was recorded
+/// under. A run that produced no valid report is a load error.
+fn classify(stdout: &str, stderr: &str) -> Outcome {
+    let Ok(report) = serde_json::from_str::<serde_json::Value>(stdout) else {
+        let combined = format!("{stdout}\n{stderr}");
+        return Outcome::LoadError(format!(
+            "No valid eventb-animate JSON report. {}",
+            log_hint(&combined)
+        ));
+    };
+    let valid = report["formatVersion"] == 3
+        && report["tool"] == "eventb-animate"
+        && report["command"] == "check"
+        && report["completion"].is_object();
+    if !valid {
+        return Outcome::LoadError("Unexpected eventb-animate report shape".to_string());
     }
-    let combined = format!("{stdout}\n{stderr}");
-    let lower = combined.to_lowercase();
-    if combined.contains("violated invariants") {
-        return Outcome::InvariantViolation;
+    match report["status"].as_str() {
+        Some("ok") => Outcome::Success,
+        Some("violation") => match report["finding"]["category"].as_str() {
+            Some("invariant_violation") => Outcome::InvariantViolation,
+            Some("deadlock") => Outcome::Deadlock,
+            Some("state_evaluation_error") => Outcome::StateError,
+            other => Outcome::LoadError(format!(
+                "Unexpected violation report ({})",
+                other.unwrap_or("?")
+            )),
+        },
+        Some("incomplete") => Outcome::Incomplete,
+        Some("error") => {
+            if report["completion"]["phase"] == "load" {
+                Outcome::LoadError(report["message"].as_str().unwrap_or_default().to_string())
+            } else {
+                Outcome::Incomplete
+            }
+        }
+        other => Outcome::LoadError(format!(
+            "Unexpected report status {:?}",
+            other.unwrap_or("?")
+        )),
     }
-    if lower.contains("can't find an event") || lower.contains("deadlock") {
-        return Outcome::Deadlock;
-    }
-    Outcome::LoadError(log_hint(&combined))
 }
