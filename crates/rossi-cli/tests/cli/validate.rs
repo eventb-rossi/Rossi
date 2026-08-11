@@ -4,7 +4,7 @@ use std::path::PathBuf;
 
 use crate::helpers::{
     DUP_VARIABLE_MACHINE, lint_fixture_dir, lint_fixture_zip, project_descriptor, rossi_command,
-    run_cli_with_stdin, tempdir_unique, write_zip,
+    run_cli_with_stdin, tempdir_unique, wd_fixture_dir, write_zip,
 };
 
 #[test]
@@ -840,6 +840,144 @@ fn validate_deny_warnings_leaves_a_clean_project_passing() {
         "a diagnostic-free run still passes; stderr={}",
         String::from_utf8_lossy(&output.stderr)
     );
+}
+
+#[test]
+fn validate_hides_eb010_until_show_info_is_requested() {
+    let tmp = wd_fixture_dir("rossi-cli-wd-opt-in");
+
+    let default = rossi_command()
+        .args(["validate", tmp.to_str().unwrap()])
+        .output()
+        .expect("Failed to execute command");
+    assert!(default.status.success());
+    assert!(
+        !String::from_utf8_lossy(&default.stdout).contains("EB010"),
+        "default validation must stay unchanged"
+    );
+
+    let shown = rossi_command()
+        .args(["validate", "--show-info", tmp.to_str().unwrap()])
+        .output()
+        .expect("Failed to execute command");
+    assert!(
+        shown.status.success(),
+        "INFO does not fail validation: {}",
+        String::from_utf8_lossy(&shown.stderr)
+    );
+    let stdout = String::from_utf8_lossy(&shown.stdout);
+    assert!(stdout.contains("i "), "INFO uses its own glyph: {stdout}");
+    assert!(
+        stdout.contains("(M.wd)"),
+        "formula origin is preserved: {stdout}"
+    );
+    assert!(stdout.contains("[EB010] Well-definedness condition: x≠0"));
+
+    std::fs::remove_dir_all(&tmp).ok();
+}
+
+#[test]
+fn validate_show_info_checks_loose_eventb_well_definedness() {
+    let tmp = tempdir_unique("rossi-cli-wd-loose");
+    let file = tmp.join("M.eventb");
+    std::fs::write(
+        &file,
+        "MACHINE M\nVARIABLES\n    x\nINVARIANTS\n    @type x ∈ ℤ\n    @wd 10 ÷ x > 0\nEND\n",
+    )
+    .unwrap();
+
+    let output = rossi_command()
+        .args(["validate", "--show-info", file.to_str().unwrap()])
+        .output()
+        .expect("Failed to execute command");
+
+    assert!(output.status.success());
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(
+        stdout.contains("(M.wd)"),
+        "formula origin is preserved: {stdout}"
+    );
+    assert!(
+        stdout.contains("[EB010] Well-definedness condition: x≠0"),
+        "loose files include WD diagnostics: {stdout}"
+    );
+
+    std::fs::remove_dir_all(&tmp).ok();
+}
+
+#[test]
+fn validate_eb010_is_structured_as_info_and_never_denied() {
+    let tmp = wd_fixture_dir("rossi-cli-wd-json");
+    let output = rossi_command()
+        .args([
+            "validate",
+            "--show-info",
+            "--deny-warnings",
+            "--format",
+            "json",
+            tmp.to_str().unwrap(),
+        ])
+        .output()
+        .expect("Failed to execute command");
+    assert!(
+        output.status.success(),
+        "--deny-warnings must not promote INFO: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let rows: Vec<serde_json::Value> =
+        serde_json::from_slice(&output.stdout).expect("JSON output should be valid");
+    let eb010 = rows
+        .iter()
+        .find(|row| row["rule_id"] == "EB010")
+        .expect("EB010 row");
+    assert_eq!(eb010["severity"], "info");
+    assert_eq!(eb010["success"], true);
+    assert_eq!(eb010["origin"], "M.wd");
+    assert_eq!(eb010["inner_filename"], "M.bum");
+
+    let quiet = rossi_command()
+        .args(["validate", "--quiet", "--show-info", tmp.to_str().unwrap()])
+        .output()
+        .expect("Failed to execute command");
+    assert!(quiet.status.success());
+    assert!(quiet.stdout.is_empty(), "quiet suppresses INFO rows");
+    assert!(quiet.stderr.is_empty());
+
+    std::fs::remove_dir_all(&tmp).ok();
+}
+
+#[test]
+fn validate_sarif_emits_eb010_as_a_note() {
+    let tmp = wd_fixture_dir("rossi-cli-wd-sarif");
+    let output = rossi_command()
+        .args([
+            "validate",
+            "--show-info",
+            "--format",
+            "sarif",
+            tmp.to_str().unwrap(),
+        ])
+        .output()
+        .expect("Failed to execute command");
+    assert!(output.status.success());
+    let doc: serde_json::Value =
+        serde_json::from_slice(&output.stdout).expect("SARIF output should be valid");
+    let result = doc["runs"][0]["results"]
+        .as_array()
+        .expect("results array")
+        .iter()
+        .find(|result| result["ruleId"] == "EB010")
+        .expect("EB010 result");
+    assert_eq!(result["level"], "note");
+    let descriptor = doc["runs"][0]["tool"]["driver"]["rules"]
+        .as_array()
+        .expect("rules array")
+        .iter()
+        .find(|rule| rule["id"] == "EB010")
+        .expect("EB010 descriptor");
+    assert_eq!(descriptor["defaultConfiguration"]["level"], "note");
+
+    std::fs::remove_dir_all(&tmp).ok();
 }
 
 #[test]

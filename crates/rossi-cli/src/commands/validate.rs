@@ -4,7 +4,7 @@ use rossi::{
     parse_zip_with_recovery,
 };
 use rossi_build::project::discover_projects;
-use rossi_build::{Diagnostic, Project, RuleId, Severity, error::ProjectError};
+use rossi_build::{Diagnostic, Project, ProjectComponent, RuleId, Severity, error::ProjectError};
 use serde::{Serialize, Serializer};
 use std::fs;
 use std::io::{self, Write};
@@ -55,6 +55,11 @@ pub struct ValidateArgs {
     /// only the exit code hardens.
     #[arg(long)]
     deny_warnings: bool,
+
+    /// Include INFO-severity findings such as EB010 well-definedness
+    /// conditions (hidden by default).
+    #[arg(long)]
+    show_info: bool,
 
     /// Name this SARIF run's analysis category (`runs[].automationDetails.id`).
     /// A repository uploading more than one rossi run — one per project, say —
@@ -344,12 +349,10 @@ pub fn run(cli: ValidateArgs) -> ExitCode {
 
 /// Whether a row makes the run fail.
 ///
-/// A row carries a severity only when it is a diagnostic, so `--deny-warnings`
-/// promoting every diagnostic is exactly "advisory lints fail the run too":
-/// EB011, EB012, EB014 and EB023 report as warnings and otherwise exit 0, and
-/// a CI job that wants to gate on them would have to parse the JSON itself.
+/// `--deny-warnings` promotes warning rows only. INFO findings remain advisory
+/// even when explicitly included with `--show-info`.
 fn row_failed(result: &ValidationResult, deny_warnings: bool) -> bool {
-    !result.success || (deny_warnings && result.severity.is_some())
+    !result.success || (deny_warnings && result.severity == Some(Severity::Warning))
 }
 
 fn finish_structured_output(
@@ -425,11 +428,10 @@ fn validate_stdin(cli: &ValidateArgs) -> Vec<ValidationResult> {
 
 /// Validate Event-B text from any source, reporting rows under `input` and,
 /// when the text is one member of a directory project, under `inner`.
-/// Loose text has no project (its SEES/EXTENDS parents are usually absent),
-/// so the SC build doesn't run here; the component-local checks do — the
-/// duplicate-name errors (EB021/EB022, semantic, from the same shared core
-/// the SC uses) and the component-local lints. The reference-based lints
-/// need the project paths (directories, zip archives).
+/// Loose text has no enclosing project (its SEES/EXTENDS parents are usually
+/// absent), so only WD runs through the typed model, and only for direct file
+/// input. The duplicate-name errors (EB021/EB022) and component-local lints run
+/// directly. Reference-based lints need project paths (directories or zips).
 fn validate_text_source(
     input: Input,
     inner: Option<&str>,
@@ -455,6 +457,35 @@ fn validate_text_source(
                     for diag in rossi_build::lint::run_component(component) {
                         results.push(fold_diagnostic(input, diag, inner(), Some(source)));
                     }
+                }
+            }
+            if cli.show_info && !cli.no_semantic && input.kind == InputKind::File {
+                let filename = input
+                    .path
+                    .file_name()
+                    .and_then(|name| name.to_str())
+                    .unwrap_or("model.eventb")
+                    .to_string();
+                let project_name = input
+                    .path
+                    .file_stem()
+                    .and_then(|name| name.to_str())
+                    .unwrap_or("project");
+                let project = Project::new(
+                    project_name,
+                    components
+                        .into_iter()
+                        .map(|component| ProjectComponent {
+                            filename: filename.clone(),
+                            component,
+                            rodin_ids: Default::default(),
+                            source: Some(source.to_string()),
+                        })
+                        .collect(),
+                );
+                let (_, model) = rossi_build::build_with_model(&project);
+                for diag in rossi_build::wd::run(&project, &model) {
+                    results.push(fold_diagnostic(input, diag, inner(), Some(source)));
                 }
             }
             results
@@ -804,9 +835,14 @@ fn fold_semantic(
     prefix: &str,
     out: &mut Vec<ValidationResult>,
 ) {
-    let build = rossi_build::build(project);
+    let (build, model) = rossi_build::build_with_model(project);
     for diag in build.diagnostics {
         out.push(fold_project_diagnostic(input, diag, project, prefix));
+    }
+    if cli.show_info {
+        for diag in rossi_build::wd::run(project, &model) {
+            out.push(fold_project_diagnostic(input, diag, project, prefix));
+        }
     }
     if !cli.no_lints {
         for diag in rossi_build::lint::run(project) {
@@ -1030,8 +1066,11 @@ fn text_line(result: &ValidationResult) -> (String, bool) {
         return (line, false);
     }
 
-    let is_error = result.severity == Some(Severity::Error);
-    let glyph = if is_error { "✗" } else { "!" };
+    let (glyph, is_error) = match result.severity {
+        Some(Severity::Error) => ("✗", true),
+        Some(Severity::Info) => ("i", false),
+        Some(Severity::Warning) | None => ("!", false),
+    };
     let prefix = result
         .rule_id
         .map(|r| format!("[{}] ", r.code()))
@@ -1246,6 +1285,7 @@ mod tests {
             no_lints: false,
             output: None,
             deny_warnings: false,
+            show_info: false,
             sarif_category: None,
             stdin_filename: None,
         };
@@ -1281,6 +1321,7 @@ mod tests {
             no_lints: false,
             output: None,
             deny_warnings: false,
+            show_info: false,
             sarif_category: None,
             stdin_filename: None,
         };
