@@ -279,6 +279,17 @@ pub fn oracle_available(oracle: &str) -> bool {
         .unwrap_or(false)
 }
 
+/// The `.zip` corpus models in `dir`, sorted for deterministic iteration.
+pub fn collect_zips(dir: &Path) -> std::io::Result<Vec<PathBuf>> {
+    let mut zips: Vec<PathBuf> = std::fs::read_dir(dir)?
+        .filter_map(Result::ok)
+        .map(|entry| entry.path())
+        .filter(|path| path.extension().is_some_and(|ext| ext == "zip"))
+        .collect();
+    zips.sort();
+    Ok(zips)
+}
+
 /// One row of a corpus report: the `model` and its `expected`/`actual`
 /// outcomes, the resulting `verdict`, and any `notes`. Shared by every corpus
 /// harness; see [`write_report`] for the columnar layout.

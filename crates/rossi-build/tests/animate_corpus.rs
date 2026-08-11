@@ -66,8 +66,9 @@ use std::process::Command;
 use std::time::Duration;
 
 use common::{
-    Row, WaitError, load_expected, load_flags, load_machines, locate_corpus, log_hint, regen_one,
-    resolve_program, spawn_in_group, wait_with_timeout, workspace_target, write_report,
+    Row, WaitError, collect_zips, load_expected, load_flags, load_machines, locate_corpus,
+    log_hint, regen_one, resolve_program, spawn_in_group, wait_with_timeout, workspace_target,
+    write_report,
 };
 
 const DEFAULT_TIMEOUT_SECS: u64 = 120;
@@ -114,13 +115,7 @@ fn animate_regenerated_corpus_matches_reference() {
             .unwrap_or(DEFAULT_TIMEOUT_SECS),
     );
 
-    let mut zips: Vec<PathBuf> = std::fs::read_dir(&corpus)
-        .expect("read corpus")
-        .filter_map(Result::ok)
-        .map(|e| e.path())
-        .filter(|p| p.extension().and_then(|s| s.to_str()) == Some("zip"))
-        .collect();
-    zips.sort();
+    let zips = collect_zips(&corpus).expect("read corpus");
 
     let has_flag = |model: &str, flag: &str| flags.get(model).is_some_and(|f| f.contains(flag));
     let mut rows = Vec::<Row>::new();
