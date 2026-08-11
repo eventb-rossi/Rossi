@@ -1,5 +1,47 @@
 # Changelog
 
+## [0.1.8](https://github.com/eventb-rossi/rossi/compare/v0.1.7...v0.1.8) - 2026-08-11
+
+### Added
+- *(pretty)* Render the new formula model
+- *(validate)* Expose joined path in JSON output
+- *(ast)* Lower parsed formulas onto the typed model
+- *(ast)* Scope-aware occurrence walker for the new formula model
+- *(ast)* Add datatype extensions with constructors and destructors
+- *(ast)* Add operator extension mechanism with dynamic tags
+- *(ast)* Simplify well-definedness lemmas by antecedent subsumption
+- *(ast)* Add well-definedness lemma computation
+- *(ast)* Add two-pass type checking with unification
+- *(ast)* Add path-based subformula positions
+- *(ast)* Add fresh-name resolution for bound identifiers
+- *(ast)* Add formula rewriter and substitution infrastructure
+- *(ast)* Synthesize node types bottom-up at construction
+- *(ast)* Add immutable formula nodes with factory construction
+- *(ast)* Add mathematical type hierarchy and type environments
+- *(ast)* Add formula tag constants and operator kind enums
+- *(build)* Expose typed formulas through the checked model
+- *(build)* Gate formulas through the two-pass checker
+- *(build)* Type declarations with the two-pass checker
+
+### Changed
+- *(parser)* Build the formula model directly and drop the legacy tree
+- *(ast)* Make the legacy formula tree parser-internal
+- *(ast)* Route all formulas through the typed model
+- *(build)* Render canonical text from typed formulas
+- *(ast)* Move the legacy formula types behind an ast::legacy module
+- *(ast)* Allow multiple targets in membership assignments
+- *(build)* Type extended-event scopes from inherited decls
+- *(build)* Derive canonical formula text at render time
+- *(build)* Adopt the core mathematical types throughout
+- *(build)* Drop the superseded inference and enrichment passes
+- *(build)* Retire the well-typedness façade
+- *(build)* Funnel identifier typing through a single seam
+
+### Fixed
+- *(validate)* Retain ruleless failures in SARIF
+- *(validate)* Reject directories without components
+- *(ast)* Scope implicit comprehension binders everywhere they bind
+
 ## [0.1.7](https://github.com/eventb-rossi/rossi/compare/v0.1.6...v0.1.7) - 2026-07-27
 
 ### Added
