@@ -267,6 +267,15 @@ pub struct WitnessDecl {
 // ---------------------------------------------------------------------
 
 impl EventDecl {
+    /// Actions declared by this event, excluding materialised inherited ones.
+    pub fn own_actions(&self) -> &[ActionDecl] {
+        let inherited_count = self
+            .inherited
+            .as_deref()
+            .map_or(0, |parent| parent.actions.len());
+        &self.actions[inherited_count..]
+    }
+
     /// Walk `self.inherited` chain root-first (oldest ancestor first,
     /// own EventDecl last). Useful both for rendering inherited
     /// buckets and for collecting inherited typing axioms.
@@ -450,7 +459,6 @@ fn render_event(
         scev.push(names.generated(|name| render_refines_event(re, name)));
     }
 
-    let mut inherited_action_count = 0;
     if let Some(parent_element) = inherited_event {
         for copied_tag in [tag::SC_GUARD, tag::SC_ACTION, tag::SC_PARAMETER] {
             for child in parent_element
@@ -458,9 +466,6 @@ fn render_event(
                 .iter()
                 .filter(|child| child.tag == copied_tag)
             {
-                if copied_tag == tag::SC_ACTION {
-                    inherited_action_count += 1;
-                }
                 scev.push(names.retained(child.clone()));
             }
         }
@@ -473,7 +478,7 @@ fn render_event(
         scev.push(names.retained(Rc::new(render_parameter(p))));
     }
 
-    for a in ev.actions.iter().skip(inherited_action_count) {
+    for a in ev.own_actions() {
         scev.push(names.generated(|name| render_action(a, name)));
     }
 

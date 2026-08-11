@@ -18,6 +18,10 @@ fn canonical() -> PrettyPrinter {
     PrettyPrinter::rodin_canonical()
 }
 
+fn formula_string() -> PrettyPrinter {
+    PrettyPrinter::rodin_formula_string()
+}
+
 fn plus(children: Vec<Expression>) -> Expression {
     ff().associative_expression(AssocExprOp::Plus, children, None)
 }
@@ -39,6 +43,53 @@ fn readable_and_canonical_spacing() {
     // The model's SubsetEq is the legacy inclusive subset.
     assert_eq!(readable().print_formula_predicate(&subset), "s ⊆ t");
     assert_eq!(ascii.print_formula_predicate(&subset), "s <: t");
+}
+
+#[test]
+fn rodin_formula_string_matches_diagnostic_parenthesization_and_spacing() {
+    let relation = ff().binary_expression(
+        BinaryExprOp::RanRes,
+        ff().binary_expression(BinaryExprOp::DomRes, fid("s"), fid("r"), None),
+        fid("t"),
+        None,
+    );
+    assert_eq!(
+        formula_string().print_formula_expression(&relation),
+        "s ◁ r ▷ t"
+    );
+
+    let application = ff().binary_expression(BinaryExprOp::FunImage, fid("f"), fid("x"), None);
+    let converse = ff().unary_expression(UnaryExprOp::Converse, application, None);
+    assert_eq!(
+        formula_string().print_formula_expression(&converse),
+        "(f(x))∼"
+    );
+
+    let negated = ff().not_predicate(eq_pred(fid("x"), int(-1)), None);
+    assert_eq!(formula_string().print_formula_predicate(&negated), "¬x=−1");
+
+    let ascribed_sum = ff().ascription(
+        plus(vec![fid("a"), fid("b")]),
+        ff().atomic_expression(AtomicOp::Integer, None, None),
+        None,
+    );
+    let product = ff().associative_expression(AssocExprOp::Mul, vec![ascribed_sum, fid("c")], None);
+    assert_eq!(
+        formula_string().print_formula_expression(&product),
+        "(a+b)∗c"
+    );
+
+    let annotated = ff().bound_ident_decl(
+        "x",
+        None,
+        Some(ff().atomic_expression(AtomicOp::Integer, None, None)),
+        Some(Type::Int),
+    );
+    let quantified = forall(vec![annotated], eq_pred(bid(0), int(1)));
+    assert_eq!(
+        formula_string().print_formula_predicate(&quantified),
+        "∀x·x=1"
+    );
 }
 
 #[test]

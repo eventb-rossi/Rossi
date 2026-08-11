@@ -79,6 +79,8 @@ pub enum FormulaSpacing {
     Readable,
     /// Rodin's compact canonical form used in static-checker XML attributes.
     RodinCanonical,
+    /// Rodin's `Formula#toString()` form used in marker diagnostics.
+    RodinFormulaString,
 }
 
 /// The top-level formula being rendered. Rodin formats binary type
@@ -152,6 +154,11 @@ impl PrettyPrinter {
             formula_spacing: FormulaSpacing::RodinCanonical,
             ..Self::default()
         }
+    }
+
+    /// Create a printer matching Rodin's formula spelling in diagnostics.
+    pub fn rodin_formula_string() -> Self {
+        Self::rodin_canonical().with_formula_spacing(FormulaSpacing::RodinFormulaString)
     }
 
     /// Set the indentation string
@@ -526,13 +533,13 @@ impl PrettyPrinter {
     fn comma_separator(&self) -> &'static str {
         match self.formula_spacing {
             FormulaSpacing::Readable => ", ",
-            FormulaSpacing::RodinCanonical => ",",
+            FormulaSpacing::RodinCanonical | FormulaSpacing::RodinFormulaString => ",",
         }
     }
 
     #[inline]
     fn tight_operator_separator(&self, id: OperatorId) -> &'static str {
-        if self.formula_spacing == FormulaSpacing::RodinCanonical
+        if self.formula_spacing != FormulaSpacing::Readable
             && (self.use_unicode || operators::spelling(id).is_symbolic())
         {
             ""
@@ -543,13 +550,25 @@ impl PrettyPrinter {
 
     #[inline]
     fn binary_separator(&self, op: BinaryOp, context: FormulaContext) -> &'static str {
-        if self.formula_spacing == FormulaSpacing::RodinCanonical
-            && self.rodin_binary_is_tight(op, context)
-        {
-            ""
-        } else {
-            " "
+        match self.formula_spacing {
+            FormulaSpacing::Readable => " ",
+            FormulaSpacing::RodinCanonical if self.rodin_binary_is_tight(op, context) => "",
+            FormulaSpacing::RodinFormulaString if self.formula_string_binary_is_tight(op) => "",
+            FormulaSpacing::RodinCanonical | FormulaSpacing::RodinFormulaString => " ",
         }
+    }
+
+    fn formula_string_binary_is_tight(&self, op: BinaryOp) -> bool {
+        matches!(
+            op,
+            BinaryOp::Add
+                | BinaryOp::Multiply
+                | BinaryOp::Union
+                | BinaryOp::Intersection
+                | BinaryOp::Overwrite
+                | BinaryOp::Composition
+                | BinaryOp::Semicolon
+        )
     }
 
     /// Whether Rodin removes whitespace around this binary expression
@@ -870,6 +889,9 @@ impl PrettyPrinter {
         context: FormulaContext,
         names: &mut Vec<String>,
     ) -> Option<String> {
+        if self.formula_spacing == FormulaSpacing::RodinFormulaString {
+            return None;
+        }
         if self.typed_decls {
             if let Some(ty) = decl.ty() {
                 let spelled = ty.to_expression(decl.factory());
@@ -886,10 +908,22 @@ impl PrettyPrinter {
         context: FormulaContext,
         names: &mut Vec<String>,
     ) -> String {
+        let expr = self.visible_expr(expr);
         match expr.kind() {
             FExprKind::FreeIdentifier(name) => name.clone(),
             FExprKind::BoundIdentifier(index) => Self::fm_bound_name(names, *index),
-            FExprKind::IntegerLiteral(value) => value.to_string(),
+            FExprKind::IntegerLiteral(value) => {
+                let rendered = value.to_string();
+                if self.formula_spacing == FormulaSpacing::RodinFormulaString
+                    && let Some(unsigned) = rendered.strip_prefix('-')
+                {
+                    return format!(
+                        "{}{unsigned}",
+                        self.op(operators::unary_op_id(UnaryOp::Minus))
+                    );
+                }
+                rendered
+            }
             FExprKind::Atomic(op) => match op {
                 AtomicOp::Integer => self.op(OperatorId::Integers).to_string(),
                 AtomicOp::Natural => self.op(OperatorId::Naturals).to_string(),
@@ -919,6 +953,7 @@ impl PrettyPrinter {
                 left,
                 right,
             } => {
+                let left = self.visible_expr(left);
                 let mut applied = self.fm_expr(left, context, names);
                 if Self::fm_parens_for_image(left.kind()) {
                     applied = format!("({applied})");
@@ -956,26 +991,28 @@ impl PrettyPrinter {
                 UnaryExprOp::KUnion => self.fm_builtin("union", child, context, names),
                 UnaryExprOp::KInter => self.fm_builtin("inter", child, context, names),
                 UnaryExprOp::Converse => {
-                    let needs_parens = !matches!(
-                        child.kind(),
+                    let child = self.visible_expr(child);
+                    let needs_parens = match child.kind() {
                         FExprKind::FreeIdentifier(_)
-                            | FExprKind::BoundIdentifier(_)
-                            | FExprKind::Atomic(_)
-                            | FExprKind::IntegerLiteral(_)
-                            | FExprKind::Binary {
-                                op: BinaryExprOp::FunImage | BinaryExprOp::RelImage,
-                                ..
-                            }
-                            | FExprKind::Unary {
-                                op: UnaryExprOp::KCard
-                                    | UnaryExprOp::KMin
-                                    | UnaryExprOp::KMax
-                                    | UnaryExprOp::KUnion
-                                    | UnaryExprOp::KInter
-                                    | UnaryExprOp::Converse,
-                                ..
-                            }
-                    );
+                        | FExprKind::BoundIdentifier(_)
+                        | FExprKind::Atomic(_)
+                        | FExprKind::IntegerLiteral(_)
+                        | FExprKind::Unary {
+                            op:
+                                UnaryExprOp::KCard
+                                | UnaryExprOp::KMin
+                                | UnaryExprOp::KMax
+                                | UnaryExprOp::KUnion
+                                | UnaryExprOp::KInter
+                                | UnaryExprOp::Converse,
+                            ..
+                        } => false,
+                        FExprKind::Binary {
+                            op: BinaryExprOp::FunImage | BinaryExprOp::RelImage,
+                            ..
+                        } => self.formula_spacing == FormulaSpacing::RodinFormulaString,
+                        _ => true,
+                    };
                     let operand = self.fm_expr(child, context, names);
                     let op_str = self.op(operators::unary_op_id(UnaryOp::Inverse));
                     if needs_parens {
@@ -1006,7 +1043,11 @@ impl PrettyPrinter {
                     names,
                 );
                 let mid = self.op(OperatorId::Dot);
-                let bar = self.op(OperatorId::Bar);
+                let bar = if self.formula_spacing == FormulaSpacing::RodinFormulaString {
+                    format!(" {} ", self.op(OperatorId::Bar))
+                } else {
+                    self.op(OperatorId::Bar).to_string()
+                };
                 // The short comprehension spellings have no place to
                 // carry the declarations' types, so typed printing
                 // escalates them to the explicit form (the lambda
@@ -1019,6 +1060,7 @@ impl PrettyPrinter {
                 match op {
                     QuantExprOp::CSet => match form {
                         Form::Lambda => {
+                            let value = self.visible_expr(value);
                             let FExprKind::Binary {
                                 op: BinaryExprOp::Mapsto,
                                 left: pattern,
@@ -1092,6 +1134,17 @@ impl PrettyPrinter {
         format!("{}({})", name, self.fm_expr(child, context, names))
     }
 
+    /// The expression visible in formula-string mode, where source type
+    /// ascriptions are presentation-only.
+    fn visible_expr<'a>(&self, mut expr: &'a formula::Expression) -> &'a formula::Expression {
+        if self.formula_spacing == FormulaSpacing::RodinFormulaString {
+            while let FExprKind::Ascription { expr: inner, .. } = expr.kind() {
+                expr = inner;
+            }
+        }
+        expr
+    }
+
     fn fm_prefix_unary(
         &self,
         op: UnaryOp,
@@ -1130,6 +1183,7 @@ impl PrettyPrinter {
         context: FormulaContext,
         names: &mut Vec<String>,
     ) -> String {
+        let child = self.visible_expr(child);
         if fm_above_pair(child.kind()) {
             return format!("({})", self.fm_expr(child, context, names));
         }
@@ -1141,9 +1195,17 @@ impl PrettyPrinter {
             } else if child_prec > parent_prec {
                 false
             } else {
-                !op_info::binary_ops_compatible(child_op, parent_op)
-                    || op_info::is_non_associative(parent_op)
-                    || is_right
+                if self.formula_spacing == FormulaSpacing::RodinFormulaString
+                    && !is_right
+                    && child_op == BinaryOp::DomainRestriction
+                    && parent_op == BinaryOp::RangeRestriction
+                {
+                    false
+                } else {
+                    !op_info::binary_ops_compatible(child_op, parent_op)
+                        || op_info::is_non_associative(parent_op)
+                        || is_right
+                }
             };
             if needs_parens {
                 return format!("({})", self.fm_expr(child, context, names));
@@ -1190,6 +1252,7 @@ impl PrettyPrinter {
         context: FormulaContext,
         names: &mut Vec<String>,
     ) -> String {
+        let expr = self.visible_expr(expr);
         if fm_above_pair(expr.kind()) {
             format!("({})", self.fm_expr(expr, context, names))
         } else {
@@ -1207,6 +1270,7 @@ impl PrettyPrinter {
         context: FormulaContext,
         names: &mut Vec<String>,
     ) -> String {
+        let pattern = self.visible_expr(pattern);
         match pattern.kind() {
             FExprKind::BoundIdentifier(index) => {
                 let position = decls.len() - 1 - *index as usize;
@@ -1219,6 +1283,7 @@ impl PrettyPrinter {
             } => {
                 let maplet = self.op(OperatorId::Maplet);
                 let left_str = self.fm_lambda_pattern(left, decls, resolved, context, names);
+                let right = self.visible_expr(right);
                 let right_str = match right.kind() {
                     FExprKind::Binary {
                         op: BinaryExprOp::Mapsto,
@@ -1257,7 +1322,19 @@ impl PrettyPrinter {
             }
             FPredKind::Not(child) => {
                 let not = self.op(OperatorId::Not);
-                format!("{}({})", not, self.fm_pred(child, context, names))
+                let rendered = self.fm_pred(child, context, names);
+                if self.formula_spacing == FormulaSpacing::RodinFormulaString
+                    && !matches!(
+                        child.kind(),
+                        FPredKind::Binary { .. }
+                            | FPredKind::Associative { .. }
+                            | FPredKind::Quantified { .. }
+                    )
+                {
+                    format!("{not}{rendered}")
+                } else {
+                    format!("{not}({rendered})")
+                }
             }
             FPredKind::Binary { op, left, right } => {
                 let old = legacy_binary_pred(*op);
