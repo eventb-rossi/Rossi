@@ -70,8 +70,8 @@ use std::process::{Command, Stdio};
 use std::time::Duration;
 
 use common::{
-    Row, WaitError, env_path, load_expected, load_flags, locate_corpus, log_hint, regen_one,
-    resolve_program, spawn_in_group, wait_with_timeout, workspace_target, write_report,
+    Row, WaitError, collect_zips, env_path, load_expected, load_flags, locate_corpus, log_hint,
+    regen_one, resolve_program, spawn_in_group, wait_with_timeout, workspace_target, write_report,
 };
 
 const DEFAULT_TIMEOUT_SECS: u64 = 600;
@@ -121,13 +121,7 @@ fn rodin_builds_regenerated_corpus() {
             .unwrap_or(DEFAULT_TIMEOUT_SECS),
     );
 
-    let mut zips: Vec<PathBuf> = std::fs::read_dir(&corpus)
-        .expect("read corpus")
-        .filter_map(Result::ok)
-        .map(|e| e.path())
-        .filter(|p| p.extension().and_then(|s| s.to_str()) == Some("zip"))
-        .collect();
-    zips.sort();
+    let zips = collect_zips(&corpus).expect("read corpus");
 
     let known_failure: std::collections::BTreeSet<&str> = flags
         .iter()
