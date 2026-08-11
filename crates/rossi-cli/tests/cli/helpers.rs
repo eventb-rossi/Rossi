@@ -63,6 +63,27 @@ pub fn lint_fixture_dir(prefix: &str) -> PathBuf {
     tmp
 }
 
+/// A warning-free machine whose `10 ÷ x` invariant has a non-trivial WD
+/// condition. Used to isolate EB010's opt-in and exit-code behavior.
+pub fn wd_fixture_dir(prefix: &str) -> PathBuf {
+    const MACHINE: &str = r#"<?xml version="1.0"?>
+<org.eventb.core.machineFile version="5" org.eventb.core.configuration="org.eventb.core.fwd">
+<org.eventb.core.variable name="_x" org.eventb.core.identifier="x"/>
+<org.eventb.core.invariant name="_type" org.eventb.core.label="type" org.eventb.core.predicate="x ∈ ℤ"/>
+<org.eventb.core.invariant name="_wd" org.eventb.core.label="wd" org.eventb.core.predicate="10 ÷ x &gt; 0"/>
+<org.eventb.core.event name="_init" org.eventb.core.convergence="0" org.eventb.core.extended="false" org.eventb.core.label="INITIALISATION">
+<org.eventb.core.action name="_init_action" org.eventb.core.assignment="x ≔ 1" org.eventb.core.label="act1"/>
+</org.eventb.core.event>
+<org.eventb.core.event name="_inc" org.eventb.core.convergence="0" org.eventb.core.extended="false" org.eventb.core.label="increment">
+<org.eventb.core.action name="_inc_action" org.eventb.core.assignment="x ≔ x + 1" org.eventb.core.label="act1"/>
+</org.eventb.core.event>
+</org.eventb.core.machineFile>
+"#;
+    let tmp = tempdir_unique(prefix);
+    std::fs::write(tmp.join("M.bum"), MACHINE).unwrap();
+    tmp
+}
+
 pub const ASCII_CONTEXT: &str = "CONTEXT c\nCONSTANTS\n    x\nAXIOMS\n    @axm1 x : NAT\nEND\n";
 
 pub const DUP_VARIABLE_MACHINE: &str = "MACHINE M\nVARIABLES\n    x x\nINVARIANTS\n    @inv1 x >= 0\nEVENTS\n    EVENT INITIALISATION\n    THEN\n        x := 0\n    END\nEND\n";
