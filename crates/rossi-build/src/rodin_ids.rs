@@ -68,6 +68,7 @@ pub struct Key {
 #[derive(Debug, Default, Clone)]
 pub struct RodinIds {
     by_key: HashMap<Key, String>,
+    last_variant_label: Option<String>,
 }
 
 impl RodinIds {
@@ -118,6 +119,9 @@ impl RodinIds {
     }
 
     pub fn insert(&mut self, key: Key, id: String) {
+        if key.scope == Scope::File && key.kind == Kind::Variant {
+            self.last_variant_label = Some(key.ident_or_label.clone());
+        }
         self.by_key.insert(key, id);
     }
 
@@ -138,6 +142,12 @@ impl RodinIds {
             .get(&key)
             .map(String::as_str)
             .unwrap_or(ident_or_label)
+    }
+
+    /// Return the last source variant label, following the parser's last-wins
+    /// handling of the variant expression.
+    pub fn last_variant_label(&self) -> Option<&str> {
+        self.last_variant_label.as_deref()
     }
 }
 
