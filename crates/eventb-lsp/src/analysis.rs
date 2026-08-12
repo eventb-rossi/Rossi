@@ -23,7 +23,7 @@ fn extract_context_symbols(ctx: &Context, source: &str) -> Vec<DocumentSymbol> {
     // Add SETS as enum symbols
     for set in &ctx.sets {
         symbols.push(create_symbol(
-            set.name().to_string(),
+            set.name.clone(),
             SymbolKind::ENUM,
             "Set",
             default_range(),
@@ -319,16 +319,8 @@ mod tests {
     fn test_extract_context_symbols() {
         let mut ctx = Context::new("test_ctx".to_string());
         ctx.sets = vec![
-            rossi::SetDeclaration::Deferred {
-                name: "SET1".to_string(),
-                comment: None,
-                span: None,
-            },
-            rossi::SetDeclaration::Deferred {
-                name: "SET2".to_string(),
-                comment: None,
-                span: None,
-            },
+            rossi::NamedElement::new("SET1".to_string()),
+            rossi::NamedElement::new("SET2".to_string()),
         ];
         ctx.constants = vec![
             rossi::NamedElement::new("const1".to_string()),

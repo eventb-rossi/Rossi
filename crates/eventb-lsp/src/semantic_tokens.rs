@@ -434,10 +434,7 @@ impl<'a> SemanticTokensBuilder<'a> {
         {
             cur = off;
             for set in &ctx.sets {
-                // Sets carry no per-name span (only a whole-declaration one), so
-                // mark_name's bounded search locates the name — same shape as the
-                // other declaration lists.
-                cur = self.mark_name(set.name(), None, cur, bound, style);
+                cur = self.mark_name(&set.name, set.span, cur, bound, style);
             }
         }
 

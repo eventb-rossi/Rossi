@@ -221,9 +221,9 @@ impl WorkspaceSymbolProvider {
         match component {
             Component::Context(ctx) => {
                 symbols.extend(
-                    ctx.sets.iter().filter_map(|s| {
-                        entry(s.name(), SymbolKind::ENUM, Some(&ctx.name), s.span())
-                    }),
+                    ctx.sets
+                        .iter()
+                        .filter_map(|s| entry(&s.name, SymbolKind::ENUM, Some(&ctx.name), s.span)),
                 );
                 symbols.extend(
                     ctx.constants.iter().filter_map(|c| {

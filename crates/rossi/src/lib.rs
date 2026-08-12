@@ -62,7 +62,7 @@ pub mod xml;
 // typed model; `ast` holds the structural component types.
 pub use ast::{
     ActionBody, Component, Context, Event, EventStatus, FileMetadata, Ident, InitialisationEvent,
-    LabeledAction, LabeledPredicate, Machine, NamedElement, SetDeclaration,
+    LabeledAction, LabeledPredicate, Machine, NamedElement,
 };
 pub use deps::{ComponentId, ComponentKind, DependencyGraph, EdgeKind, RefinementAncestry};
 pub use error::{ParseError, ParseResult, Result};
@@ -126,8 +126,8 @@ mod tests {
         if let Component::Context(ctx) = result.unwrap() {
             assert_eq!(ctx.name, "ctx");
             assert_eq!(ctx.sets.len(), 2);
-            assert_eq!(ctx.sets[0].name(), "PERSON");
-            assert_eq!(ctx.sets[1].name(), "STATUS");
+            assert_eq!(ctx.sets[0].name, "PERSON");
+            assert_eq!(ctx.sets[1].name, "STATUS");
         } else {
             panic!("Expected Context component");
         }

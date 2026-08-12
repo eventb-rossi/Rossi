@@ -22,7 +22,7 @@ use rossi::formula::{BoundIdentDecl, FormulaFactory};
 use rossi::{
     ActionBody, Assignment, Component, Context, Event, EventStatus, Expression, ExpressionKind,
     Form, InitialisationEvent, LabeledAction, LabeledPredicate, Machine, NamedElement, Predicate,
-    PredicateKind, PrettyPrinter, SetDeclaration, parse,
+    PredicateKind, PrettyPrinter, parse,
 };
 
 fn ff() -> FormulaFactory {
@@ -499,33 +499,8 @@ fn arb_action() -> impl Strategy<Value = (ActionBody, Vec<String>)> {
 // Component-level strategies
 // =============================================================================
 
-fn arb_set_declaration() -> impl Strategy<Value = SetDeclaration> {
-    let set_name = prop_oneof![Just("SS".into()), Just("TT".into()), Just("UU".into()),];
-    prop_oneof![
-        set_name.clone().prop_map(|name| SetDeclaration::Deferred {
-            name,
-            comment: None,
-            span: None,
-        }),
-        (
-            set_name,
-            proptest::collection::vec(
-                prop_oneof![
-                    Just("el1".into()),
-                    Just("el2".into()),
-                    Just("el3".into()),
-                    Just("el4".into()),
-                ],
-                1..4,
-            ),
-        )
-            .prop_map(|(name, elements)| SetDeclaration::Enumerated {
-                name,
-                elements,
-                comment: None,
-                span: None,
-            }),
-    ]
+fn arb_carrier_set() -> impl Strategy<Value = NamedElement> {
+    prop_oneof![Just("SS"), Just("TT"), Just("UU")].prop_map(|name| NamedElement::new(name.into()))
 }
 
 /// Generate a label from a fixed pool. Always returns `Some(label)` to avoid
@@ -649,7 +624,7 @@ fn arb_initialisation() -> impl Strategy<Value = InitialisationEvent> {
 
 fn arb_context() -> impl Strategy<Value = Component> {
     (
-        proptest::collection::vec(arb_set_declaration(), 0..3),
+        proptest::collection::vec(arb_carrier_set(), 0..3),
         proptest::collection::vec(arb_identifier(), 0..4),
         proptest::collection::vec(arb_axiom(), 0..3),
         proptest::collection::vec(arb_theorem(), 0..2),

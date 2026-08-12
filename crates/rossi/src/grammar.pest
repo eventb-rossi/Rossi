@@ -590,13 +590,8 @@ context_clause_extends = {
     kw_extends ~ component_name ~ (!context_section_kw ~ component_name)*
 }
 
-// Set declaration: deferred set (S) or enumerated set (S = {a, b, c})
-set_declaration = {
-    identifier ~ (op_eq ~ lbrace ~ identifier ~ (comma ~ identifier)* ~ rbrace)?
-}
-
 context_clause_sets = {
-    kw_sets ~ set_declaration ~ (!context_section_kw ~ set_declaration)*
+    kw_sets ~ identifier ~ (!context_section_kw ~ identifier)*
 }
 
 context_clause_constants = {

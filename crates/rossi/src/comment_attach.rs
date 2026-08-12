@@ -58,7 +58,7 @@ pub(crate) fn attach_comments_from_spans(
             Component::Context(ctx) => {
                 anchor!(ctx.span.or(ctx.name_span), &mut ctx.comment);
                 for set in &mut ctx.sets {
-                    anchor!(set.span(), set.comment_mut());
+                    anchor!(set.span, &mut set.comment);
                 }
                 for constant in &mut ctx.constants {
                     anchor!(constant.span, &mut constant.comment);

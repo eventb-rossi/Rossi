@@ -539,7 +539,7 @@ fn collect_identifiers_from_clause(
 }
 
 /// Extract declared elements from a clause pair, keeping per-identifier
-/// spans so trailing comments can attach to them (constants, variables,
+/// spans so trailing comments can attach to them (sets, constants, variables,
 /// event parameters).
 ///
 /// These clauses all *declare* identifiers, so each name is routed through
@@ -557,7 +557,7 @@ fn collect_named_elements_from_clause(
                 span: Some(Span::from_pest(p.as_span())),
             }),
             // Skip the leading clause keyword (varies by call site)
-            Rule::kw_constants | Rule::kw_variables | Rule::kw_any => {}
+            Rule::kw_sets | Rule::kw_constants | Rule::kw_variables | Rule::kw_any => {}
             _ => {
                 return Err(ParseError::UnexpectedRule {
                     expected: "identifier".to_string(),
@@ -567,72 +567,6 @@ fn collect_named_elements_from_clause(
         }
     }
     Ok(elements)
-}
-
-/// Parse a set declaration (deferred or enumerated)
-fn parse_set_declaration(pair: pest::iterators::Pair<Rule>) -> Result<SetDeclaration, ParseError> {
-    let span = Some(Span::from_pest(pair.as_span()));
-    let mut inner = pair.into_inner();
-    let name_pair = inner.next().ok_or(ParseError::MissingVariable)?;
-    let name = declared_name(&name_pair)?;
-
-    // Check if there's an '=' followed by enumerated elements
-    let mut elements = Vec::new();
-    let mut has_eq = false;
-    for p in inner {
-        match p.as_rule() {
-            Rule::op_eq => {
-                has_eq = true;
-            }
-            Rule::identifier => {
-                elements.push(declared_name(&p)?);
-            }
-            Rule::lbrace | Rule::rbrace | Rule::comma => {}
-            _ => {
-                return Err(ParseError::UnexpectedRule {
-                    expected: "set element identifier or delimiter".to_string(),
-                    found: format!("{:?}", p.as_rule()),
-                });
-            }
-        }
-    }
-
-    if has_eq {
-        Ok(SetDeclaration::Enumerated {
-            name,
-            elements,
-            comment: None,
-            span,
-        })
-    } else {
-        Ok(SetDeclaration::Deferred {
-            name,
-            comment: None,
-            span,
-        })
-    }
-}
-
-/// Collect set declarations from a sets clause
-fn collect_set_declarations(
-    pair: pest::iterators::Pair<Rule>,
-) -> Result<Vec<SetDeclaration>, ParseError> {
-    let mut declarations = Vec::new();
-    for p in pair.into_inner() {
-        match p.as_rule() {
-            Rule::kw_sets => {}
-            Rule::set_declaration => {
-                declarations.push(parse_set_declaration(p)?);
-            }
-            _ => {
-                return Err(ParseError::UnexpectedRule {
-                    expected: "set_declaration".to_string(),
-                    found: format!("{:?}", p.as_rule()),
-                });
-            }
-        }
-    }
-    Ok(declarations)
 }
 
 /// Collect labeled predicates from a clause pair, skipping the keyword
@@ -917,7 +851,9 @@ fn parse_context(pair: pest::iterators::Pair<Rule>) -> Result<Component, ParseEr
                         .extend(collect_identifiers_from_clause(pair)?);
                 }
                 Rule::context_clause_sets => {
-                    context.sets.extend(collect_set_declarations(pair)?);
+                    context
+                        .sets
+                        .extend(collect_named_elements_from_clause(pair)?);
                 }
                 Rule::context_clause_constants => {
                     context
@@ -3210,6 +3146,23 @@ fn recover_identifiers(
     }
 }
 
+/// Recover carrier sets without promoting the elements of a rejected
+/// Classical-B declaration such as `S = {a, b}` to carrier sets of their own.
+fn recover_sets(
+    text: &RecoveryText,
+    bound: usize,
+    positions: &[RecoveryPosition],
+) -> RecoveredClause<Vec<(String, Span)>> {
+    let mut recovered = recover_identifiers(text, KeywordId::Sets, bound, positions);
+    if let Some(region) = recovered.region
+        && let Some(relative) = text.masked[region.span.start..region.span.end].find('=')
+    {
+        let equals = region.span.start + relative;
+        recovered.data.retain(|(_, span)| span.end <= equals);
+    }
+    recovered
+}
+
 /// Recover every occurrence of one component-level dependency clause.
 ///
 /// The ordinary recovery AST keeps the first clause region because duplicate
@@ -3891,15 +3844,11 @@ fn parse_context_with_recovery(
     let positions = recovery_clause_positions(text, scope, 0, bound);
     let extends = recover_identifiers(text, KeywordId::Extends, bound, &positions);
     context.extends = extends.data.into_iter().map(|(name, _)| name).collect();
-    let sets = recover_identifiers(text, KeywordId::Sets, bound, &positions);
+    let sets = recover_sets(text, bound, &positions);
     context.sets.extend(
         sets.data
             .into_iter()
-            .map(|(name, span)| SetDeclaration::Deferred {
-                name,
-                comment: None,
-                span: Some(span),
-            }),
+            .map(|(name, span)| NamedElement::with_span(name, span)),
     );
     let constants = recover_identifiers(text, KeywordId::Constants, bound, &positions);
     context.constants = constants

@@ -7,7 +7,7 @@
 
 use std::collections::HashMap;
 
-use rossi::{Context, LabeledPredicate, NamedElement, SetDeclaration};
+use rossi::{Context, LabeledPredicate, NamedElement};
 
 use crate::checked_predicate::check_labeled_predicate;
 use crate::handles::HandleUri;
@@ -68,18 +68,16 @@ pub fn check_context(
     }
     // Filter duplicate identifiers / axiom labels per the SC drop semantics
     // documented in `crate::duplicates` (identifiers drop every occurrence;
-    // axiom labels keep the first). Enumerated set *elements* have no SC
-    // declaration of their own, so for them only the up-front diagnostic
-    // applies.
+    // axiom labels keep the first).
     let dups = crate::duplicates::context_duplicates(ctx);
     let dup_ids = dups.identifiers.names;
     let dup_axiom_labels = dups.axiom_labels.names;
 
     for set in &ctx.sets {
-        if dup_ids.contains(set.name()) {
+        if dup_ids.contains(&set.name) {
             continue;
         }
-        env.add_carrier_set(set.name());
+        env.add_carrier_set(&set.name);
     }
 
     // Dropped 2nd+ occurrences of a duplicated axiom label must not
@@ -146,7 +144,7 @@ pub fn check_context(
     let mut carrier_sets: Vec<CarrierSetDecl> = ctx
         .sets
         .iter()
-        .filter(|s| !dup_ids.contains(s.name()))
+        .filter(|s| !dup_ids.contains(&s.name))
         .map(|s| build_carrier_set_decl(&pc.rodin_ids, &file_root, s))
         .collect();
     carrier_sets.sort_by(|a, b| a.name.cmp(&b.name));
@@ -273,9 +271,9 @@ fn build_extends_decls(
 fn build_carrier_set_decl(
     ids: &RodinIds,
     file_root: &HandleUri,
-    set: &SetDeclaration,
+    set: &NamedElement,
 ) -> CarrierSetDecl {
-    let name = set.name();
+    let name = &set.name;
     CarrierSetDecl {
         name: name.to_string(),
         ty: Type::carrier_set_type(name),

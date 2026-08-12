@@ -32,7 +32,7 @@ pub fn clear_spans(component: &mut Component) {
             // source is reformatted, so drop them for AST comparison.
             ctx.clauses.clear();
             for set in &mut ctx.sets {
-                *set.span_mut() = None;
+                set.span = None;
             }
             for constant in &mut ctx.constants {
                 constant.span = None;

@@ -7,7 +7,7 @@
 
 use super::{
     ClauseRegion, Component, Context, Event, FileMetadata, InitialisationEvent, LabeledAction,
-    LabeledPredicate, Machine, NamedElement, SetDeclaration, Span,
+    LabeledPredicate, Machine, NamedElement, Span,
 };
 
 /// A mutable AST visitor whose methods recurse by default.
@@ -22,10 +22,6 @@ pub trait VisitMut {
 
     fn visit_machine(&mut self, machine: &mut Machine) {
         walk_machine(self, machine);
-    }
-
-    fn visit_set_declaration(&mut self, set: &mut SetDeclaration) {
-        walk_set_declaration(self, set);
     }
 
     fn visit_named_element(&mut self, element: &mut NamedElement) {
@@ -72,7 +68,7 @@ pub fn walk_component<V: VisitMut + ?Sized>(visitor: &mut V, component: &mut Com
 
 pub fn walk_context<V: VisitMut + ?Sized>(visitor: &mut V, context: &mut Context) {
     for set in &mut context.sets {
-        visitor.visit_set_declaration(set);
+        visitor.visit_named_element(set);
     }
     for constant in &mut context.constants {
         visitor.visit_named_element(constant);
@@ -113,10 +109,6 @@ pub fn walk_machine<V: VisitMut + ?Sized>(visitor: &mut V, machine: &mut Machine
     if let Some(metadata) = &mut machine.metadata {
         visitor.visit_file_metadata(metadata);
     }
-}
-
-pub fn walk_set_declaration<V: VisitMut + ?Sized>(visitor: &mut V, set: &mut SetDeclaration) {
-    visit_optional_span(visitor, set.span_mut());
 }
 
 pub fn walk_named_element<V: VisitMut + ?Sized>(visitor: &mut V, element: &mut NamedElement) {

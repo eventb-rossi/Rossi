@@ -512,7 +512,7 @@ mod tests {
         assert_eq!(pc.component.name(), "C1");
         // The carrier set carries a source span (textual parse).
         match &pc.component {
-            Component::Context(c) => assert!(c.sets[0].span().is_some()),
+            Component::Context(c) => assert!(c.sets[0].span.is_some()),
             other => panic!("expected a context, got {other:?}"),
         }
     }

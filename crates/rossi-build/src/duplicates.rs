@@ -100,10 +100,10 @@ impl<'a> FirstKept<'a> {
     }
 }
 
-/// The context namespaces: one shared identifier namespace (carrier sets,
-/// their enumerated elements, constants) and axiom labels.
+/// The context namespaces: one shared identifier namespace (carrier sets and
+/// constants) and axiom labels.
 pub(crate) struct ContextDuplicates {
-    /// EB021 — carrier set / set element / constant identifiers.
+    /// EB021 — carrier set / constant identifiers.
     pub(crate) identifiers: NamespaceDuplicates,
     /// EB022 — axiom labels.
     pub(crate) axiom_labels: NamespaceDuplicates,
@@ -126,16 +126,6 @@ pub(crate) fn action_labels(
     actions
         .iter()
         .filter_map(|a| a.label.as_deref().map(|l| (l, a.span)))
-}
-
-/// Byte span of a set's *name*. The declaration span starts at the name but
-/// runs through any trailing comment to the next declaration, which would
-/// over-underline a name-level diagnostic — clip it to the name's length.
-pub(crate) fn set_name_span(set: &rossi::SetDeclaration) -> Option<Span> {
-    set.span().map(|s| Span {
-        start: s.start,
-        end: s.start + set.name().len(),
-    })
 }
 
 /// Collect one namespace: one `Error` diagnostic per name that occurs more
@@ -263,18 +253,14 @@ pub(crate) fn event_duplicates<'a>(
     }
 }
 
-/// Check the context namespaces of `c`. Carrier sets, their enumerated
-/// elements, and constants share one identifier namespace, so a set and a
-/// constant with the same name collide. (In Event-B, enumerated set elements
-/// are constants.) Enumerated elements have no per-element span, so they
-/// anchor on the set declaration.
+/// Check the context namespaces of `c`. Carrier sets and constants share one
+/// identifier namespace, so a set and a constant with the same name collide.
 #[must_use]
 pub(crate) fn context_duplicates(c: &Context) -> ContextDuplicates {
     let scope = format!("context `{}`", c.name);
     let mut ids: Vec<(&str, Option<Span>)> = Vec::new();
     for set in &c.sets {
-        ids.push((set.name(), set_name_span(set)));
-        ids.extend(set.elements().iter().map(|e| (e.as_str(), set.span())));
+        ids.push((set.name.as_str(), set.span));
     }
     ids.extend(c.constants.iter().map(|k| (k.name.as_str(), k.span)));
     ContextDuplicates {
@@ -528,11 +514,7 @@ mod tests {
     fn carrier_set_and_constant_sharing_name_is_flagged_once() {
         // Carrier sets and constants share one identifier namespace.
         let mut c = Context::new("C".into());
-        c.sets = vec![rossi::SetDeclaration::Deferred {
-            name: "S".into(),
-            comment: None,
-            span: None,
-        }];
+        c.sets = vec![nv("S")];
         c.constants = vec![nv("S")];
         let diags = component_duplicate_diagnostics(&Component::Context(c));
         let ids = dups_of(&diags, RuleId::DuplicateIdentifier);

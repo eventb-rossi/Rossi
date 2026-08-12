@@ -103,7 +103,7 @@ fn reserved_words_rejected_as_action_targets() {
 fn reserved_words_rejected_in_declarations() {
     assert_reserved(parse, "context c0 constants dom end", "dom");
     assert_reserved(parse, "context c0 sets card end", "card");
-    assert_reserved(parse, "context c0 sets S = {a, succ} end", "succ");
+    assert_reserved(parse, "context c0 sets S constants a succ end", "succ");
     // Atoms and literals can't be declared either.
     assert_reserved(parse, "context c0 constants pred end", "pred");
     assert_reserved(parse, "context c0 constants TRUE end", "TRUE");

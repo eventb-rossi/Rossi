@@ -35,7 +35,6 @@ use rossi::{
 };
 
 use crate::ast_util::lhs_variables;
-use crate::duplicates::set_name_span;
 use crate::project::Project;
 use crate::sc::identifier_walker::{
     collect_referenced_in_action_rhs, collect_referenced_in_action_rhs_with_locals,
@@ -335,13 +334,9 @@ fn lint_shadowed_names_context(c: &Context) -> Vec<Diagnostic> {
         diags.extend(shadowed_name_diag(
             &c.name,
             "carrier set",
-            set.name(),
-            set_name_span(set),
+            &set.name,
+            set.span,
         ));
-        // Enumerated elements have no per-element span; anchor on the set.
-        for e in set.elements() {
-            diags.extend(shadowed_name_diag(&c.name, "set element", e, set.span()));
-        }
     }
     for k in &c.constants {
         diags.extend(shadowed_name_diag(&c.name, "constant", &k.name, k.span));
@@ -986,11 +981,7 @@ mod tests {
             nv("OR"),
             nv("price"),
         ];
-        c.sets = vec![rossi::SetDeclaration::Deferred {
-            name: "NAT".into(),
-            comment: None,
-            span: None,
-        }];
+        c.sets = vec![nv("NAT")];
         c.axioms = vec![lp("ax1", pred("price = 0"))];
 
         let diags = run(&proj(vec![pc("C.buc", Component::Context(c))]));
@@ -1011,11 +1002,7 @@ mod tests {
         let set_span = Span { start: 11, end: 14 };
         let const_span = Span { start: 30, end: 33 };
         let mut c = Context::new("C".into());
-        c.sets = vec![rossi::SetDeclaration::Deferred {
-            name: "POW".into(),
-            comment: None,
-            span: Some(set_span),
-        }];
+        c.sets = vec![rossi::NamedElement::with_span("POW".into(), set_span)];
         c.constants = vec![rossi::NamedElement::with_span("NAT".into(), const_span)];
 
         let diags = run_component(&Component::Context(c));

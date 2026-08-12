@@ -74,7 +74,7 @@ fn test_base_model_context_structure() {
         panic!("Expected the context C1 first, got {components:?}");
     };
     assert_eq!(ctx.name, "C1");
-    let set_names: Vec<&str> = ctx.sets.iter().map(|s| s.name()).collect();
+    let set_names: Vec<&str> = ctx.sets.iter().map(|s| s.name.as_str()).collect();
     assert_eq!(
         set_names,
         vec!["Union", "Names", "Accesses", "AccessRights"]

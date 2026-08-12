@@ -47,7 +47,7 @@ fn test_recovery_context_with_invalid_axiom() {
     let ctx = expect_context(&result);
     assert_eq!(ctx.name, "test");
     assert_eq!(ctx.sets.len(), 1);
-    assert_eq!(ctx.sets[0].name(), "MySet");
+    assert_eq!(ctx.sets[0].name, "MySet");
     assert_eq!(ctx.constants.len(), 1);
     assert_eq!(ctx.constants[0].name, "c1");
     // Should have recovered the valid axioms
@@ -1183,6 +1183,24 @@ fn test_recovery_set_error_does_not_leak_into_axioms_issue_32() {
 }
 
 #[test]
+fn test_recovery_rejects_enumerated_sets_without_promoting_elements() {
+    let source = concat!(
+        "CONTEXT phases\n",
+        "SETS\n",
+        "    CYCLE_PHASE = {idle, washing, complete}\n",
+        "END\n",
+    );
+
+    let result = parse_with_recovery(source);
+    assert!(result.has_recovered(), "expected a recovered syntax error");
+    assert_eq!(result.errors.len(), 1, "expected one syntax error");
+
+    let ctx = expect_context(&result);
+    let set_names: Vec<&str> = ctx.sets.iter().map(|set| set.name.as_str()).collect();
+    assert_eq!(set_names, ["CYCLE_PHASE"]);
+}
+
+#[test]
 fn test_recovery_label_less_predicates_are_not_lost() {
     // Bare, label-less predicates (one per line) must still be recovered when
     // another clause forces recovery: the label is optional in the grammar, so
@@ -1439,7 +1457,7 @@ END
     // Recovered payloads: names from declaration clauses, predicates from AXIOMS
     // and THEOREMS (the latter flagged, lowered into the same axioms vec).
     assert_eq!(ctx.extends, vec!["base1".to_string(), "base2".to_string()]);
-    let set_names: Vec<&str> = ctx.sets.iter().map(|s| s.name()).collect();
+    let set_names: Vec<&str> = ctx.sets.iter().map(|s| s.name.as_str()).collect();
     assert_eq!(set_names, ["S", "T"]);
     assert_eq!(ctx.constants.len(), 1);
     assert_eq!(ctx.constants[0].name, "k");

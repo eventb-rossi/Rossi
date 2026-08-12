@@ -69,7 +69,7 @@ pub fn enumerate_symbols(component: &Component) -> Vec<SymbolRef> {
         Component::Context(context) => {
             for set in &context.sets {
                 symbols.push(SymbolRef {
-                    name: set.name().to_string(),
+                    name: set.name.clone(),
                     kind: SymbolKind::Set,
                     owner: context.name.clone(),
                     event: None,

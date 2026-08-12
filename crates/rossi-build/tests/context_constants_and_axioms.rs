@@ -109,6 +109,38 @@ fn accurate_is_true_when_all_constants_are_inferred() {
     assert!(result.is_ok(), "diagnostics: {:?}", result.diagnostics);
 }
 
+#[test]
+fn canonical_enumeration_builds_set_constants_and_partition() {
+    let source = r#"
+CONTEXT phases
+SETS
+    CYCLE_PHASE
+CONSTANTS
+    idle washing rinsing drying complete
+AXIOMS
+    @axm1 partition(CYCLE_PHASE, {idle}, {washing}, {rinsing}, {drying}, {complete})
+END
+"#;
+    let components = ProjectComponent::from_eventb("phases.eventb", source).unwrap();
+    let result = build(&Project::new("phases", components));
+
+    assert!(result.is_ok(), "diagnostics: {:?}", result.diagnostics);
+    let xml = &result.files[0].contents;
+    assert!(xml.contains(r#"<org.eventb.core.scCarrierSet name="CYCLE_PHASE""#));
+    for constant in ["idle", "washing", "rinsing", "drying", "complete"] {
+        assert!(
+            xml.contains(&format!(r#"<org.eventb.core.scConstant name="{constant}""#)),
+            "missing {constant} in:\n{xml}"
+        );
+    }
+    assert!(
+        xml.contains(
+            r#"org.eventb.core.predicate="partition(CYCLE_PHASE,{idle},{washing},{rinsing},{drying},{complete})""#
+        ),
+        "missing partition axiom in:\n{xml}"
+    );
+}
+
 /// Group S: a context axiom of the shape
 /// `c = (λ x · x = ∅ ∣ 0) ∪ (λ x⦂T · …)` must type the first
 /// lambda's binder by lifting the function type from the typed

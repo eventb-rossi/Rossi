@@ -7,7 +7,7 @@ pub mod event;
 pub mod machine;
 pub(crate) mod visit_mut;
 
-pub use context::{Context, SetDeclaration};
+pub use context::Context;
 pub use event::{Event, EventStatus, InitialisationEvent};
 pub use machine::Machine;
 pub(crate) use visit_mut::VisitMut;

@@ -41,7 +41,6 @@
 //! let output = printer.print_component(&component);
 //! ```
 
-use crate::ast::context::SetDeclaration;
 use crate::ast::*;
 use crate::comments;
 use crate::op_info;
@@ -264,15 +263,12 @@ impl PrettyPrinter {
         if !context.sets.is_empty() {
             writeln!(output, "SETS").unwrap();
             for set in &context.sets {
-                let line = match set {
-                    SetDeclaration::Deferred { name, .. } => {
-                        format!("{}{}", self.indent, name)
-                    }
-                    SetDeclaration::Enumerated { name, elements, .. } => {
-                        format!("{}{} = {{{}}}", self.indent, name, elements.join(", "))
-                    }
-                };
-                self.writeln_commented(&mut output, &line, set.comment(), &self.indent);
+                self.writeln_commented(
+                    &mut output,
+                    &format!("{}{}", self.indent, set.name),
+                    set.comment.as_deref(),
+                    &self.indent,
+                );
             }
         }
 

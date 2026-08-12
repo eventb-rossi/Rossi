@@ -84,7 +84,7 @@ impl CompletionContext {
                 self.constants
                     .extend(context.constants.iter().map(|c| c.name.clone()));
                 self.sets
-                    .extend(context.sets.iter().map(|s| s.name().to_string()));
+                    .extend(context.sets.iter().map(|s| s.name.clone()));
             }
             Component::Machine(machine) => {
                 self.variables

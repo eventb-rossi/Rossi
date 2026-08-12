@@ -21,7 +21,7 @@ fn test_counter_context() {
     let ctx = common::parse_context(source);
     assert_eq!(ctx.name, "counter_ctx");
     assert_eq!(ctx.sets.len(), 1);
-    assert_eq!(ctx.sets[0].name(), "STATUS");
+    assert_eq!(ctx.sets[0].name, "STATUS");
     assert_eq!(ctx.constants.len(), 1);
     assert_eq!(ctx.constants[0].name, "max_value");
     assert_eq!(ctx.axioms.len(), 1);
@@ -379,11 +379,11 @@ fn test_mixed_labeled_unlabeled_actions() {
 }
 
 // ============================================================================
-// Feature 1.1: Enumerated sets
+// Rodin-compatible enumerated sets
 // ============================================================================
 
 #[test]
-fn test_enumerated_set_declaration() {
+fn test_enumerated_sets_declaration_is_rejected() {
     let source = r#"
     CONTEXT colors
     SETS
@@ -391,42 +391,35 @@ fn test_enumerated_set_declaration() {
     END
     "#;
 
-    let ctx = common::parse_context(source);
-    assert_eq!(ctx.sets.len(), 1);
-    assert_eq!(ctx.sets[0].name(), "COLOR");
-    match &ctx.sets[0] {
-        rossi::SetDeclaration::Enumerated { name, elements, .. } => {
-            assert_eq!(name, "COLOR");
-            assert_eq!(elements, &["red", "green", "blue"]);
-        }
-        _ => panic!("Expected Enumerated set declaration"),
-    }
+    assert!(
+        parse(source).is_err(),
+        "Classical-B enumerated SETS syntax must not parse as Event-B"
+    );
 }
 
 #[test]
-fn test_mixed_deferred_and_enumerated_sets() {
+fn test_enumerated_set_uses_constants_and_partition() {
     let source = r#"
-    CONTEXT mixed
+    CONTEXT colors
     SETS
-        PERSON
-        STATUS = {active, inactive}
+        COLOR
+    CONSTANTS
+        red green blue
+    AXIOMS
+        @axm1 partition(COLOR, {red}, {green}, {blue})
     END
     "#;
 
     let ctx = common::parse_context(source);
-    assert_eq!(ctx.sets.len(), 2);
-    assert_eq!(ctx.sets[0].name(), "PERSON");
-    assert!(matches!(
-        &ctx.sets[0],
-        rossi::SetDeclaration::Deferred { .. }
-    ));
-    assert_eq!(ctx.sets[1].name(), "STATUS");
-    match &ctx.sets[1] {
-        rossi::SetDeclaration::Enumerated { elements, .. } => {
-            assert_eq!(elements, &["active", "inactive"]);
-        }
-        _ => panic!("Expected Enumerated set"),
-    }
+    assert_eq!(ctx.sets[0].name, "COLOR");
+    assert_eq!(
+        ctx.constants
+            .iter()
+            .map(|constant| constant.name.as_str())
+            .collect::<Vec<_>>(),
+        ["red", "green", "blue"]
+    );
+    assert_eq!(ctx.axioms.len(), 1);
 }
 
 // ============================================================================

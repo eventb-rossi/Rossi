@@ -13,7 +13,7 @@ fn test_parse_context_xml_from_file() {
     if let Component::Context(ctx) = result.unwrap() {
         // Name comes from filename, not XML body; parse_xml alone yields "unnamed_context".
         assert_eq!(ctx.sets.len(), 1);
-        assert_eq!(ctx.sets[0].name(), "STATUS");
+        assert_eq!(ctx.sets[0].name, "STATUS");
         assert_eq!(ctx.constants.len(), 1);
         assert_eq!(ctx.constants[0].name, "max_value");
         assert_eq!(ctx.axioms.len(), 2);
@@ -96,7 +96,7 @@ fn test_parse_context_with_extends_xml() {
         assert_eq!(ctx.extends.len(), 1);
         assert_eq!(ctx.extends[0], "base_ctx");
         assert_eq!(ctx.sets.len(), 1);
-        assert_eq!(ctx.sets[0].name(), "STATUS");
+        assert_eq!(ctx.sets[0].name, "STATUS");
     } else {
         panic!("Expected Context component");
     }

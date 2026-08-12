@@ -43,7 +43,7 @@ fn comments_attach_per_element_kind() {
     let src = "CONTEXT c // ctx
 SETS
     S // deferred set
-    T = {a, b} // enumerated set
+    T // another set
 CONSTANTS
     k // a constant
 AXIOMS
@@ -52,8 +52,8 @@ END
 ";
     let ctx = parse_context(src);
     assert_eq!(ctx.comment.as_deref(), Some("ctx"));
-    assert_eq!(ctx.sets[0].comment(), Some("deferred set"));
-    assert_eq!(ctx.sets[1].comment(), Some("enumerated set"));
+    assert_eq!(ctx.sets[0].comment.as_deref(), Some("deferred set"));
+    assert_eq!(ctx.sets[1].comment.as_deref(), Some("another set"));
     assert_eq!(ctx.constants[0].comment.as_deref(), Some("a constant"));
     assert_eq!(ctx.axioms[0].comment.as_deref(), Some("an axiom"));
 }
@@ -332,10 +332,7 @@ fn collect_comments(component: &Component) -> Vec<(String, String)> {
         Component::Context(ctx) => {
             out.extend(norm(&format!("context {}", ctx.name), &ctx.comment));
             for s in &ctx.sets {
-                out.extend(norm(
-                    &format!("set {}", s.name()),
-                    &s.comment().map(str::to_string),
-                ));
+                out.extend(norm(&format!("set {}", s.name), &s.comment));
             }
             for c in &ctx.constants {
                 out.extend(norm(&format!("constant {}", c.name), &c.comment));

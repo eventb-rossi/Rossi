@@ -97,14 +97,13 @@ impl HoverContext {
                     }
                 }
                 for set in &context.sets {
-                    self.sets
-                        .push((set.name().to_string(), context.name.clone()));
-                    let constraints = collect_constraints(&context.axioms, set.name());
+                    self.sets.push((set.name.clone(), context.name.clone()));
+                    let constraints = collect_constraints(&context.axioms, &set.name);
                     if !constraints.is_empty() {
                         self.constraints
                             .entry(context.name.clone())
                             .or_default()
-                            .insert(set.name().to_string(), constraints);
+                            .insert(set.name.clone(), constraints);
                     }
                 }
             }
@@ -588,7 +587,7 @@ const KEYWORD_DOCS: &[KeywordDocEntry] = &[
     (
         KeywordId::Sets,
         "SETS",
-        "Declares carrier sets (enumerated or deferred).\n\n```eventb\nSETS\n    STATUS\n    COLORS\n```",
+        "Declares carrier sets.\n\n```eventb\nSETS\n    STATUS\n    COLORS\n```",
     ),
     (
         KeywordId::Constants,

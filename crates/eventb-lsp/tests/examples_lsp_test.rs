@@ -903,7 +903,7 @@ fn all_models_selection_ranges_nest() {
                 .constants
                 .iter()
                 .map(|c| c.name.as_str())
-                .chain(c.sets.iter().map(|s| s.name()))
+                .chain(c.sets.iter().map(|s| s.name.as_str()))
                 .collect(),
         };
         // Declared identifiers must always be locatable in the printed text;

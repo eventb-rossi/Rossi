@@ -506,8 +506,8 @@ pub fn declaration_span(component: &Component, name: &str) -> Option<Span> {
         Component::Context(ctx) => ctx
             .sets
             .iter()
-            .find(|s| s.name() == name)
-            .and_then(|s| s.span())
+            .find(|s| s.name == name)
+            .and_then(|s| s.span)
             .or_else(|| {
                 ctx.constants
                     .iter()

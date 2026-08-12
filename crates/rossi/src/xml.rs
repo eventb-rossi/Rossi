@@ -21,7 +21,6 @@
 //! let component = parse_xml(xml).unwrap();
 //! ```
 
-use crate::ast::context::SetDeclaration;
 use crate::ast::{
     Context, Event, EventStatus, FileMetadata, InitialisationEvent, LabeledPredicate, Machine,
     NamedElement,
@@ -509,11 +508,7 @@ fn parse_context_xml_with_name(
                                 &format!("carrier set in {}", origin),
                             )?;
                             let comment = get_xml_attr(&e, b"comment")?;
-                            sets.push(SetDeclaration::Deferred {
-                                name: set_name,
-                                comment,
-                                span: None,
-                            });
+                            sets.push(NamedElement::with_comment(set_name, comment));
                         }
                     }
                     "org.eventb.core.constant" => {
@@ -1279,10 +1274,10 @@ pub fn parse_zip_file_with_recovery<P: AsRef<std::path::Path>>(
 ///
 /// # Example
 /// ```
-/// use rossi::{Context, Component, SetDeclaration, to_xml};
+/// use rossi::{Context, Component, NamedElement, to_xml};
 ///
 /// let mut ctx = Context::new("test_ctx".to_string());
-/// ctx.sets.push(SetDeclaration::Deferred { name: "STATUS".to_string(), comment: None, span: None });
+/// ctx.sets.push(NamedElement::new("STATUS".to_string()));
 ///
 /// let xml = to_xml(&Component::Context(ctx));
 /// assert!(xml.contains("<org.eventb.core.contextFile"));
@@ -1650,8 +1645,8 @@ fn context_to_xml(ctx: &Context) -> String {
 
     // Sets
     for set in &ctx.sets {
-        let set_comment = format_comment_attr(set.comment());
-        let esc = escape_xml(set.name());
+        let set_comment = format_comment_attr(set.comment.as_deref());
+        let esc = escape_xml(&set.name);
         xml.push_str(&format!(
             "    <org.eventb.core.carrierSet name=\"{esc}\" org.eventb.core.identifier=\"{esc}\"{set_comment}/>\n"
         ));
@@ -2064,8 +2059,8 @@ mod tests {
 
         if let Component::Context(ctx) = result.unwrap() {
             assert_eq!(ctx.sets.len(), 2);
-            assert_eq!(ctx.sets[0].name(), "STATUS");
-            assert_eq!(ctx.sets[1].name(), "PERSON");
+            assert_eq!(ctx.sets[0].name, "STATUS");
+            assert_eq!(ctx.sets[1].name, "PERSON");
         } else {
             panic!("Expected Context component");
         }
@@ -2131,16 +2126,8 @@ mod tests {
             name: "counter_ctx".to_string(),
             extends: vec![],
             sets: vec![
-                SetDeclaration::Deferred {
-                    name: "STATUS".to_string(),
-                    comment: None,
-                    span: None,
-                },
-                SetDeclaration::Deferred {
-                    name: "PERSON".to_string(),
-                    comment: None,
-                    span: None,
-                },
+                NamedElement::new("STATUS".to_string()),
+                NamedElement::new("PERSON".to_string()),
             ],
             constants: vec![],
             axioms: vec![],
