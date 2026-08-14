@@ -680,8 +680,13 @@ event_status = {
     kw_status ~ (kw_ordinary | kw_convergent | kw_anticipated)
 }
 
+// The keywords that may follow a refines target list (the clauses an
+// event body can open next); silent, negative-lookahead only.
+event_refines_follow_kw = _{ kw_status | kw_any | event_section_kw }
+
+// One or more abstract event names: several targets merge them.
 event_refines = {
-    kw_refines ~ component_name
+    kw_refines ~ component_name ~ (!event_refines_follow_kw ~ component_name)*
 }
 
 // Follow-set guard (single source of truth): the keywords that may open the
@@ -725,7 +730,8 @@ event_inline_status = { kw_ordinary | kw_convergent | kw_anticipated }
 event = {
     event_inline_status?
   ~ kw_event ~ component_name
-  ~ ((kw_extends | kw_refines) ~ component_name)?
+  ~ (kw_extends ~ component_name
+      | kw_refines ~ component_name ~ (!event_refines_follow_kw ~ component_name)*)?
   ~ event_body ~ kw_end
 }
 

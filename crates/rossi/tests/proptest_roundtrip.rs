@@ -583,7 +583,8 @@ fn arb_event() -> impl Strategy<Value = Event> {
     (
         arb_event_name(),
         arb_event_status(),
-        proptest::bool::ANY,
+        // Refines target count: 0 = a new event, 2+ = a merging one.
+        0usize..3,
         proptest::sample::subsequence(
             vec!["p1".to_string(), "p2".to_string(), "p3".to_string()],
             0..3,
@@ -594,11 +595,13 @@ fn arb_event() -> impl Strategy<Value = Event> {
         proptest::collection::vec(arb_labeled_action(), 0..3),
     )
         .prop_map(
-            |(name, status, has_refines, parameters, guards, with, witnesses, actions)| {
+            |(name, status, refines_targets, parameters, guards, with, witnesses, actions)| {
                 let mut event = Event::new(name.clone());
                 event.status = status;
-                if has_refines {
-                    event.refines = Some(format!("{name}_abs"));
+                if refines_targets > 0 {
+                    event.refines = (0..refines_targets)
+                        .map(|i| NamedElement::new(format!("{name}_abs{i}")))
+                        .collect();
                     event.with = with;
                 }
                 event.parameters = parameters.into_iter().map(NamedElement::new).collect();

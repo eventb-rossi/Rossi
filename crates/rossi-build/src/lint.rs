@@ -271,7 +271,7 @@ fn lint_new_event_assigns_inherited(m: &Machine, inherited: &BTreeSet<&str>) -> 
         // A refining or extending event legitimately refines an abstract
         // event that may change the variable; only genuinely new events are
         // constrained to leave inherited state untouched.
-        if e.refines.is_some() || e.extended {
+        if !e.refines.is_empty() || e.extended {
             continue;
         }
         // Report each inherited variable at most once per event, anchored on
@@ -533,7 +533,10 @@ fn extends_chain_root_first<'a>(e: &'a Event, ancestors: &[&'a Machine]) -> Vec<
     let mut chain = Vec::new();
     let mut cur = e;
     for anc in ancestors {
-        let target = cur.refines.as_deref().unwrap_or(cur.name.as_str());
+        let target = cur
+            .refines
+            .last()
+            .map_or(cur.name.as_str(), |t| t.name.as_str());
         let Some(ev) = anc.events.iter().find(|ae| ae.name == target) else {
             break;
         };
@@ -1181,7 +1184,7 @@ mod tests {
         m2.events = vec![Event {
             name: "step".into(),
             status: None,
-            refines: None,
+            refines: Vec::new(),
             parameters: Vec::new(),
             guards: Vec::new(),
             with: Vec::new(),
@@ -1220,7 +1223,10 @@ mod tests {
     fn extends_event(name: &str, target: Option<&str>) -> Event {
         let mut e = Event::new(name.into());
         e.extended = true;
-        e.refines = target.map(Into::into);
+        e.refines = target
+            .map(|t: &str| NamedElement::new(t.into()))
+            .into_iter()
+            .collect();
         e
     }
 
@@ -1271,7 +1277,7 @@ mod tests {
         m1.refines = Some("M0".into());
         m1.variables = vec![nv("v")];
         let mut bar = Event::new("bar".into());
-        bar.refines = Some("foo".into());
+        bar.refines = vec![NamedElement::new("foo".into())];
         m1.events = vec![bar];
 
         let diags = run(&proj(vec![
@@ -1476,7 +1482,7 @@ mod tests {
         m.events = vec![Event {
             name: "evt".into(),
             status: None,
-            refines: None,
+            refines: Vec::new(),
             parameters: Vec::new(),
             guards: Vec::new(),
             with: Vec::new(),
@@ -1509,7 +1515,7 @@ mod tests {
         m.events = vec![Event {
             name: "evt".into(),
             status: None,
-            refines: None,
+            refines: Vec::new(),
             parameters: Vec::new(),
             guards: Vec::new(),
             with: Vec::new(),
@@ -1587,7 +1593,7 @@ mod tests {
         m.events = vec![Event {
             name: "evt".into(),
             status: None,
-            refines: None,
+            refines: Vec::new(),
             parameters: vec![nv("x")],
             guards: vec![lp("g1", pred("x = 0"))],
             with: Vec::new(),
@@ -1682,7 +1688,7 @@ mod tests {
         m2.refines = Some("M1".into());
         m2.variables = vec![nv("v")];
         let mut e = assigning_event("step", "v");
-        e.refines = Some("abstract_step".into());
+        e.refines = vec![NamedElement::new("abstract_step".into())];
         m2.events = vec![e];
 
         let diags = run(&proj(vec![

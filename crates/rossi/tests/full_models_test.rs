@@ -1178,7 +1178,10 @@ fn test_inline_event_header(
     let event = &m.events[0];
     assert_eq!(event.name, expected_name);
     assert_eq!(event.status, expected_status);
-    assert_eq!(event.refines.as_deref(), expected_refines);
+    assert_eq!(
+        event.refines.first().map(|t| t.name.as_str()),
+        expected_refines
+    );
     assert!(
         !event.extended,
         "inline refines should not set extended flag"
@@ -1245,5 +1248,50 @@ fn test_label_with_colon_suffix() {
         assert_eq!(c.axioms[0].label.as_deref(), Some("axm1"));
     } else {
         panic!("Expected Context");
+    }
+}
+
+#[test]
+fn test_event_refines_multiple_targets() {
+    // Merging syntax: several abstract event names after REFINES, in
+    // both the body clause and the inline header form.
+    let source = r#"
+    MACHINE refined
+    REFINES
+        abstract
+    VARIABLES
+        x
+    EVENTS
+        EVENT INITIALISATION
+        THEN
+            x := 0
+        END
+
+        EVENT setBoth
+        REFINES
+            setHeight setWidth
+        THEN
+            x := 17
+        END
+
+        EVENT alt refines a b
+        THEN
+            x := 1
+        END
+    END
+    "#;
+
+    let m = common::parse_machine(source);
+    let both = &m.events[0];
+    let targets: Vec<&str> = both.refines.iter().map(|t| t.name.as_str()).collect();
+    assert_eq!(targets, vec!["setHeight", "setWidth"]);
+    assert!(!both.extended);
+    let alt = &m.events[1];
+    let targets: Vec<&str> = alt.refines.iter().map(|t| t.name.as_str()).collect();
+    assert_eq!(targets, vec!["a", "b"]);
+    // Each target keeps its own span for navigation.
+    for t in both.refines.iter().chain(&alt.refines) {
+        let span = t.span.expect("target span");
+        assert_eq!(&source[span.start..span.end], t.name);
     }
 }

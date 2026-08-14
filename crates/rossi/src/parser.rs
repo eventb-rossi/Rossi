@@ -638,6 +638,15 @@ fn validate_unique_clause(
     Ok(())
 }
 
+/// A refines target as a named element carrying its source span.
+fn named_target(pair: &pest::iterators::Pair<Rule>) -> NamedElement {
+    NamedElement {
+        name: pair.as_str().to_string(),
+        comment: None,
+        span: Some(Span::from_pest(pair.as_span())),
+    }
+}
+
 /// Extract the label string from a `label` grammar rule pair
 fn extract_label(pair: pest::iterators::Pair<Rule>) -> Option<String> {
     pair.into_inner().next().and_then(|label_inner| {
@@ -1088,20 +1097,27 @@ fn parse_event(pair: pest::iterators::Pair<Rule>) -> Result<Event, ParseError> {
         event.name_span = Some(Span::from_pest(name_pair.as_span()));
     }
 
-    // Check for optional `extends identifier` or `refines identifier` before event_body
+    // Check for optional `extends identifier` or `refines identifier...`
+    // before event_body
     if let Some(peek) = inner.peek() {
         if peek.as_rule() == Rule::kw_extends {
             inner.next(); // consume kw_extends
             if let Some(parent_pair) = inner.next() {
                 event.extended = true;
-                event.refines = Some(parent_pair.as_str().to_string());
                 event.refines_span = Some(Span::from_pest(parent_pair.as_span()));
+                event.refines.push(named_target(&parent_pair));
             }
         } else if peek.as_rule() == Rule::kw_refines {
             inner.next(); // consume kw_refines
-            if let Some(parent_pair) = inner.next() {
-                event.refines = Some(parent_pair.as_str().to_string());
-                event.refines_span = Some(Span::from_pest(parent_pair.as_span()));
+            while inner
+                .peek()
+                .is_some_and(|p| p.as_rule() == Rule::component_name)
+            {
+                let parent_pair = inner.next().expect("peeked");
+                if event.refines_span.is_none() {
+                    event.refines_span = Some(Span::from_pest(parent_pair.as_span()));
+                }
+                event.refines.push(named_target(&parent_pair));
             }
         }
     }
@@ -1133,14 +1149,17 @@ fn parse_event(pair: pest::iterators::Pair<Rule>) -> Result<Event, ParseError> {
                     }
                 }
                 Rule::event_refines => {
-                    // `REFINES name` — capture the single target name and its span
-                    // so a cursor on the target can navigate to the abstract event.
-                    if let Some(p) = pair
+                    // `REFINES name ...` — capture every target name with its
+                    // span so a cursor on a target can navigate to the
+                    // abstract event.
+                    for p in pair
                         .into_inner()
-                        .find(|p| p.as_rule() == Rule::component_name)
+                        .filter(|p| p.as_rule() == Rule::component_name)
                     {
-                        event.refines = Some(p.as_str().to_string());
-                        event.refines_span = Some(Span::from_pest(p.as_span()));
+                        if event.refines_span.is_none() {
+                            event.refines_span = Some(Span::from_pest(p.as_span()));
+                        }
+                        event.refines.push(named_target(&p));
                     }
                 }
                 Rule::event_any => {
@@ -4376,7 +4395,7 @@ struct RecoveredEventRegion {
     header: usize,
     header_name: Option<(String, Span)>,
     is_initialisation: bool,
-    header_target: Option<(String, Span, bool)>,
+    header_target: Option<(Vec<(String, Span)>, bool)>,
     body_end: usize,
     positions: Vec<RecoveryPosition>,
 }
@@ -4406,7 +4425,8 @@ fn recovered_event_regions(
             .flatten();
         let body_start = header_target
             .as_ref()
-            .map_or(name_end, |(_, span, _)| span.end);
+            .and_then(|(targets, _)| targets.last())
+            .map_or(name_end, |(_, span)| span.end);
 
         // A line-anchored EVENT is the missing-END recovery fallback. Inline
         // headers are found after the preceding END advances `search` here.
@@ -4537,19 +4557,31 @@ fn event_header_target(
     text: &RecoveryText,
     name_end: usize,
     next_header: usize,
-) -> Option<(String, Span, bool)> {
+) -> Option<(Vec<(String, Span)>, bool)> {
     let header_tail = text.masked.get(name_end..next_header)?;
     let (keyword, keyword_span) = first_identifier_candidate(header_tail, name_end)?;
     let keyword = crate::keywords::lookup(keyword)?.id;
     if !matches!(keyword, KeywordId::Extends | KeywordId::Refines) {
         return None;
     }
-    first_identifier_candidate(
-        &text.masked[keyword_span.end..next_header],
-        keyword_span.end,
-    )
-    .filter(|(name, _)| crate::names::is_valid_component_name(name))
-    .map(|(name, span)| (name.to_string(), span, keyword == KeywordId::Extends))
+    let extended = keyword == KeywordId::Extends;
+    let mut targets = Vec::new();
+    let mut cursor = keyword_span.end;
+    while let Some((name, span)) =
+        first_identifier_candidate(&text.masked[cursor..next_header], cursor)
+    {
+        // The target list ends at the first body keyword; `extends`
+        // takes a single target.
+        if crate::keywords::lookup(name).is_some() || !crate::names::is_valid_component_name(name) {
+            break;
+        }
+        cursor = span.end;
+        targets.push((name.to_string(), span));
+        if extended {
+            break;
+        }
+    }
+    (!targets.is_empty()).then_some((targets, extended))
 }
 
 /// Recover a machine's events from the event region.
@@ -4627,9 +4659,15 @@ fn recover_events(
             let mut event = Event::new(name);
             event.span = Some(span);
             event.name_span = name_span;
-            if let Some((target, target_span, extended)) = header_target {
-                event.refines = Some(target);
-                event.refines_span = Some(target_span);
+            if let Some((targets, extended)) = header_target {
+                event.refines_span = targets.first().map(|(_, span)| *span);
+                for (name, span) in targets {
+                    event.refines.push(NamedElement {
+                        name,
+                        comment: None,
+                        span: Some(span),
+                    });
+                }
                 event.extended = extended;
             }
 
@@ -5324,7 +5362,7 @@ mod tests {
                 panic!("expected a machine");
             };
             let event = machine.events.first().expect("one event");
-            assert_eq!(event.refines.as_deref(), Some("f"));
+            assert_eq!(event.refines.first().map(|t| t.name.as_str()), Some("f"));
             assert_eq!(event.extended, extended);
             let span = event.refines_span.expect("refines target span captured");
             assert_eq!(&source[span.start..span.end], "f");

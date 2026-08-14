@@ -414,7 +414,10 @@ fn recovery_preserves_event_header_metadata() {
         let recovered = parse_with_recovery(&source);
         let event = &expect_machine(&recovered).events[0];
 
-        assert_eq!(event.refines.as_deref(), Some("abstract"));
+        assert_eq!(
+            event.refines.first().map(|t| t.name.as_str()),
+            Some("abstract")
+        );
         assert_eq!(event.extended, extended);
         let span = event.refines_span.expect("target span recovered");
         assert_eq!(&source[span.start..span.end], "abstract");

@@ -426,3 +426,82 @@ fn missing_reference_target_returns_eb003() {
         }
     }
 }
+
+#[test]
+fn test_parse_event_with_multiple_refines_xml() {
+    let xml = r#"<?xml version="1.0" encoding="UTF-8"?>
+<org.eventb.core.machineFile version="5">
+    <org.eventb.core.refinesMachine target="M0"/>
+    <org.eventb.core.variable identifier="x"/>
+    <org.eventb.core.event name="_e" convergence="0" extended="false" label="setBoth">
+        <org.eventb.core.refinesEvent target="setHeight"/>
+        <org.eventb.core.refinesEvent target="setWidth"/>
+    </org.eventb.core.event>
+</org.eventb.core.machineFile>"#;
+
+    let component = parse_xml(xml).expect("parse");
+    let Component::Machine(m) = &component else {
+        panic!("Expected Machine component");
+    };
+    let targets: Vec<&str> = m.events[0]
+        .refines
+        .iter()
+        .map(|t| t.name.as_str())
+        .collect();
+    assert_eq!(targets, vec!["setHeight", "setWidth"]);
+
+    // The writer emits one refinesEvent per target, so a re-parse sees
+    // the same list.
+    let written = rossi::xml::to_xml(&component);
+    let Component::Machine(again) = parse_xml(&written).expect("reparse") else {
+        panic!("Expected Machine component");
+    };
+    let targets: Vec<&str> = again.events[0]
+        .refines
+        .iter()
+        .map(|t| t.name.as_str())
+        .collect();
+    assert_eq!(targets, vec!["setHeight", "setWidth"]);
+}
+
+#[test]
+fn test_extended_event_keeps_only_first_refines_target() {
+    // An extended event inherits its body from exactly one abstract
+    // event, and the textual form (`extends <target>`) cannot name
+    // more; the reader drops surplus targets so a hand-edited file
+    // converts without the extra target silently vanishing later.
+    let xml = r#"<?xml version="1.0" encoding="UTF-8"?>
+<org.eventb.core.machineFile version="5">
+    <org.eventb.core.refinesMachine target="M0"/>
+    <org.eventb.core.variable identifier="x"/>
+    <org.eventb.core.event name="_e" convergence="0" extended="true" label="setBoth">
+        <org.eventb.core.refinesEvent target="setHeight"/>
+        <org.eventb.core.refinesEvent target="setWidth"/>
+    </org.eventb.core.event>
+</org.eventb.core.machineFile>"#;
+
+    let component = parse_xml(xml).expect("parse");
+    let Component::Machine(m) = &component else {
+        panic!("Expected Machine component");
+    };
+    let targets: Vec<&str> = m.events[0]
+        .refines
+        .iter()
+        .map(|t| t.name.as_str())
+        .collect();
+    assert_eq!(targets, vec!["setHeight"]);
+
+    // Both writers round-trip the truncated form unchanged.
+    let written = rossi::xml::to_xml(&component);
+    let Component::Machine(again) = parse_xml(&written).expect("reparse") else {
+        panic!("Expected Machine component");
+    };
+    assert_eq!(again.events[0].refines.len(), 1);
+
+    let text = rossi::pretty::PrettyPrinter::new().print_component(&component);
+    let Component::Machine(back) = rossi::parse(&text).expect("printed text reparses") else {
+        panic!("Expected Machine component");
+    };
+    assert_eq!(back.events[0].refines.len(), 1);
+    assert!(back.events[0].extended);
+}

@@ -89,7 +89,9 @@ impl<'a> EventKind<'a> {
     fn explicit_refines(&self) -> Option<&'a str> {
         match self {
             EventKind::Init(_) => None,
-            EventKind::Ordinary(e) => e.refines.as_deref(),
+            // The checker still follows one target; the last one keeps
+            // the previous reader's behavior for multi-target sources.
+            EventKind::Ordinary(e) => e.refines.last().map(|t| t.name.as_str()),
         }
     }
     /// Span of the event's name token, for diagnostics about the event itself.
@@ -850,8 +852,8 @@ fn resolve_effective_refines<'a, 'b>(
             })
             .map(|_| crate::sc::initialisation_label()),
         EventKind::Ordinary(e) => {
-            let explicit = e.refines.as_deref();
-            let implicit = if e.refines.is_none() && e.extended {
+            let explicit = e.refines.last().map(|t| t.name.as_str());
+            let implicit = if e.refines.is_empty() && e.extended {
                 parent
                     .filter(|p| p.events_by_label.contains_key(&e.name))
                     .map(|_| e.name.as_str())

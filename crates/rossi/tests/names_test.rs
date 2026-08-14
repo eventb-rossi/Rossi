@@ -50,7 +50,7 @@ END
     assert_eq!(m.sees, vec!["CTX-1"]);
     assert_eq!(m.events.len(), 1);
     assert_eq!(m.events[0].name, "do-step");
-    assert_eq!(m.events[0].refines.as_deref(), Some("prepost-step"));
+    assert_eq!(m.events[0].refines[0].name, "prepost-step");
 }
 
 #[test]
@@ -85,7 +85,7 @@ END
         panic!("expected Machine");
     };
     assert_eq!(m.events[0].name, "do-step");
-    assert_eq!(m.events[0].refines.as_deref(), Some("do-step"));
+    assert_eq!(m.events[0].refines[0].name, "do-step");
     assert!(m.events[0].extended);
 }
 
@@ -289,7 +289,7 @@ fn xml_import_round_trips_through_text() {
     assert_eq!(b.sees, vec!["ENV_C-1"]);
     assert_eq!(a.events.len(), b.events.len());
     assert_eq!(b.events[0].name, "computing-computing");
-    assert_eq!(b.events[0].refines.as_deref(), Some("prepost-computing"));
+    assert_eq!(b.events[0].refines[0].name, "prepost-computing");
 
     let context_xml = r#"<?xml version="1.0" encoding="UTF-8"?>
 <org.eventb.core.contextFile version="3">
@@ -429,7 +429,7 @@ fn surrounding_whitespace_in_event_label_trimmed() {
     let comp = parse_xml(xml).expect("should accept event label with trailing space");
     if let rossi::Component::Machine(m) = comp {
         assert_eq!(m.events[0].name, "stop");
-        assert_eq!(m.events[0].refines.as_deref(), Some("stop"));
+        assert_eq!(m.events[0].refines[0].name, "stop");
     } else {
         panic!("expected Machine");
     }

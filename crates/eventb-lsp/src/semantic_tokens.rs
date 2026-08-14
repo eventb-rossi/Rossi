@@ -657,7 +657,7 @@ impl<'a> SemanticTokensBuilder<'a> {
         }
 
         // REFINES clause
-        if event.refines.is_some() {
+        if !event.refines.is_empty() {
             self.advance_past_keyword(KeywordId::Refines, &mut cur, bound);
         }
 

@@ -25,8 +25,10 @@ pub struct Event {
     /// Convergence status
     pub status: Option<EventStatus>,
 
-    /// Event that this event refines (an event can only refine at most one abstract event)
-    pub refines: Option<String>,
+    /// Abstract events this event refines, in declaration order.
+    /// Several targets merge those abstract events into this one; an
+    /// extending event has exactly one.
+    pub refines: Vec<NamedElement>,
 
     /// Parameters (ANY clause)
     pub parameters: Vec<NamedElement>,
@@ -66,7 +68,7 @@ impl Event {
         Self {
             name,
             status: None,
-            refines: None,
+            refines: Vec::new(),
             parameters: Vec::new(),
             guards: Vec::new(),
             with: Vec::new(),

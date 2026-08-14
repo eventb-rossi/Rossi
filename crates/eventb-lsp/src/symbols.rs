@@ -330,8 +330,13 @@ fn resolve_event_refinement_target(
     let target = machine
         .events
         .iter()
-        .find(|event| event.refines_span.is_some_and(|span| span.contains(offset)))
-        .and_then(|event| event.refines.as_deref())?;
+        .find_map(|event| {
+            event
+                .refines
+                .iter()
+                .find(|t| t.span.is_some_and(|span| span.contains(offset)))
+        })
+        .map(|t| t.name.as_str())?;
 
     let mut environments = ResolvedEnvironments::refinements();
     environments

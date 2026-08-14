@@ -447,8 +447,8 @@ impl PrettyPrinter {
         let double_indent = format!("{}{}", self.indent, self.indent);
 
         debug_assert_component_name(&event.name, "event name");
-        if let Some(ref parent) = event.refines {
-            debug_assert_component_name(parent, "event refines target");
+        for target in &event.refines {
+            debug_assert_component_name(&target.name, "event refines target");
         }
 
         // Emit status inline before EVENT keyword (Camille-compatible form):
@@ -461,21 +461,21 @@ impl PrettyPrinter {
 
         // When `extended` is true and there is a refines target, use
         // `EVENT name extends parent` syntax (Rodin extension mechanism).
-        let header = match &event.refines {
+        let header = match event.refines.first() {
             Some(parent) if event.extended => format!(
                 "{}{}EVENT {} extends {}",
-                self.indent, status_prefix, event.name, parent
+                self.indent, status_prefix, event.name, parent.name
             ),
             _ => format!("{}{}EVENT {}", self.indent, status_prefix, event.name),
         };
         self.writeln_commented(output, &header, event.comment.as_deref(), &self.indent);
 
-        // Print REFINES clause when not extended
-        if !event.extended
-            && let Some(ref refines) = event.refines
-        {
+        // Print REFINES clause when not extended, one target per line
+        if !event.extended && !event.refines.is_empty() {
             writeln!(output, "{}REFINES", self.indent).unwrap();
-            writeln!(output, "{}{}", double_indent, refines).unwrap();
+            for target in &event.refines {
+                writeln!(output, "{}{}", double_indent, target.name).unwrap();
+            }
         }
 
         if !event.parameters.is_empty() {

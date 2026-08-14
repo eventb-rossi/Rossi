@@ -617,7 +617,7 @@ fn parse_machine_xml_with_name(
                         name: event_name,
                         convergence,
                         comment: event_comment,
-                        refines: None,
+                        refines: Vec::new(),
                         parameters: Vec::new(),
                         guards: Vec::new(),
                         with: Vec::new(),
@@ -725,7 +725,7 @@ fn parse_machine_xml_with_name(
                             events.push(Event {
                                 name: event_name,
                                 status,
-                                refines: None,
+                                refines: Vec::new(),
                                 parameters: Vec::new(),
                                 guards: Vec::new(),
                                 with: Vec::new(),
@@ -748,7 +748,13 @@ fn parse_machine_xml_with_name(
                                 &target,
                                 &format!("refines target in event {:?} of {}", event.name, origin),
                             )?;
-                            event.refines = Some(target);
+                            // An extended event inherits its body from
+                            // exactly one abstract event and the textual
+                            // form cannot name more; surplus targets are
+                            // dropped so both representations agree.
+                            if !event.extended || event.refines.is_empty() {
+                                event.refines.push(NamedElement::new(target));
+                            }
                         }
                     }
                     "org.eventb.core.parameter" => {
@@ -978,7 +984,7 @@ struct EventBuilder {
     name: String,
     convergence: Option<String>,
     comment: Option<String>,
-    refines: Option<String>,
+    refines: Vec<NamedElement>,
     parameters: Vec<NamedElement>,
     guards: Vec<LabeledPredicate>,
     with: Vec<LabeledPredicate>,
@@ -1828,9 +1834,14 @@ fn write_event_xml(xml: &mut String, event: &Event, printer: &PrettyPrinter) {
         event_comment
     ));
 
-    // Refines
-    if let Some(ref refined) = event.refines {
-        let esc = escape_xml(refined);
+    // Refines — one element per distinct target.
+    let mut written_targets: Vec<&str> = Vec::new();
+    for refined in &event.refines {
+        if written_targets.contains(&refined.name.as_str()) {
+            continue;
+        }
+        written_targets.push(&refined.name);
+        let esc = escape_xml(&refined.name);
         xml.push_str(&format!(
             "        <org.eventb.core.refinesEvent name=\"{esc}\" org.eventb.core.target=\"{esc}\"/>\n"
         ));
@@ -2322,7 +2333,7 @@ mod tests {
         let event = Event {
             name: "increment".to_string(),
             status: Some(EventStatus::Ordinary),
-            refines: None,
+            refines: Vec::new(),
             parameters: vec![],
             guards: vec![LabeledPredicate {
                 label: Some("grd1".to_string()),
@@ -2556,7 +2567,7 @@ mod tests {
         let ordinary_event = Event {
             name: "evt1".to_string(),
             status: Some(EventStatus::Ordinary),
-            refines: None,
+            refines: Vec::new(),
             parameters: vec![],
             guards: vec![],
             with: vec![],
@@ -2577,7 +2588,7 @@ mod tests {
         let convergent_event = Event {
             name: "evt2".to_string(),
             status: Some(EventStatus::Convergent),
-            refines: None,
+            refines: Vec::new(),
             parameters: vec![],
             guards: vec![],
             with: vec![],
@@ -2593,7 +2604,7 @@ mod tests {
         let anticipated_event = Event {
             name: "evt3".to_string(),
             status: Some(EventStatus::Anticipated),
-            refines: None,
+            refines: Vec::new(),
             parameters: vec![],
             guards: vec![],
             with: vec![],
@@ -2637,7 +2648,7 @@ mod tests {
         let event = Event {
             name: "refine_evt".to_string(),
             status: Some(EventStatus::Ordinary),
-            refines: Some("abstract_evt".to_string()),
+            refines: vec![NamedElement::new("abstract_evt".to_string())],
             parameters: vec![],
             guards: vec![],
             with: vec![LabeledPredicate {
@@ -2689,7 +2700,7 @@ mod tests {
         let event = Event {
             name: "refine_evt".to_string(),
             status: Some(EventStatus::Ordinary),
-            refines: Some("abstract_evt".to_string()),
+            refines: vec![NamedElement::new("abstract_evt".to_string())],
             parameters: vec![],
             guards: vec![],
             with: vec![LabeledPredicate {
