@@ -36,21 +36,6 @@ fn corpus_dir() -> Option<PathBuf> {
 /// Problems reported per model before truncation.
 const MAX_PROBLEMS: usize = 5;
 
-/// Models whose reference obligations are known not to be reproducible:
-/// rows carrying the `pog_divergence` flag in the corpus
-/// `model_flags.tsv`, with the audited reason in the notes column. Kept
-/// visible in the report as `known` rather than failing the gate.
-fn pog_known_divergence(corpus: &Path, model: &str) -> Option<String> {
-    let tsv = std::fs::read_to_string(corpus.join("model_flags.tsv")).ok()?;
-    for line in tsv.lines().skip(1) {
-        let mut cols = line.split('\t');
-        if cols.next() == Some(model) && cols.next() == Some("pog_divergence") {
-            return Some(cols.next().unwrap_or("").to_string());
-        }
-    }
-    None
-}
-
 #[test]
 #[ignore = "needs a models corpus; run with --ignored"]
 fn pog_corpus() {
@@ -90,7 +75,7 @@ fn pog_corpus() {
                 report.push(vec![model.into(), "match".into(), String::new()]);
             }
             Ok(problems) => {
-                if let Some(reason) = pog_known_divergence(&dir, model) {
+                if let Some(reason) = common::pog_known_divergence(&dir, model) {
                     eprintln!("  KNOWN {name} ({reason})");
                     report.push(vec![model.into(), "known".into(), reason]);
                     continue;
@@ -186,7 +171,7 @@ fn diff_model(zip: &Path) -> Result<Vec<String>, String> {
                 .map_err(|e| format!("{}: parse ours: {e}", file.filename))?;
             let theirs = PoView::from_xml(reference)
                 .map_err(|e| format!("{}: parse reference: {e}", file.filename))?;
-            diff_views(&file.filename, &theirs, &ours, &mut problems);
+            common::diff_po_views(&file.filename, &theirs, &ours, MAX_PROBLEMS, &mut problems);
             if problems.len() >= MAX_PROBLEMS {
                 problems.truncate(MAX_PROBLEMS);
                 return Ok(problems);
@@ -194,66 +179,4 @@ fn diff_model(zip: &Path) -> Result<Vec<String>, String> {
         }
     }
     Ok(problems)
-}
-
-/// Compare the reference view against ours, appending findings.
-fn diff_views(file: &str, reference: &PoView, ours: &PoView, problems: &mut Vec<String>) {
-    for name in reference.sequents.keys() {
-        if !ours.sequents.contains_key(name) {
-            problems.push(format!("{file}: missing sequent {name}"));
-        }
-    }
-    for name in ours.sequents.keys() {
-        if !reference.sequents.contains_key(name) {
-            problems.push(format!("{file}: extra sequent {name}"));
-        }
-    }
-
-    for (name, theirs) in &reference.sequents {
-        let Some(mine) = ours.sequents.get(name) else {
-            continue;
-        };
-        if theirs.description != mine.description {
-            problems.push(format!(
-                "{file}: {name}: nature {:?} vs {:?}",
-                theirs.description, mine.description
-            ));
-        }
-        if theirs.accurate != mine.accurate {
-            problems.push(format!(
-                "{file}: {name}: accurate {} vs {}",
-                theirs.accurate, mine.accurate
-            ));
-        }
-        if theirs.goal != mine.goal {
-            problems.push(format!("{file}: {name}: goal differs"));
-        }
-        let their_hyps = reference.flattened_hypotheses(name);
-        let my_hyps = ours.flattened_hypotheses(name);
-        if their_hyps != my_hyps {
-            problems.push(format!(
-                "{file}: {name}: hypotheses differ ({} vs {})",
-                their_hyps.len(),
-                my_hyps.len()
-            ));
-        }
-        if reference.flattened_identifiers(name) != ours.flattened_identifiers(name) {
-            problems.push(format!("{file}: {name}: identifiers differ"));
-        }
-        // Source order varied across the reference generator's
-        // versions; compare as sets.
-        let their_sources: std::collections::BTreeSet<_> = theirs.sources.iter().collect();
-        let my_sources: std::collections::BTreeSet<_> = mine.sources.iter().collect();
-        if their_sources != my_sources {
-            problems.push(format!("{file}: {name}: sources differ"));
-        }
-        // Hints resolve to the content they select, so set naming
-        // differences don't matter.
-        if reference.resolved_hints(name) != ours.resolved_hints(name) {
-            problems.push(format!("{file}: {name}: hints differ"));
-        }
-        if problems.len() >= MAX_PROBLEMS {
-            return;
-        }
-    }
 }

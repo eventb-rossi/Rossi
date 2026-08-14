@@ -365,3 +365,86 @@ pub fn log_hint(combined: &str) -> String {
 pub fn sanitize(s: &str) -> String {
     s.split_whitespace().collect::<Vec<_>>().join(" ")
 }
+
+/// Models whose reference or freshly-regenerated proof obligations are
+/// known not to be reproducible: rows carrying the `pog_divergence`
+/// flag in the corpus `model_flags.tsv`, with the audited reason in the
+/// notes column. Shared by the proof-obligation gates.
+pub fn pog_known_divergence(corpus: &Path, model: &str) -> Option<String> {
+    let tsv = std::fs::read_to_string(corpus.join("model_flags.tsv")).ok()?;
+    for line in tsv.lines().skip(1) {
+        let mut cols = line.split('\t');
+        if cols.next() == Some(model) && cols.next() == Some("pog_divergence") {
+            return Some(cols.next().unwrap_or("").to_string());
+        }
+    }
+    None
+}
+
+/// Compare a reference proof-obligation view against a generated one,
+/// appending findings. The comparison is semantic: sequent name sets,
+/// natures, accuracy, goals, flattened hypotheses and identifiers,
+/// sources as sets (their order varied across generator versions), and
+/// hints resolved to the content they select.
+pub fn diff_po_views(
+    file: &str,
+    reference: &rossi_build::po_view::PoView,
+    ours: &rossi_build::po_view::PoView,
+    max_problems: usize,
+    problems: &mut Vec<String>,
+) {
+    for name in reference.sequents.keys() {
+        if !ours.sequents.contains_key(name) {
+            problems.push(format!("{file}: missing sequent {name}"));
+        }
+    }
+    for name in ours.sequents.keys() {
+        if !reference.sequents.contains_key(name) {
+            problems.push(format!("{file}: extra sequent {name}"));
+        }
+    }
+
+    for (name, theirs) in &reference.sequents {
+        let Some(mine) = ours.sequents.get(name) else {
+            continue;
+        };
+        if theirs.description != mine.description {
+            problems.push(format!(
+                "{file}: {name}: nature {:?} vs {:?}",
+                theirs.description, mine.description
+            ));
+        }
+        if theirs.accurate != mine.accurate {
+            problems.push(format!(
+                "{file}: {name}: accurate {} vs {}",
+                theirs.accurate, mine.accurate
+            ));
+        }
+        if theirs.goal != mine.goal {
+            problems.push(format!("{file}: {name}: goal differs"));
+        }
+        let their_hyps = reference.flattened_hypotheses(name);
+        let my_hyps = ours.flattened_hypotheses(name);
+        if their_hyps != my_hyps {
+            problems.push(format!(
+                "{file}: {name}: hypotheses differ ({} vs {})",
+                their_hyps.len(),
+                my_hyps.len()
+            ));
+        }
+        if reference.flattened_identifiers(name) != ours.flattened_identifiers(name) {
+            problems.push(format!("{file}: {name}: identifiers differ"));
+        }
+        let their_sources: std::collections::BTreeSet<_> = theirs.sources.iter().collect();
+        let my_sources: std::collections::BTreeSet<_> = mine.sources.iter().collect();
+        if their_sources != my_sources {
+            problems.push(format!("{file}: {name}: sources differ"));
+        }
+        if reference.resolved_hints(name) != ours.resolved_hints(name) {
+            problems.push(format!("{file}: {name}: hints differ"));
+        }
+        if problems.len() >= max_problems {
+            return;
+        }
+    }
+}

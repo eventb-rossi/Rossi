@@ -146,7 +146,19 @@ fn rodin_builds_regenerated_corpus() {
             .to_string();
         let regen_zip = regen_dir.join(format!("{model}.zip"));
         let outcome = match regen_one(zip, &regen_zip) {
-            Ok(()) => rodin_build_one(&rodin, &regen_dir, &regen_zip, timeout),
+            Ok(()) => {
+                // Rodin rewrites the archive in place, replacing the
+                // generated proof files with its own — keep ours for
+                // the comparison below.
+                let rossi_bpos = read_bpos(&regen_zip);
+                let outcome = rodin_build_one(&rodin, &regen_dir, &regen_zip, timeout);
+                match (outcome, rossi_bpos) {
+                    (Outcome::Built, Ok(rossi_bpos)) => {
+                        diff_regenerated_pos(&rossi_bpos, &regen_zip)
+                    }
+                    (outcome, _) => outcome,
+                }
+            }
             Err(e) => Outcome::Regen(e.to_string()),
         };
 
@@ -158,7 +170,10 @@ fn rodin_builds_regenerated_corpus() {
         let built = actual_str == "built";
         let verdict = if built {
             "match"
-        } else if known_failure.contains(model.as_str()) {
+        } else if known_failure.contains(model.as_str())
+            || (actual_str == "po-diverge"
+                && common::pog_known_divergence(&corpus, &model).is_some())
+        {
             "known"
         } else {
             regressions += 1;
@@ -209,10 +224,74 @@ fn rodin_builds_regenerated_corpus() {
     );
 }
 
+/// The `.bpo` entries of an archive, keyed by entry path.
+fn read_bpos(zip: &std::path::Path) -> Result<std::collections::BTreeMap<String, String>, String> {
+    let bytes = std::fs::read(zip).map_err(|e| format!("read: {e}"))?;
+    let mut archive =
+        zip::ZipArchive::new(std::io::Cursor::new(bytes)).map_err(|e| format!("zip: {e}"))?;
+    let mut out = std::collections::BTreeMap::new();
+    for i in 0..archive.len() {
+        let mut entry = archive.by_index(i).map_err(|e| format!("zip: {e}"))?;
+        if entry.name().ends_with(".bpo") {
+            use std::io::Read as _;
+            let mut contents = String::new();
+            entry
+                .read_to_string(&mut contents)
+                .map_err(|e| format!("zip read: {e}"))?;
+            out.insert(entry.name().to_string(), contents);
+        }
+    }
+    Ok(out)
+}
+
+/// Compare the generated proof obligations against the ones Rodin just
+/// regenerated from the same sources — the authoritative check, free
+/// of reference-vintage noise.
+fn diff_regenerated_pos(
+    rossi_bpos: &std::collections::BTreeMap<String, String>,
+    rebuilt_zip: &std::path::Path,
+) -> Outcome {
+    use rossi_build::po_view::PoView;
+    let rodin_bpos = match read_bpos(rebuilt_zip) {
+        Ok(map) => map,
+        Err(e) => return Outcome::PoDiverged(format!("rebuilt archive unreadable: {e}")),
+    };
+    let mut problems = Vec::new();
+    for (path, rodin_contents) in &rodin_bpos {
+        let Some(rossi_contents) = rossi_bpos.get(path) else {
+            problems.push(format!("{path}: not generated"));
+            continue;
+        };
+        let (theirs, ours) = match (
+            PoView::from_xml(rodin_contents),
+            PoView::from_xml(rossi_contents),
+        ) {
+            (Ok(t), Ok(o)) => (t, o),
+            (Err(e), _) | (_, Err(e)) => {
+                problems.push(format!("{path}: parse: {e}"));
+                continue;
+            }
+        };
+        common::diff_po_views(path, &theirs, &ours, 5, &mut problems);
+        if problems.len() >= 5 {
+            break;
+        }
+    }
+    if problems.is_empty() {
+        Outcome::Built
+    } else {
+        problems.truncate(5);
+        Outcome::PoDiverged(problems.join("; "))
+    }
+}
+
 #[derive(Debug, Clone)]
 enum Outcome {
     /// Rodin built every component accurately.
     Built,
+    /// Rodin built cleanly, but its regenerated proof obligations
+    /// differ from the generated ones.
+    PoDiverged(String),
     /// Rodin built but at least one component carries static-check errors.
     ScError(String),
     /// Rodin could not load/build the project at all (import crash, no output).
@@ -227,6 +306,7 @@ impl Outcome {
     fn label(&self) -> &'static str {
         match self {
             Outcome::Built => "built",
+            Outcome::PoDiverged(_) => "po-diverge",
             Outcome::ScError(_) => "sc_error",
             Outcome::LoadError(_) => "load_error",
             Outcome::Timeout => "timeout",
@@ -236,7 +316,10 @@ impl Outcome {
 
     fn notes(&self) -> &str {
         match self {
-            Outcome::ScError(s) | Outcome::LoadError(s) | Outcome::Regen(s) => s.as_str(),
+            Outcome::ScError(s)
+            | Outcome::LoadError(s)
+            | Outcome::Regen(s)
+            | Outcome::PoDiverged(s) => s.as_str(),
             _ => "",
         }
     }
