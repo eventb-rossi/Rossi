@@ -14,7 +14,6 @@
 use rossi::formula::{Predicate, Type};
 
 use crate::handles::HandleUri;
-use crate::normalize::canonical_typed_predicate;
 use crate::xml_out::{Element, attr, tag as xtag};
 
 use super::model::PoFile;
@@ -42,9 +41,9 @@ pub struct HypothesisManager {
     /// Name of the final set holding the whole table.
     all_name: String,
     rows: Vec<HypothesisRow>,
-    /// Memoized set name per requested prefix; index 0 is the chain
-    /// head (identifier set or root), index i > 0 cuts before row i.
-    requested: Vec<Option<String>>,
+    /// Which prefixes were requested; index 0 is the chain head
+    /// (identifier set or root), index i > 0 cuts before row i.
+    requested: Vec<bool>,
     /// Typed identifiers of the chain head, in insertion order.
     identifiers: Vec<(String, Type)>,
 }
@@ -73,7 +72,7 @@ impl HypothesisManager {
         all_name: impl Into<String>,
         rows: Vec<HypothesisRow>,
     ) -> Self {
-        let requested = vec![None; rows.len().max(1)];
+        let requested = vec![false; rows.len().max(1)];
         HypothesisManager {
             root_name: root_name.into(),
             ident_name: ident_name.into(),
@@ -90,7 +89,7 @@ impl HypothesisManager {
     /// head's name is fixed the first time it is asked for.
     pub fn add_identifier(&mut self, name: impl Into<String>, ty: Type) {
         assert!(
-            self.requested[0].is_none(),
+            !self.requested[0],
             "identifiers must be registered before hypotheses are requested"
         );
         let name = name.into();
@@ -115,17 +114,21 @@ impl HypothesisManager {
             .map(|(_, ty)| ty)
     }
 
+    /// The name of the set cut before row `index`: the chain head for
+    /// index 0, `<prefix><previous row's internal name>` otherwise.
+    fn set_name(&self, index: usize) -> String {
+        if index == 0 {
+            self.first_name().to_string()
+        } else {
+            format!("{}{}", self.hyp_prefix, self.rows[index - 1].internal_name)
+        }
+    }
+
     /// The set holding exactly the rows before `index`, requesting its
     /// materialization. Returns the set's name.
     pub fn make_hypothesis(&mut self, index: usize) -> String {
-        if self.requested[index].is_none() {
-            self.requested[index] = Some(if index == 0 {
-                self.first_name().to_string()
-            } else {
-                format!("{}{}", self.hyp_prefix, self.rows[index - 1].internal_name)
-            });
-        }
-        self.requested[index].clone().expect("just set")
+        self.requested[index] = true;
+        self.set_name(index)
     }
 
     /// The full hypothesis — the final set holding the whole table.
@@ -145,8 +148,8 @@ impl HypothesisManager {
     pub fn predicate_location(&self, index: usize) -> (String, String) {
         let predicate_name = format!("{PRD_NAME_PREFIX}{index}");
         for i in index + 1..self.rows.len() {
-            if let Some(name) = &self.requested[i] {
-                return (name.clone(), predicate_name);
+            if self.requested[i] {
+                return (self.set_name(i), predicate_name);
             }
         }
         (self.all_name.clone(), predicate_name)
@@ -172,7 +175,8 @@ impl HypothesisManager {
         let mut previous = 0usize;
         let mut previous_name = self.first_name().to_string();
         for i in 1..self.rows.len() {
-            if let Some(name) = self.requested[i].clone() {
+            if self.requested[i] {
+                let name = self.set_name(i);
                 self.emit_delta(po, &name, previous, i, &previous_name);
                 previous = i;
                 previous_name = name;
@@ -198,12 +202,11 @@ impl HypothesisManager {
     ) {
         let mut set = predicate_set(name, &po.set_handle(previous_name));
         for (k, row) in self.rows[previous..current].iter().enumerate() {
-            set.push(
-                Element::new(xtag::PO_PREDICATE)
-                    .attr(attr::NAME, format!("{PRD_NAME_PREFIX}{}", previous + k))
-                    .attr(attr::PREDICATE, canonical_typed_predicate(&row.predicate))
-                    .attr(attr::SOURCE, row.source.as_str()),
-            );
+            set.push(super::model::predicate_element(
+                format!("{PRD_NAME_PREFIX}{}", previous + k),
+                &row.predicate,
+                &row.source,
+            ));
         }
         po.push(set);
     }

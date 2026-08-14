@@ -235,36 +235,20 @@ impl ScModel {
     pub fn inherited_invariants(
         &self,
         machine: &CheckedMachine,
-    ) -> Vec<(&CheckedMachine, &machine_record::InvariantDecl)> {
+    ) -> Vec<&machine_record::InvariantDecl> {
         machine
             .ancestors()
             .iter()
             .filter_map(|name| self.machines.get(name))
-            .flat_map(|ancestor| {
-                ancestor
-                    .record
-                    .invariants
-                    .iter()
-                    .map(move |inv| (ancestor, inv))
-            })
+            .flat_map(|ancestor| ancestor.record.invariants.iter())
             .collect()
-    }
-
-    /// The abstract event `event` refines (the first when it merges
-    /// several), resolved in the refined machine. The checker records
-    /// implicit refinements too (INITIALISATION, extended events), so
-    /// the declared targets are authoritative.
-    pub fn abstract_event(
-        &self,
-        machine: &CheckedMachine,
-        event: &EventDecl,
-    ) -> Option<&Rc<EventDecl>> {
-        self.abstract_events(machine, event).into_iter().next()
     }
 
     /// Every abstract event `event` refines, in declaration order,
     /// resolved in the refined machine. More than one entry means the
-    /// event merges those abstract events.
+    /// event merges those abstract events. The checker records implicit
+    /// refinements too (INITIALISATION, extended events), so the
+    /// declared targets are authoritative.
     pub fn abstract_events(
         &self,
         machine: &CheckedMachine,

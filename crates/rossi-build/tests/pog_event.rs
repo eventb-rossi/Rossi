@@ -1,22 +1,8 @@
 //! Event-scoped proof obligations: the per-event hypothesis chain and
 //! guard well-definedness, with inherited-guard suppression.
 
-use rossi_build::{Project, ProjectComponent, build_with_model, pog};
-
-fn generate(name: &str, components: Vec<ProjectComponent>) -> Vec<rossi_build::ScFile> {
-    let project = Project::new(name, components);
-    let (build, model) = build_with_model(&project);
-    assert!(build.is_ok(), "build diagnostics: {:?}", build.diagnostics);
-    pog::generate(&project, &model)
-}
-
-fn xml(filename: &str, body: &str) -> ProjectComponent {
-    ProjectComponent::from_xml(filename, body).unwrap()
-}
-
-fn find<'a>(files: &'a [rossi_build::ScFile], name: &str) -> &'a rossi_build::ScFile {
-    files.iter().find(|f| f.filename == name).unwrap()
-}
+mod common;
+use common::{find, generate, xml};
 
 const M0: &str = r#"<?xml version="1.0"?>
 <org.eventb.core.machineFile version="5" org.eventb.core.configuration="org.eventb.core.fwd">

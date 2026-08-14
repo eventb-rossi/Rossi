@@ -246,16 +246,6 @@ fn report_inherited_label_conflicts(
 /// INITIALISATION needs no special-casing: its declared convergence is
 /// always `Ordinary` (see [`EventKind::convergence`]), and both rules are
 /// no-ops for an ordinary declaration, so an INIT event never downgrades.
-/// Rank for the "weakest abstract convergence wins" rule of merged
-/// events: ordinary < anticipated < convergent.
-fn convergence_rank(c: Convergence) -> u8 {
-    match c {
-        Convergence::Ordinary => 0,
-        Convergence::Anticipated => 1,
-        Convergence::Convergent => 2,
-    }
-}
-
 fn resolve_convergence(
     declared: Convergence,
     abstract_cvg: Option<Convergence>,
@@ -885,10 +875,7 @@ pub(super) fn build_event_decl(
     // inaccurate. The abstract convergence comes from the refined events —
     // the weakest one when several are merged (ordinary < anticipated <
     // convergent).
-    let abstract_cvg = resolved
-        .iter()
-        .map(|(_, decl)| decl.convergence)
-        .min_by_key(|c| convergence_rank(*c));
+    let abstract_cvg = resolved.iter().map(|(_, decl)| decl.convergence).min();
     let (convergence, downgrade_reason) = resolve_convergence(
         context.kind.convergence(),
         abstract_cvg,

@@ -141,14 +141,15 @@ pub struct VariantDecl {
 // Event-scoped decls
 // ---------------------------------------------------------------------
 
-/// Event convergence, conceptually ranked `Ordinary` (weakest) through
-/// `Anticipated` to `Convergent` (strongest); every static-check downgrade
-/// moves toward `Ordinary`.
+/// Event convergence, ranked `Ordinary` (weakest) through `Anticipated`
+/// to `Convergent` (strongest); every static-check downgrade moves toward
+/// `Ordinary`. The declaration order carries the ranking — `derive(Ord)`
+/// depends on it.
 ///
 /// The numeric `code` written to `org.eventb.core.convergence` is a
 /// *separate* mapping that does not follow the ranking: `Ordinary` → `0`,
 /// `Convergent` → `1`, `Anticipated` → `2`.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 pub enum Convergence {
     Ordinary,
     Anticipated,

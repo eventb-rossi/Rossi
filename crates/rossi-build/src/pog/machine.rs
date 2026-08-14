@@ -57,16 +57,12 @@ pub(super) fn generate(
                 .attr(attr::TYPE, variable.ty.to_rodin_canonical()),
         );
     }
-    for (_, invariant) in model.inherited_invariants(machine) {
-        abs_hyp.push(
-            Element::new(xtag::PO_PREDICATE)
-                .attr(attr::NAME, abs_names.fresh())
-                .attr(
-                    attr::PREDICATE,
-                    crate::normalize::canonical_typed_predicate(&invariant.typed),
-                )
-                .attr(attr::SOURCE, invariant.source.as_str()),
-        );
+    for invariant in model.inherited_invariants(machine) {
+        abs_hyp.push(super::model::predicate_element(
+            abs_names.fresh(),
+            &invariant.typed,
+            &invariant.source,
+        ));
     }
     po.push(abs_hyp);
 
@@ -183,26 +179,23 @@ fn machine_factory(machine: &CheckedMachine) -> rossi::formula::FormulaFactory {
 /// declaration order.
 fn generate_variant_pos(machine: &CheckedMachine, po: &mut PoFile) {
     let variants = &machine.record.variants;
-    let single_default = variants.len() == 1 && variants[0].label == "vrn";
+    let single_default = single_default_variant(variants);
     for variant in variants {
         let Some(typed) = &variant.typed else {
             continue;
         };
         let sources = vec![PogSource::new(Role::Default, variant.source.clone())];
 
-        let wd = typed.wd_lemma();
-        if !is_trivial(&wd) {
-            po.create_po(ProofObligation {
-                name: variant_po_name(single_default, &variant.label, "VWD"),
-                nature: Nature::VariantWellDefinedness,
-                global_hypotheses: po.set_handle(ALL_HYP_NAME),
-                local_hypotheses: Vec::new(),
-                goal: PogPredicate::new(wd, variant.source.clone()),
-                sources: sources.clone(),
-                hints: Vec::new(),
-                accurate: machine.accurate,
-            });
-        }
+        po.create_po(ProofObligation {
+            name: variant_po_name(single_default, &variant.label, "VWD"),
+            nature: Nature::VariantWellDefinedness,
+            global_hypotheses: po.set_handle(ALL_HYP_NAME),
+            local_hypotheses: Vec::new(),
+            goal: PogPredicate::new(typed.wd_lemma(), variant.source.clone()),
+            sources: sources.clone(),
+            hints: Vec::new(),
+            accurate: machine.accurate,
+        });
 
         if let Some(ty) = typed.ty()
             && must_prove_finite(ty)
@@ -222,9 +215,15 @@ fn generate_variant_pos(machine: &CheckedMachine, po: &mut PoFile) {
     }
 }
 
+/// Whether the machine's only variant carries the default label — the
+/// one shape whose obligation names omit the label segment.
+pub(super) fn single_default_variant(variants: &[crate::sc::machine_record::VariantDecl]) -> bool {
+    variants.len() == 1 && variants[0].label == rossi::DEFAULT_VARIANT_LABEL
+}
+
 /// A machine whose only variant carries the default label omits the
 /// label segment; every other shape includes it.
-fn variant_po_name(single_default: bool, label: &str, suffix: &str) -> String {
+pub(super) fn variant_po_name(single_default: bool, label: &str, suffix: &str) -> String {
     if single_default {
         suffix.to_string()
     } else {

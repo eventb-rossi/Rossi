@@ -12,14 +12,15 @@ use crate::sc::machine_record::{ActionDecl, EventDecl, GuardDecl, MachineRecord}
 use crate::sc::{CheckedMachine, ScModel};
 
 /// A simultaneous free-identifier substitution (one batch of parallel
-/// assignments).
+/// assignments). An empty batch is a no-op.
 pub(super) type Substitution = HashMap<String, Expression>;
 
-/// Apply an optional substitution batch.
-pub(super) fn apply(predicate: &Predicate, subst: Option<&Substitution>) -> Predicate {
-    match subst {
-        Some(map) if !map.is_empty() => predicate.substitute_free_idents(map),
-        _ => predicate.clone(),
+/// Apply a substitution batch.
+pub(super) fn apply(predicate: &Predicate, subst: &Substitution) -> Predicate {
+    if subst.is_empty() {
+        predicate.clone()
+    } else {
+        predicate.substitute_free_idents(subst)
     }
 }
 
@@ -45,7 +46,7 @@ impl MachineVariables {
                 .variables
                 .iter()
                 .filter(|v| v.is_concrete)
-                .map(|v| (v.name.clone(), v.ty.clone(), v.is_abstract && v.is_concrete))
+                .map(|v| (v.name.clone(), v.ty.clone(), v.is_abstract))
                 .collect(),
             types: record
                 .variables
@@ -57,7 +58,7 @@ impl MachineVariables {
 }
 
 /// The names of every variable the actions assign.
-pub(super) fn assigned_variables(actions: &[ActionDecl]) -> BTreeSet<String> {
+fn assigned_variables(actions: &[ActionDecl]) -> BTreeSet<String> {
     let mut out = BTreeSet::new();
     for decl in actions {
         // `skip` assigns nothing.
@@ -85,30 +86,24 @@ pub(super) struct ActionInfo {
 pub(super) struct EventActionTable {
     pub actions: Vec<ActionInfo>,
     /// Indices into `actions` of the nondeterministic ones, with their
-    /// before-after predicates in parallel.
-    pub nondet: Vec<usize>,
-    pub nondet_predicates: Vec<Predicate>,
+    /// before-after predicates.
+    pub nondet: Vec<(usize, Predicate)>,
     /// `x' ↦ E` for every deterministic action, as one batch.
-    pub primed_det: Option<Substitution>,
+    pub primed_det: Substitution,
     pub assigned_variables: BTreeSet<String>,
 }
 
 impl EventActionTable {
-    pub fn new(actions: &[ActionDecl]) -> Self {
-        let mut table = EventActionTable {
-            actions: Vec::new(),
-            nondet: Vec::new(),
-            nondet_predicates: Vec::new(),
-            primed_det: None,
-            assigned_variables: assigned_variables(actions),
-        };
+    pub fn new(action_decls: &[ActionDecl]) -> Self {
+        let mut actions = Vec::new();
+        let mut nondet = Vec::new();
         let mut primed_det = Substitution::new();
-        for decl in actions {
+        for decl in action_decls {
             let Some(assignment) = &decl.typed else {
                 continue;
             };
-            let index = table.actions.len();
-            table.actions.push(ActionInfo {
+            let index = actions.len();
+            actions.push(ActionInfo {
                 label: decl.label.clone(),
                 source: decl.source.clone(),
                 assignment: assignment.clone(),
@@ -122,13 +117,16 @@ impl EventActionTable {
                     }
                 }
                 AssignmentKind::BecomesMemberOf { .. } | AssignmentKind::BecomesSuchThat { .. } => {
-                    table.nondet.push(index);
-                    table.nondet_predicates.push(assignment.ba_predicate());
+                    nondet.push((index, assignment.ba_predicate()));
                 }
             }
         }
-        table.primed_det = (!primed_det.is_empty()).then_some(primed_det);
-        table
+        EventActionTable {
+            actions,
+            nondet,
+            primed_det,
+            assigned_variables: assigned_variables(action_decls),
+        }
     }
 }
 
@@ -136,10 +134,12 @@ impl EventActionTable {
 /// machine state.
 pub(super) struct ConcreteEventActionTable {
     pub table: EventActionTable,
-    /// `v' ↦ v` for every concrete variable the event leaves alone.
-    pub xi_unprime: Option<Substitution>,
     /// `v ↦ v'` for every variable the event assigns.
-    pub delta_prime: Option<Substitution>,
+    pub delta_prime: Substitution,
+    /// The after-state batch: `v' ↦ v` for every concrete variable the
+    /// event leaves alone, and `x' ↦ E` for every deterministic
+    /// assignment — disjoint key sets, so order-independent.
+    pub after_state: Substitution,
 }
 
 impl ConcreteEventActionTable {
@@ -157,20 +157,13 @@ impl ConcreteEventActionTable {
                 );
             }
         }
+        let after_state = merge_batches([&xi, &table.primed_det]);
         ConcreteEventActionTable {
             table,
-            xi_unprime: (!xi.is_empty()).then_some(xi),
-            delta_prime: (!delta.is_empty()).then_some(delta),
+            delta_prime: delta,
+            after_state,
         }
     }
-}
-
-/// An abstract assignment restricted to the variables this refinement
-/// keeps, with its originating action.
-pub(super) struct SimAction {
-    pub label: String,
-    pub source: HandleUri,
-    pub assignment: Assignment,
 }
 
 /// The abstract event's actions, with the correspondence to the
@@ -188,10 +181,18 @@ pub(super) struct AbstractEventActionTable {
     /// concrete event must simulate. A deterministic assignment mixing
     /// surviving and dropped variables splits; a nondeterministic one
     /// simulates whole.
-    pub sim: Vec<SimAction>,
+    pub sim: Vec<ActionInfo>,
     /// `y ↦ F` for every deterministic abstract assignment to a
     /// variable this refinement dropped — an implicit witness.
-    pub disappearing_witnesses: Option<Substitution>,
+    pub disappearing_witnesses: Substitution,
+}
+
+/// For each action of `from`, the index of the identical action in
+/// `to`, if any.
+fn correspondence(from: &[ActionInfo], to: &[ActionInfo]) -> Vec<Option<usize>> {
+    from.iter()
+        .map(|f| to.iter().position(|t| t.assignment == f.assignment))
+        .collect()
 }
 
 impl AbstractEventActionTable {
@@ -201,28 +202,8 @@ impl AbstractEventActionTable {
         concrete: &ConcreteEventActionTable,
     ) -> Self {
         let table = EventActionTable::new(actions);
-        let index_of_abstract = concrete
-            .table
-            .actions
-            .iter()
-            .map(|c| {
-                table
-                    .actions
-                    .iter()
-                    .position(|a| a.assignment == c.assignment)
-            })
-            .collect();
-        let index_of_concrete = table
-            .actions
-            .iter()
-            .map(|a| {
-                concrete
-                    .table
-                    .actions
-                    .iter()
-                    .position(|c| c.assignment == a.assignment)
-            })
-            .collect();
+        let index_of_abstract = correspondence(&concrete.table.actions, &table.actions);
+        let index_of_concrete = correspondence(&table.actions, &concrete.table.actions);
 
         let concrete_names: BTreeSet<&str> = variables
             .rows
@@ -258,7 +239,7 @@ impl AbstractEventActionTable {
                                 None,
                             )
                         };
-                        sim.push(SimAction {
+                        sim.push(ActionInfo {
                             label: action.label.clone(),
                             source: action.source.clone(),
                             assignment,
@@ -266,7 +247,7 @@ impl AbstractEventActionTable {
                     }
                 }
                 AssignmentKind::BecomesMemberOf { .. } | AssignmentKind::BecomesSuchThat { .. } => {
-                    sim.push(SimAction {
+                    sim.push(ActionInfo {
                         label: action.label.clone(),
                         source: action.source.clone(),
                         assignment: action.assignment.clone(),
@@ -280,7 +261,7 @@ impl AbstractEventActionTable {
             index_of_abstract,
             index_of_concrete,
             sim,
-            disappearing_witnesses: (!disappearing.is_empty()).then_some(disappearing),
+            disappearing_witnesses: disappearing,
         }
     }
 }
@@ -305,28 +286,19 @@ pub(super) struct WitnessInfo {
 /// variables contribute `v ↦ v'` instead.
 pub(super) struct EventWitnessTable {
     pub witnesses: Vec<WitnessInfo>,
-    /// Indices of the nondeterministic witnesses.
-    pub nondet: Vec<usize>,
     /// `v ↦ E` for deterministic primed-variable witnesses.
-    pub machine_det: Option<Substitution>,
+    pub machine_det: Substitution,
     /// `v' ↦ E` for deterministic primed-variable witnesses.
-    pub machine_primed_det: Option<Substitution>,
+    pub machine_primed_det: Substitution,
     /// `p ↦ E` for deterministic parameter witnesses.
-    pub event_det: Option<Substitution>,
+    pub event_det: Substitution,
     /// `v ↦ v'` for nondeterministic primed-variable witnesses.
-    pub prime_substitution: Option<Substitution>,
+    pub prime_substitution: Substitution,
 }
 
 impl EventWitnessTable {
     pub fn new(event: &EventDecl, variables: &MachineVariables, ff: &FormulaFactory) -> Self {
-        let mut table = EventWitnessTable {
-            witnesses: Vec::new(),
-            nondet: Vec::new(),
-            machine_det: None,
-            machine_primed_det: None,
-            event_det: None,
-            prime_substitution: None,
-        };
+        let mut witnesses = Vec::new();
         let mut machine_det = Substitution::new();
         let mut machine_primed_det = Substitution::new();
         let mut event_det = Substitution::new();
@@ -335,8 +307,7 @@ impl EventWitnessTable {
         for witness in &event.witnesses {
             let label = witness.label.clone();
             let deterministic = deterministic_value(&label, &witness.typed);
-            let index = table.witnesses.len();
-            table.witnesses.push(WitnessInfo {
+            witnesses.push(WitnessInfo {
                 label: label.clone(),
                 source: witness.source.clone(),
                 predicate: witness.typed.clone(),
@@ -351,7 +322,6 @@ impl EventWitnessTable {
                     event_det.insert(label, value);
                 }
                 (None, base) => {
-                    table.nondet.push(index);
                     if let Some(base) = base
                         && let Some(ty) = variables.types.get(base)
                     {
@@ -361,11 +331,18 @@ impl EventWitnessTable {
             }
         }
 
-        table.machine_det = (!machine_det.is_empty()).then_some(machine_det);
-        table.machine_primed_det = (!machine_primed_det.is_empty()).then_some(machine_primed_det);
-        table.event_det = (!event_det.is_empty()).then_some(event_det);
-        table.prime_substitution = (!prime.is_empty()).then_some(prime);
-        table
+        EventWitnessTable {
+            witnesses,
+            machine_det,
+            machine_primed_det,
+            event_det,
+            prime_substitution: prime,
+        }
+    }
+
+    /// The nondeterministic witnesses, in declaration order.
+    pub fn nondet(&self) -> impl Iterator<Item = &WitnessInfo> {
+        self.witnesses.iter().filter(|w| !w.deterministic)
     }
 }
 
@@ -393,15 +370,15 @@ fn deterministic_value(label: &str, predicate: &Predicate) -> Option<Expression>
 /// Merge substitution batches applied together: later entries win on a
 /// shared key, matching the order they are listed in.
 pub(super) fn merge_batches<'a>(
-    batches: impl IntoIterator<Item = Option<&'a Substitution>>,
-) -> Option<Substitution> {
+    batches: impl IntoIterator<Item = &'a Substitution>,
+) -> Substitution {
     let mut merged = Substitution::new();
-    for batch in batches.into_iter().flatten() {
+    for batch in batches {
         for (key, value) in batch {
             merged.insert(key.clone(), value.clone());
         }
     }
-    (!merged.is_empty()).then_some(merged)
+    merged
 }
 
 /// One guard of the effective (inherited-then-own) guard list.

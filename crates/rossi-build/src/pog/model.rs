@@ -180,11 +180,19 @@ impl PoFile {
             .attr(attr::PARENT_SET, po.global_hypotheses.as_str());
         let mut local_names = RodinNameGenerator::default();
         for local in &po.local_hypotheses {
-            hypothesis.push(predicate_element(local_names.fresh(), local));
+            hypothesis.push(predicate_element(
+                local_names.fresh(),
+                &local.predicate,
+                &local.source,
+            ));
         }
         sequent.push(hypothesis);
 
-        sequent.push(predicate_element(names.fresh(), &po.goal));
+        sequent.push(predicate_element(
+            names.fresh(),
+            &po.goal.predicate,
+            &po.goal.source,
+        ));
 
         for source in &po.sources {
             sequent.push(
@@ -247,14 +255,15 @@ impl PoFile {
 pub const SEQ_HYP_NAME: &str = "SEQHYP";
 
 /// A `poPredicate` row: canonical predicate text plus its source.
-fn predicate_element(name: String, predicate: &PogPredicate) -> Element {
+pub(super) fn predicate_element(
+    name: String,
+    predicate: &Predicate,
+    source: &HandleUri,
+) -> Element {
     Element::new(xtag::PO_PREDICATE)
         .attr(attr::NAME, name)
-        .attr(
-            attr::PREDICATE,
-            canonical_typed_predicate(&predicate.predicate),
-        )
-        .attr(attr::SOURCE, predicate.source.as_str())
+        .attr(attr::PREDICATE, canonical_typed_predicate(predicate))
+        .attr(attr::SOURCE, source.as_str())
 }
 
 #[cfg(test)]

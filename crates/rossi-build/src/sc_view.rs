@@ -172,7 +172,7 @@ fn ingest_element(
                 // generator materialized the literal `VARIANT` for the
                 // same label-less case — normalize both.
                 let label = match string_attr(e, b"label")?.as_deref() {
-                    None | Some("VARIANT") => "vrn".to_string(),
+                    None | Some("VARIANT") => rossi::DEFAULT_VARIANT_LABEL.to_string(),
                     Some(label) => label.to_string(),
                 };
                 view.variants.insert(label, expression);
@@ -396,7 +396,7 @@ fn plain_attr(e: &BytesStart, key: &[u8]) -> Result<Option<String>> {
     Ok(None)
 }
 
-fn string_attr(e: &BytesStart, key: &[u8]) -> Result<Option<String>> {
+pub(crate) fn string_attr(e: &BytesStart, key: &[u8]) -> Result<Option<String>> {
     crate::xml_out::read_attr(e, key, |s| ProjectError::XmlAttribute(s).into())
 }
 

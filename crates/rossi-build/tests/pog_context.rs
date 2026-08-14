@@ -1,18 +1,8 @@
 //! Context proof obligations: axiom well-definedness, theorems, and
 //! the EXTENDS hypothesis closure.
 
-use rossi_build::{Project, ProjectComponent, build_with_model, pog};
-
-fn generate(name: &str, components: Vec<ProjectComponent>) -> Vec<rossi_build::ScFile> {
-    let project = Project::new(name, components);
-    let (build, model) = build_with_model(&project);
-    assert!(build.is_ok(), "build diagnostics: {:?}", build.diagnostics);
-    pog::generate(&project, &model)
-}
-
-fn xml(filename: &str, body: &str) -> ProjectComponent {
-    ProjectComponent::from_xml(filename, body).unwrap()
-}
+mod common;
+use common::{generate, xml};
 
 #[test]
 fn axiom_wd_and_theorem_obligations() {

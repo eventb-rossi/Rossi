@@ -293,7 +293,7 @@ pub fn check_machine(
     let mut variant_usable = false;
     let mut variant_kept = crate::duplicates::FirstKept::new(&dup_variant_labels);
     for v in &machine.variants {
-        let label = v.label.as_deref().unwrap_or("vrn");
+        let label = v.effective_label();
         if variant_kept.drops(Some(label)) {
             accurate = false;
             continue;

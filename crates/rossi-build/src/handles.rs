@@ -101,6 +101,36 @@ fn escape_handle_id(id: &str, out: &mut String) {
     }
 }
 
+/// The `type#name` segments of a handle URI, unescaped, skipping the
+/// leading file path — the inverse of the escaping above. Kept beside
+/// `escape_handle_id` so the two sides of the syntax cannot drift.
+pub(crate) fn handle_segments(handle: &str) -> Vec<(String, String)> {
+    let mut segments = Vec::new();
+    let mut current = String::new();
+    let mut parts: Vec<String> = Vec::new();
+    let mut chars = handle.chars();
+    while let Some(c) = chars.next() {
+        match c {
+            '\\' => {
+                if let Some(next) = chars.next() {
+                    current.push(next);
+                }
+            }
+            '|' => {
+                parts.push(std::mem::take(&mut current));
+            }
+            _ => current.push(c),
+        }
+    }
+    parts.push(current);
+    for part in parts.into_iter().skip(1) {
+        if let Some((ty, name)) = part.split_once('#') {
+            segments.push((ty.to_string(), name.to_string()));
+        }
+    }
+    segments
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

@@ -2,22 +2,8 @@
 //! theorems, the hypothesis stack (seen contexts, variables, inherited
 //! invariants), and variant obligations.
 
-use rossi_build::{Project, ProjectComponent, build_with_model, pog};
-
-fn generate(name: &str, components: Vec<ProjectComponent>) -> Vec<rossi_build::ScFile> {
-    let project = Project::new(name, components);
-    let (build, model) = build_with_model(&project);
-    assert!(build.is_ok(), "build diagnostics: {:?}", build.diagnostics);
-    pog::generate(&project, &model)
-}
-
-fn xml(filename: &str, body: &str) -> ProjectComponent {
-    ProjectComponent::from_xml(filename, body).unwrap()
-}
-
-fn find<'a>(files: &'a [rossi_build::ScFile], name: &str) -> &'a rossi_build::ScFile {
-    files.iter().find(|f| f.filename == name).unwrap()
-}
+mod common;
+use common::{find, generate, xml};
 
 #[test]
 fn invariant_wd_and_theorem_obligations_with_seen_context() {

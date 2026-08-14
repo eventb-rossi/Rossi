@@ -4,11 +4,10 @@
 //! agree in type; violations are EB027 errors that keep the first
 //! target's shape and mark the event inaccurate.
 
-use rossi_build::{Project, ProjectComponent, RuleId, Severity, build, build_with_model};
+use rossi_build::{Project, RuleId, Severity, build, build_with_model};
 
-fn xml(filename: &str, body: &str) -> ProjectComponent {
-    ProjectComponent::from_xml(filename, body).unwrap()
-}
+mod common;
+use common::xml;
 
 /// Abstract machine in the shape of the classical merge example: two
 /// events with identical actions, differing guards.

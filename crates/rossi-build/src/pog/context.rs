@@ -117,15 +117,11 @@ pub(super) fn push_context_hypotheses(
 ) {
     push_identifiers(set, names, record);
     for axiom in &record.axioms {
-        set.push(
-            Element::new(xtag::PO_PREDICATE)
-                .attr(attr::NAME, names.fresh())
-                .attr(
-                    attr::PREDICATE,
-                    crate::normalize::canonical_typed_predicate(&axiom.typed),
-                )
-                .attr(attr::SOURCE, axiom.source.as_str()),
-        );
+        set.push(super::model::predicate_element(
+            names.fresh(),
+            &axiom.typed,
+            &axiom.source,
+        ));
     }
 }
 

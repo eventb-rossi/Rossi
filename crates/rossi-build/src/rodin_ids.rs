@@ -197,7 +197,9 @@ fn record_child(
         | Kind::Event => attr(e, b"label")?,
         // Old-format variants carry no label; index them under the
         // default so their identity is still reachable.
-        Kind::Variant => attr(e, b"label")?.or_else(|| Some("vrn".to_string())),
+        Kind::Variant => {
+            attr(e, b"label")?.or_else(|| Some(rossi::DEFAULT_VARIANT_LABEL.to_string()))
+        }
         Kind::ExtendsContext | Kind::SeesContext | Kind::RefinesMachine | Kind::RefinesEvent => {
             attr(e, b"target")?
         }

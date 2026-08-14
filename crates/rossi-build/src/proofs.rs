@@ -25,8 +25,8 @@ use std::collections::HashMap;
 use std::io::{BufRead, Read, Seek};
 use std::path::Path;
 
+use quick_xml::Reader;
 use quick_xml::events::{BytesStart, Event as XmlEvent};
-use quick_xml::{Reader, XmlVersion};
 
 use crate::rules::RuleId;
 use crate::{Diagnostic, Severity, error::Result};
@@ -170,16 +170,18 @@ enum FileKind {
 }
 
 impl FileKind {
+    /// Extension → kind; `component_of` strips the same list.
+    const EXTENSIONS: [(&'static str, FileKind); 3] = [
+        (".bpr", FileKind::Proof),
+        (".bpo", FileKind::Obligations),
+        (".bps", FileKind::Status),
+    ];
+
     fn of(path: &str) -> Option<Self> {
-        if path.ends_with(".bpr") {
-            Some(FileKind::Proof)
-        } else if path.ends_with(".bpo") {
-            Some(FileKind::Obligations)
-        } else if path.ends_with(".bps") {
-            Some(FileKind::Status)
-        } else {
-            None
-        }
+        Self::EXTENSIONS
+            .iter()
+            .find(|(ext, _)| path.ends_with(ext))
+            .map(|(_, kind)| *kind)
     }
 
     /// The root-level child element carrying one obligation entry.
@@ -340,9 +342,9 @@ impl ProofData {
 /// attributes a finding to a file, and it keeps same-named components in
 /// sibling project directories from cross-joining.
 fn component_of(path: &str) -> String {
-    path.strip_suffix(".bpr")
-        .or_else(|| path.strip_suffix(".bpo"))
-        .or_else(|| path.strip_suffix(".bps"))
+    FileKind::EXTENSIONS
+        .iter()
+        .find_map(|(ext, _)| path.strip_suffix(ext))
         .unwrap_or(path)
         .to_string()
 }
@@ -404,33 +406,17 @@ fn extract_entry(
     component: &str,
     entries: &mut Vec<ProofEntry>,
 ) -> std::result::Result<(), String> {
-    let mut name = String::new();
-    let mut confidence = None;
-    let mut broken = false;
-
-    for attr in e.attributes() {
-        let attr = attr.map_err(|e| e.to_string())?;
-        let value = || -> std::result::Result<String, String> {
-            attr.normalized_value(XmlVersion::Implicit1_0)
-                .map(|v| v.into_owned())
-                .map_err(|e| e.to_string())
-        };
-        match attr.key.as_ref() {
-            b"name" => name = value()?,
-            // eventb-checker 1.6 takes each obligation's confidence from its
-            // `.bps` status entry; the `.bpr` proof confidence is only a
-            // fallback for obligations a `.bps` never mentions.
-            b"org.eventb.core.confidence"
-                if kind == FileKind::Status || kind == FileKind::Proof =>
-            {
-                confidence = value()?.parse::<i64>().ok();
-            }
-            b"org.eventb.core.psBroken" if kind == FileKind::Status => {
-                broken = value()? == "true";
-            }
-            _ => {}
-        }
-    }
+    let name = crate::xml_out::read_attr(e, b"name", |m| m)?.unwrap_or_default();
+    // eventb-checker 1.6 takes each obligation's confidence from its
+    // `.bps` status entry; the `.bpr` proof confidence is only a
+    // fallback for obligations a `.bps` never mentions.
+    let confidence = if kind == FileKind::Status || kind == FileKind::Proof {
+        crate::xml_out::read_attr(e, b"confidence", |m| m)?.and_then(|v| v.parse::<i64>().ok())
+    } else {
+        None
+    };
+    let broken = kind == FileKind::Status
+        && crate::xml_out::read_attr(e, b"psBroken", |m| m)?.as_deref() == Some("true");
 
     // Entries without a name can't be joined to anything; skip them.
     if !name.is_empty() {

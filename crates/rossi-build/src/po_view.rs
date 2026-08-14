@@ -25,7 +25,8 @@ use quick_xml::events::{BytesStart, Event};
 use rossi::{Predicate, parse_predicate_str};
 
 use crate::error::{ProjectError, Result};
-use crate::sc_view::strip_type_ascriptions_pred;
+use crate::handles::handle_segments;
+use crate::sc_view::{string_attr, strip_type_ascriptions_pred};
 
 /// One predicate row: the re-parsed formula plus its normalized source.
 #[derive(Debug, Clone, PartialEq)]
@@ -252,35 +253,6 @@ pub enum ResolvedHint<'a> {
     Predicate(Option<&'a PoPredicate>),
 }
 
-/// The `type#name` segments of a handle, unescaped, skipping the
-/// leading file path.
-fn handle_segments(handle: &str) -> Vec<(String, String)> {
-    let mut segments = Vec::new();
-    let mut current = String::new();
-    let mut parts: Vec<String> = Vec::new();
-    let mut chars = handle.chars();
-    while let Some(c) = chars.next() {
-        match c {
-            '\\' => {
-                if let Some(next) = chars.next() {
-                    current.push(next);
-                }
-            }
-            '|' => {
-                parts.push(std::mem::take(&mut current));
-            }
-            _ => current.push(c),
-        }
-    }
-    parts.push(current);
-    for part in parts.into_iter().skip(1) {
-        if let Some((ty, name)) = part.split_once('#') {
-            segments.push((ty.to_string(), name.to_string()));
-        }
-    }
-    segments
-}
-
 /// The element currently being filled while parsing.
 enum Scope {
     None,
@@ -298,8 +270,8 @@ fn handle_element(
 ) -> Result<()> {
     match e.name().as_ref() {
         b"org.eventb.core.poPredicateSet" if depth == 1 => {
-            let name = attr(e, b"name")?.unwrap_or_default();
-            let parent = attr(e, b"org.eventb.core.parentSet")?
+            let name = string_attr(e, b"name")?.unwrap_or_default();
+            let parent = string_attr(e, b"parentSet")?
                 .as_deref()
                 .and_then(handle_last_segment);
             view.sets.insert(
@@ -312,10 +284,10 @@ fn handle_element(
             *scope = Scope::Set(name);
         }
         b"org.eventb.core.poSequent" if depth == 1 => {
-            let name = attr(e, b"name")?.unwrap_or_default();
+            let name = string_attr(e, b"name")?.unwrap_or_default();
             let sequent = PoSequent {
-                description: attr(e, b"org.eventb.core.poDesc")?.unwrap_or_default(),
-                accurate: attr(e, b"org.eventb.core.accurate")?.as_deref() == Some("true"),
+                description: string_attr(e, b"poDesc")?.unwrap_or_default(),
+                accurate: string_attr(e, b"accurate")?.as_deref() == Some("true"),
                 ..PoSequent::default()
             };
             view.sequents.insert(name.clone(), sequent);
@@ -324,7 +296,7 @@ fn handle_element(
         b"org.eventb.core.poPredicateSet" if depth == 2 => {
             // A sequent's local hypothesis set.
             if let Scope::Sequent(name) = &*scope {
-                let parent = attr(e, b"org.eventb.core.parentSet")?
+                let parent = string_attr(e, b"parentSet")?
                     .as_deref()
                     .and_then(handle_last_segment);
                 if let Some(sequent) = view.sequents.get_mut(name) {
@@ -337,8 +309,8 @@ fn handle_element(
                 && let Some(set) = view.sets.get_mut(name)
             {
                 set.identifiers.insert(
-                    attr(e, b"name")?.unwrap_or_default(),
-                    attr(e, b"org.eventb.core.type")?.unwrap_or_default(),
+                    string_attr(e, b"name")?.unwrap_or_default(),
+                    string_attr(e, b"type")?.unwrap_or_default(),
                 );
             }
         }
@@ -348,7 +320,7 @@ fn handle_element(
                 Scope::Set(name) => {
                     if let Some(set) = view.sets.get_mut(name) {
                         set.predicate_names
-                            .push(attr(e, b"name")?.unwrap_or_default());
+                            .push(string_attr(e, b"name")?.unwrap_or_default());
                         set.predicates.push(row);
                     }
                 }
@@ -371,8 +343,8 @@ fn handle_element(
                 && let Some(sequent) = view.sequents.get_mut(name)
             {
                 sequent.sources.push((
-                    attr(e, b"org.eventb.core.poRole")?.unwrap_or_default(),
-                    normalize_handle(attr(e, b"org.eventb.core.source")?),
+                    string_attr(e, b"poRole")?.unwrap_or_default(),
+                    normalize_handle(string_attr(e, b"source")?),
                 ));
             }
         }
@@ -380,9 +352,8 @@ fn handle_element(
             if let Scope::Sequent(name) = &*scope
                 && let Some(sequent) = view.sequents.get_mut(name)
             {
-                let start =
-                    normalize_handle(attr(e, b"org.eventb.core.poSelHintFst")?).unwrap_or_default();
-                let hint = match normalize_handle(attr(e, b"org.eventb.core.poSelHintSnd")?) {
+                let start = normalize_handle(string_attr(e, b"poSelHintFst")?).unwrap_or_default();
+                let hint = match normalize_handle(string_attr(e, b"poSelHintSnd")?) {
                     Some(end) => PoHint::Interval { start, end },
                     None => PoHint::Predicate(start),
                 };
@@ -394,16 +365,8 @@ fn handle_element(
     Ok(())
 }
 
-fn attr(e: &BytesStart<'_>, key: &[u8]) -> Result<Option<String>> {
-    crate::xml_out::read_attr(
-        e,
-        key.strip_prefix(b"org.eventb.core.").unwrap_or(key),
-        |m| crate::error::Error::from(ProjectError::XmlAttribute(m)),
-    )
-}
-
 fn predicate_row(e: &BytesStart<'_>) -> Result<PoPredicate> {
-    let raw = attr(e, b"org.eventb.core.predicate")?.unwrap_or_default();
+    let raw = string_attr(e, b"predicate")?.unwrap_or_default();
     let ast = parse_predicate_str(raw.trim()).map_err(|err| ProjectError::ReparseFormula {
         kind: "predicate",
         input: raw.clone(),
@@ -411,7 +374,7 @@ fn predicate_row(e: &BytesStart<'_>) -> Result<PoPredicate> {
     })?;
     Ok(PoPredicate {
         predicate: strip_type_ascriptions_pred(ast),
-        source: normalize_handle(attr(e, b"org.eventb.core.source")?),
+        source: normalize_handle(string_attr(e, b"source")?),
     })
 }
 
@@ -421,30 +384,5 @@ use crate::sc_view::normalize_source as normalize_handle;
 
 /// The last `#name` segment of a handle, unescaped.
 fn handle_last_segment(handle: &str) -> Option<String> {
-    // Split on the last unescaped '#'.
-    let bytes = handle.as_bytes();
-    let mut split = None;
-    let mut i = 0;
-    while i < bytes.len() {
-        match bytes[i] {
-            b'\\' => i += 1,
-            b'#' => split = Some(i),
-            _ => {}
-        }
-        i += 1;
-    }
-    let start = split? + 1;
-    // Unescape `\x` → `x`.
-    let mut out = String::new();
-    let mut chars = handle[start..].chars();
-    while let Some(c) = chars.next() {
-        if c == '\\' {
-            if let Some(next) = chars.next() {
-                out.push(next);
-            }
-        } else {
-            out.push(c);
-        }
-    }
-    Some(out)
+    handle_segments(handle).pop().map(|(_, name)| name)
 }

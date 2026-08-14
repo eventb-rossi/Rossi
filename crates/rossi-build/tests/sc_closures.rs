@@ -4,14 +4,13 @@
 
 use rossi_build::{Project, ProjectComponent, build_with_model, sc_model::ScModel};
 
+mod common;
+use common::xml;
+
 fn model(name: &str, components: Vec<ProjectComponent>) -> ScModel {
     let (build, model) = build_with_model(&Project::new(name, components));
     assert!(build.is_ok(), "build diagnostics: {:?}", build.diagnostics);
     model
-}
-
-fn xml(filename: &str, body: &str) -> ProjectComponent {
-    ProjectComponent::from_xml(filename, body).unwrap()
 }
 
 mod refinement_chain {
@@ -85,12 +84,12 @@ mod refinement_chain {
     fn inherited_invariants_walk_ancestors_oldest_first() {
         let model = chain();
         let m2 = &model.machines["M2"];
-        let rows: Vec<(&str, &str)> = model
+        let rows: Vec<&str> = model
             .inherited_invariants(m2)
             .into_iter()
-            .map(|(machine, inv)| (machine.name(), inv.label.as_str()))
+            .map(|inv| inv.label.as_str())
             .collect();
-        assert_eq!(rows, vec![("M0", "inv0"), ("M1", "inv1")]);
+        assert_eq!(rows, vec!["inv0", "inv1"]);
         assert!(model.inherited_invariants(&model.machines["M0"]).is_empty());
     }
 
@@ -99,17 +98,22 @@ mod refinement_chain {
         let model = chain();
         let m2 = &model.machines["M2"];
         let e2 = &m2.events_by_label["E"];
-        let abstract_event = model.abstract_event(m2, e2).expect("E refines M1.E");
+        let abstract_events = model.abstract_events(m2, e2);
+        let abstract_event = abstract_events.first().expect("E refines M1.E");
         assert_eq!(abstract_event.label, "E");
         assert_eq!(abstract_event.guards[0].label, "grd1");
 
         // INITIALISATION refines the abstract INITIALISATION implicitly.
         let init = &m2.events_by_label["INITIALISATION"];
-        assert!(model.abstract_event(m2, init).is_some());
+        assert!(!model.abstract_events(m2, init).is_empty());
 
         // The root machine's events refine nothing.
         let m0 = &model.machines["M0"];
-        assert!(model.abstract_event(m0, &m0.events_by_label["E"]).is_none());
+        assert!(
+            model
+                .abstract_events(m0, &m0.events_by_label["E"])
+                .is_empty()
+        );
     }
 
     #[test]

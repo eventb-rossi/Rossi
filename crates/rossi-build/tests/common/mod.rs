@@ -263,6 +263,37 @@ pub fn locate_corpus() -> Option<PathBuf> {
     env_path("EVENTB_CORPUS_DIR").filter(|p| p.is_dir())
 }
 
+/// The corpus directory: `EVENTB_CORPUS_DIR`, else the conventional
+/// `eventb-models-collection` sibling checkout.
+pub fn corpus_dir() -> Option<PathBuf> {
+    locate_corpus().or_else(|| {
+        let sibling = workspace_root().join("../eventb-models-collection");
+        sibling.is_dir().then_some(sibling)
+    })
+}
+
+/// Parse raw `.buc`/`.bum` XML into a project component.
+pub fn xml(filename: &str, body: &str) -> rossi_build::ProjectComponent {
+    rossi_build::ProjectComponent::from_xml(filename, body).unwrap()
+}
+
+/// Build the components and generate their proof-obligation files,
+/// asserting the build itself is clean.
+pub fn generate(
+    name: &str,
+    components: Vec<rossi_build::ProjectComponent>,
+) -> Vec<rossi_build::ScFile> {
+    let project = rossi_build::Project::new(name, components);
+    let (build, model) = rossi_build::build_with_model(&project);
+    assert!(build.is_ok(), "build diagnostics: {:?}", build.diagnostics);
+    rossi_build::pog::generate(&project, &model)
+}
+
+/// The generated file named `name`.
+pub fn find<'a>(files: &'a [rossi_build::ScFile], name: &str) -> &'a rossi_build::ScFile {
+    files.iter().find(|f| f.filename == name).unwrap()
+}
+
 /// The `eventb-checker` command to run: `EVENTB_CHECKER` if set, else the CLI
 /// resolved from `PATH`. May be a wrapper (e.g. `java -jar …`) exposed as a
 /// single executable.

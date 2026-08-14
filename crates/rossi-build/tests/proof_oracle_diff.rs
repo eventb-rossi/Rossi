@@ -27,14 +27,14 @@
 //! neither exists). The oracle runs from `PATH`; set `EVENTB_CHECKER` to
 //! override.
 
-use std::path::{Path, PathBuf};
+use std::path::Path;
 use std::process::Command;
 
 use rossi_build::proofs;
 use rossi_build::rules::RuleId;
 
 mod common;
-use common::{collect_zips, eventb_checker_bin, locate_corpus, oracle_available, workspace_root};
+use common::{collect_zips, corpus_dir, eventb_checker_bin, oracle_available};
 
 #[derive(Debug, Default, PartialEq, Eq)]
 struct Counts {
@@ -44,13 +44,6 @@ struct Counts {
     pending: u64,
     unattempted: u64,
     broken: u64,
-}
-
-fn corpus_dir() -> Option<PathBuf> {
-    locate_corpus().or_else(|| {
-        let sibling = workspace_root().join("../eventb-models-collection");
-        sibling.is_dir().then_some(sibling)
-    })
 }
 
 #[test]

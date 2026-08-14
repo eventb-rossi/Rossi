@@ -26,22 +26,15 @@ mod common;
 
 use std::collections::BTreeSet;
 use std::io::Read;
-use std::path::{Path, PathBuf};
+use std::path::Path;
 use std::time::Duration;
 
 use common::{
-    collect_zips, load_flags, load_machines, locate_corpus, resolve_program, spawn_in_group,
-    wait_with_timeout, workspace_root, workspace_target, write_report,
+    collect_zips, corpus_dir, load_flags, load_machines, resolve_program, spawn_in_group,
+    wait_with_timeout, workspace_target, write_report,
 };
 
 const DEFAULT_TIMEOUT_SECS: u64 = 120;
-
-fn corpus_dir() -> Option<PathBuf> {
-    locate_corpus().or_else(|| {
-        let sibling = workspace_root().join("../eventb-models-collection");
-        sibling.is_dir().then_some(sibling)
-    })
-}
 
 #[test]
 #[ignore = "needs eventb-animate and a models corpus; run with --ignored"]

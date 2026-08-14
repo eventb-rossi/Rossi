@@ -18,20 +18,13 @@
 
 use std::collections::BTreeMap;
 use std::io::Read;
-use std::path::{Path, PathBuf};
+use std::path::Path;
 
 use rossi_build::po_view::PoView;
 use rossi_build::project::discover_projects;
 
 mod common;
-use common::{collect_zips, load_flags, locate_corpus, workspace_root, workspace_target};
-
-fn corpus_dir() -> Option<PathBuf> {
-    locate_corpus().or_else(|| {
-        let sibling = workspace_root().join("../eventb-models-collection");
-        sibling.is_dir().then_some(sibling)
-    })
-}
+use common::{collect_zips, corpus_dir, load_flags, workspace_target};
 
 /// Problems reported per model before truncation.
 const MAX_PROBLEMS: usize = 5;

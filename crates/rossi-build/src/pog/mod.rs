@@ -8,14 +8,11 @@
 
 mod context;
 mod event;
-pub mod hyp;
+mod hyp;
 mod machine;
-pub mod model;
-pub mod natures;
+mod model;
+mod natures;
 mod tables;
-
-pub use model::{Hint, PoFile, PogPredicate, PogSource, ProofObligation, Role};
-pub use natures::Nature;
 
 use rossi::Component;
 
