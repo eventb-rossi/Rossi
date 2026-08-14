@@ -27,6 +27,8 @@ use super::tables::{
 pub(super) struct EventScope<'a> {
     pub event: &'a Rc<EventDecl>,
     pub is_initialisation: bool,
+    /// Whether the machine itself refines nothing.
+    pub is_initial_machine: bool,
     pub accurate: bool,
     pub manager: HypothesisManager,
     pub guards: ConcreteEventGuardTable,
@@ -34,13 +36,14 @@ pub(super) struct EventScope<'a> {
     pub concrete_actions: ConcreteEventActionTable,
     pub abstract_actions: AbstractEventActionTable,
     pub witnesses: EventWitnessTable,
+    pub variables: &'a MachineVariables,
 }
 
 impl<'a> EventScope<'a> {
     pub fn new(
         model: &ScModel,
         machine: &CheckedMachine,
-        variables: &MachineVariables,
+        variables: &'a MachineVariables,
         event: &'a Rc<EventDecl>,
         ff: &FormulaFactory,
     ) -> Self {
@@ -127,6 +130,7 @@ impl<'a> EventScope<'a> {
         EventScope {
             event,
             is_initialisation,
+            is_initial_machine: machine.record.refines.is_none(),
             accurate,
             manager,
             guards,
@@ -134,6 +138,7 @@ impl<'a> EventScope<'a> {
             concrete_actions,
             abstract_actions,
             witnesses,
+            variables,
         }
     }
 
@@ -158,8 +163,271 @@ pub(super) fn generate_event(
     guard_module(po, scope);
     witness_module(po, scope);
     invariant_module(po, scope, machine_manager, invariants);
+    strengthen_guard_module(po, scope);
     action_module(po, scope);
+    body_sim_module(po, scope);
+    frame_sim_module(po, scope);
     scope.manager.create_hypotheses(po);
+}
+
+/// Guard strengthening: the abstract guards must hold whenever the
+/// concrete ones do. One `<evt>/<absGrd>/GRD` per new abstract guard
+/// for a straight refinement; one disjunctive `<evt>/MRG` for an event
+/// merging several abstract events.
+fn strengthen_guard_module(po: &mut PoFile, scope: &mut EventScope<'_>) {
+    if scope.abstract_events.refinement_type != super::tables::RefinementType::Merge {
+        let Some(abstract_event) = scope.abstract_events.first_abstract_event().cloned() else {
+            return;
+        };
+        for index in 0..scope.abstract_events.tables[0].guards.len() {
+            let table = &scope.abstract_events.tables[0];
+            let guard = &table.guards[index];
+            if guard.is_theorem
+                || is_trivial(&guard.predicate)
+                || table.index_of_concrete[index].is_some()
+            {
+                continue;
+            }
+            let label = guard.label.clone();
+            let guard_source = guard.source.clone();
+            let goal = strengthen_substitution(scope, &guard.predicate);
+            let hyp = action_and_witness_hypothesis(scope, &goal);
+            let name = format!("{}/{label}/GRD", scope.event.label);
+            let hints = vec![scope.local_hypothesis_hint(po, &name)];
+            po.create_po(ProofObligation {
+                name,
+                nature: Nature::GuardStrengtheningSplit,
+                global_hypotheses: po.set_handle(scope.manager.full_hypothesis()),
+                local_hypotheses: hyp,
+                goal: PogPredicate::new(goal, guard_source.clone()),
+                sources: vec![
+                    PogSource::new(Role::Abstract, abstract_event.source.clone()),
+                    PogSource::new(Role::Abstract, guard_source),
+                    PogSource::new(Role::Concrete, scope.event.source.clone()),
+                ],
+                hints,
+                accurate: scope.accurate,
+            });
+        }
+    } else {
+        merge_guard_po(po, scope);
+    }
+}
+
+/// The merged guard-strengthening obligation: a disjunction over the
+/// abstract events of the conjunction of their new, non-theorem
+/// guards. A branch with no remaining guards is trivially true and
+/// discharges the whole obligation.
+fn merge_guard_po(po: &mut PoFile, scope: &mut EventScope<'_>) {
+    let mut disjuncts = Vec::new();
+    for table in &scope.abstract_events.tables {
+        if table.guards.is_empty() {
+            return;
+        }
+        let conjuncts: Vec<rossi::formula::Predicate> = table
+            .guards
+            .iter()
+            .enumerate()
+            .filter(|(index, guard)| {
+                !guard.is_theorem
+                    && !is_trivial(&guard.predicate)
+                    && table.index_of_concrete[*index].is_none()
+            })
+            .map(|(_, guard)| guard.predicate.clone())
+            .collect();
+        match conjuncts.len() {
+            0 => return,
+            1 => disjuncts.push(conjuncts.into_iter().next().expect("one conjunct")),
+            _ => {
+                let ff = conjuncts[0].factory().clone();
+                disjuncts.push(ff.associative_predicate(
+                    rossi::formula::tag::AssocPredOp::LAnd,
+                    conjuncts,
+                    None,
+                ));
+            }
+        }
+    }
+    let ff = disjuncts[0].factory().clone();
+    let disjunction =
+        ff.associative_predicate(rossi::formula::tag::AssocPredOp::LOr, disjuncts, None);
+    let goal = strengthen_substitution(scope, &disjunction);
+    let hyp = action_and_witness_hypothesis(scope, &goal);
+    let name = format!("{}/MRG", scope.event.label);
+    let hints = vec![scope.local_hypothesis_hint(po, &name)];
+    let mut sources: Vec<PogSource> = scope
+        .abstract_events
+        .events
+        .iter()
+        .map(|abstract_event| PogSource::new(Role::Abstract, abstract_event.source.clone()))
+        .collect();
+    sources.push(PogSource::new(Role::Concrete, scope.event.source.clone()));
+    po.create_po(ProofObligation {
+        name,
+        nature: Nature::GuardStrengtheningMerge,
+        global_hypotheses: po.set_handle(scope.manager.full_hypothesis()),
+        local_hypotheses: hyp,
+        goal: PogPredicate::new(goal, scope.event.source.clone()),
+        sources,
+        hints,
+        accurate: scope.accurate,
+    });
+}
+
+/// The guard-strengthening substitution: deterministic parameter
+/// witnesses, then the frame unpriming with the deterministic
+/// after-values.
+fn strengthen_substitution(
+    scope: &EventScope<'_>,
+    predicate: &rossi::formula::Predicate,
+) -> rossi::formula::Predicate {
+    let goal = apply(predicate, scope.witnesses.event_det.as_ref());
+    let batch = merge_batches([
+        scope.concrete_actions.xi_unprime.as_ref(),
+        scope.concrete_actions.table.primed_det.as_ref(),
+    ]);
+    apply(&goal, batch.as_ref())
+}
+
+/// `<evt>/<absAct>/SIM` — the concrete event simulates each abstract
+/// assignment over the surviving variables, unless the identical
+/// action also exists concretely. The goal is the abstract before-
+/// after predicate carried into the concrete after-state through the
+/// witnesses.
+fn body_sim_module(po: &mut PoFile, scope: &mut EventScope<'_>) {
+    let Some(abstract_event) = scope.abstract_events.first_abstract_event().cloned() else {
+        return;
+    };
+    for index in 0..scope.abstract_actions.sim.len() {
+        if scope
+            .abstract_actions
+            .index_of_concrete
+            .get(index)
+            .copied()
+            .flatten()
+            .is_some()
+        {
+            continue;
+        }
+        let sim = &scope.abstract_actions.sim[index];
+        let label = sim.label.clone();
+        let action_source = sim.source.clone();
+        let goal = sim.assignment.ba_predicate();
+        let name = format!("{}/{label}/SIM", scope.event.label);
+        if is_trivial(&goal) {
+            continue;
+        }
+        let first = merge_batches([
+            scope.witnesses.machine_primed_det.as_ref(),
+            scope.witnesses.event_det.as_ref(),
+        ]);
+        let goal = apply(&goal, first.as_ref());
+        let second = merge_batches([
+            scope.concrete_actions.xi_unprime.as_ref(),
+            scope.concrete_actions.table.primed_det.as_ref(),
+        ]);
+        let goal = apply(&goal, second.as_ref());
+        let hyp = action_and_witness_hypothesis(scope, &goal);
+        let hints = vec![scope.local_hypothesis_hint(po, &name)];
+        po.create_po(ProofObligation {
+            name,
+            nature: Nature::ActionSimulation,
+            global_hypotheses: po.set_handle(scope.manager.full_hypothesis()),
+            local_hypotheses: hyp,
+            goal: PogPredicate::new(goal, action_source.clone()),
+            sources: vec![
+                PogSource::new(Role::Abstract, abstract_event.source.clone()),
+                PogSource::new(Role::Abstract, action_source),
+                PogSource::new(Role::Concrete, scope.event.source.clone()),
+            ],
+            hints,
+            accurate: scope.accurate,
+        });
+    }
+}
+
+/// `<evt>/<var>/EQL` — a preserved variable the abstract event leaves
+/// alone must not change: `v' = v`, with the assigning concrete
+/// action's after-value substituted (deterministic) or its
+/// before-after predicate assumed (nondeterministic).
+fn frame_sim_module(po: &mut PoFile, scope: &mut EventScope<'_>) {
+    if scope.is_initial_machine {
+        return;
+    }
+    let abstract_event = scope.abstract_events.first_abstract_event().cloned();
+    for (name, ty, preserved) in scope.variables.rows.clone() {
+        if !preserved
+            || scope
+                .abstract_actions
+                .table
+                .assigned_variables
+                .contains(&name)
+        {
+            continue;
+        }
+        let Some(index) = scope
+            .concrete_actions
+            .table
+            .actions
+            .iter()
+            .position(|action| {
+                action.assignment.assigned_identifiers().iter().any(|i| {
+                    matches!(i.kind(),
+                        rossi::formula::ExpressionKind::FreeIdentifier(n) if *n == name)
+                })
+            })
+        else {
+            continue;
+        };
+
+        let action = &scope.concrete_actions.table.actions[index];
+        let ff = action.assignment.factory();
+        let goal = ff.relational_predicate(
+            rossi::formula::tag::RelationalOp::Equal,
+            super::tables::primed(ff, &name, &ty),
+            ff.free_identifier(&name, None, Some(ty.clone())),
+            None,
+        );
+        let (goal, hyp) = if scope.concrete_actions.table.nondet.contains(&index) {
+            let position = scope
+                .concrete_actions
+                .table
+                .nondet
+                .iter()
+                .position(|i| *i == index)
+                .expect("index is in the nondeterministic list");
+            let ba = scope.concrete_actions.table.nondet_predicates[position].clone();
+            (goal, vec![PogPredicate::new(ba, action.source.clone())])
+        } else {
+            (
+                apply(&goal, scope.concrete_actions.table.primed_det.as_ref()),
+                Vec::new(),
+            )
+        };
+
+        let mut sources = Vec::new();
+        if let Some(abstract_event) = &abstract_event {
+            sources.push(PogSource::new(
+                Role::Abstract,
+                abstract_event.source.clone(),
+            ));
+        }
+        sources.push(PogSource::new(Role::Concrete, scope.event.source.clone()));
+
+        let sequent_name = format!("{}/{name}/EQL", scope.event.label);
+        let hints = vec![scope.local_hypothesis_hint(po, &sequent_name)];
+        let action_source = action.source.clone();
+        po.create_po(ProofObligation {
+            name: sequent_name,
+            nature: Nature::CommonVariableEquality,
+            global_hypotheses: po.set_handle(scope.manager.full_hypothesis()),
+            local_hypotheses: hyp,
+            goal: PogPredicate::new(goal, action_source),
+            sources,
+            hints,
+            accurate: scope.accurate,
+        });
+    }
 }
 
 /// `<evt>/<w>/WWD` — well-definedness of every witness — and

@@ -165,6 +165,14 @@ impl ConcreteEventActionTable {
     }
 }
 
+/// An abstract assignment restricted to the variables this refinement
+/// keeps, with its originating action.
+pub(super) struct SimAction {
+    pub label: String,
+    pub source: HandleUri,
+    pub assignment: Assignment,
+}
+
 /// The abstract event's actions, with the correspondence to the
 /// concrete action list (structural formula equality) and the
 /// disappearing-variable split.
@@ -173,6 +181,14 @@ pub(super) struct AbstractEventActionTable {
     /// For each concrete action, the index of the identical abstract
     /// action, if any.
     pub index_of_abstract: Vec<Option<usize>>,
+    /// For each abstract action, the index of the identical concrete
+    /// action, if any.
+    pub index_of_concrete: Vec<Option<usize>>,
+    /// The abstract assignments over surviving variables — what the
+    /// concrete event must simulate. A deterministic assignment mixing
+    /// surviving and dropped variables splits; a nondeterministic one
+    /// simulates whole.
+    pub sim: Vec<SimAction>,
     /// `y ↦ F` for every deterministic abstract assignment to a
     /// variable this refinement dropped — an implicit witness.
     pub disappearing_witnesses: Option<Substitution>,
@@ -196,21 +212,65 @@ impl AbstractEventActionTable {
                     .position(|a| a.assignment == c.assignment)
             })
             .collect();
+        let index_of_concrete = table
+            .actions
+            .iter()
+            .map(|a| {
+                concrete
+                    .table
+                    .actions
+                    .iter()
+                    .position(|c| c.assignment == a.assignment)
+            })
+            .collect();
 
         let concrete_names: BTreeSet<&str> = variables
             .rows
             .iter()
             .map(|(name, _, _)| name.as_str())
             .collect();
+        let mut sim = Vec::new();
         let mut disappearing = Substitution::new();
         for action in &table.actions {
-            if let AssignmentKind::BecomesEqualTo { idents, values } = action.assignment.kind() {
-                for (ident, value) in idents.iter().zip(values) {
-                    if let rossi::formula::ExpressionKind::FreeIdentifier(name) = ident.kind()
-                        && !concrete_names.contains(name.as_str())
-                    {
-                        disappearing.insert(name.clone(), value.clone());
+            match action.assignment.kind() {
+                AssignmentKind::BecomesEqualTo { idents, values } => {
+                    let mut surviving_idents = Vec::new();
+                    let mut surviving_values = Vec::new();
+                    for (ident, value) in idents.iter().zip(values) {
+                        let rossi::formula::ExpressionKind::FreeIdentifier(name) = ident.kind()
+                        else {
+                            continue;
+                        };
+                        if concrete_names.contains(name.as_str()) {
+                            surviving_idents.push(ident.clone());
+                            surviving_values.push(value.clone());
+                        } else {
+                            disappearing.insert(name.clone(), value.clone());
+                        }
                     }
+                    if !surviving_idents.is_empty() {
+                        let assignment = if surviving_idents.len() == idents.len() {
+                            action.assignment.clone()
+                        } else {
+                            action.assignment.factory().becomes_equal_to(
+                                surviving_idents,
+                                surviving_values,
+                                None,
+                            )
+                        };
+                        sim.push(SimAction {
+                            label: action.label.clone(),
+                            source: action.source.clone(),
+                            assignment,
+                        });
+                    }
+                }
+                AssignmentKind::BecomesMemberOf { .. } | AssignmentKind::BecomesSuchThat { .. } => {
+                    sim.push(SimAction {
+                        label: action.label.clone(),
+                        source: action.source.clone(),
+                        assignment: action.assignment.clone(),
+                    });
                 }
             }
         }
@@ -218,6 +278,8 @@ impl AbstractEventActionTable {
         AbstractEventActionTable {
             table,
             index_of_abstract,
+            index_of_concrete,
+            sim,
             disappearing_witnesses: (!disappearing.is_empty()).then_some(disappearing),
         }
     }
@@ -390,6 +452,8 @@ pub(super) struct AbstractEventGuardTable {
 }
 
 pub(super) struct AbstractGuardInfo {
+    pub label: String,
+    pub source: HandleUri,
     pub predicate: Predicate,
     pub is_theorem: bool,
 }
@@ -399,6 +463,8 @@ impl AbstractEventGuardTable {
         let guards: Vec<AbstractGuardInfo> = effective_guards(abstract_event)
             .into_iter()
             .map(|guard| AbstractGuardInfo {
+                label: guard.label.clone(),
+                source: guard.source.clone(),
                 predicate: guard.typed.clone(),
                 is_theorem: guard.is_theorem,
             })
@@ -419,10 +485,22 @@ impl AbstractEventGuardTable {
     }
 }
 
+/// How an event relates to its abstraction.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) enum RefinementType {
+    /// A new event, refining nothing.
+    Intro,
+    /// Refines one abstract event.
+    Split,
+    /// Merges several abstract events.
+    Merge,
+}
+
 /// The abstract events an event refines, with their guard tables.
 pub(super) struct AbstractEventGuardList {
     pub events: Vec<std::rc::Rc<EventDecl>>,
     pub tables: Vec<AbstractEventGuardTable>,
+    pub refinement_type: RefinementType,
 }
 
 impl AbstractEventGuardList {
@@ -437,11 +515,20 @@ impl AbstractEventGuardList {
             .cloned()
             .into_iter()
             .collect();
-        let tables = events
+        let tables: Vec<AbstractEventGuardTable> = events
             .iter()
             .map(|abstract_event| AbstractEventGuardTable::new(abstract_event, concrete))
             .collect();
-        AbstractEventGuardList { events, tables }
+        let refinement_type = match events.len() {
+            0 => RefinementType::Intro,
+            1 => RefinementType::Split,
+            _ => RefinementType::Merge,
+        };
+        AbstractEventGuardList {
+            events,
+            tables,
+            refinement_type,
+        }
     }
 
     pub fn first_abstract_event(&self) -> Option<&std::rc::Rc<EventDecl>> {

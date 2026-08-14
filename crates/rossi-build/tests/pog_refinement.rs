@@ -111,3 +111,79 @@ fn deterministic_abstract_initialisation_acts_as_witness() {
     );
     assert!(contents.contains(r#"org.eventb.core.predicate="1=0+1""#));
 }
+
+#[test]
+fn abstract_guards_must_be_strengthened() {
+    let files = generate("prj", vec![xml("M0.bum", M0), xml("M1.bum", M1)]);
+    let contents = &find(&files, "M1.bpo").contents;
+
+    // The abstract guard a < 10 has no concrete counterpart: it must
+    // follow from the concrete guards.
+    assert!(
+        contents.contains(
+            r#"<org.eventb.core.poSequent name="evt/grd1/GRD" org.eventb.core.accurate="true" org.eventb.core.poDesc="Guard strengthening (split)" org.eventb.core.poStamp="0">"#
+        ),
+        "in:\n{contents}"
+    );
+    assert!(contents.contains(
+        r#"org.eventb.core.predicate="a&lt;10" org.eventb.core.source="/prj/M0.bum|org.eventb.core.machineFile#M0|org.eventb.core.event#_evt|org.eventb.core.guard#_g1""#
+    ));
+}
+
+#[test]
+fn abstract_actions_must_be_simulated() {
+    let files = generate("prj", vec![xml("M0.bum", M0), xml("M1.bum", M1)]);
+    let contents = &find(&files, "M1.bpo").contents;
+
+    // The abstract a :∣ a' > a survives on the dropped a: its
+    // before-after predicate must follow, through the witness.
+    assert!(
+        contents.contains(
+            r#"<org.eventb.core.poSequent name="evt/act1/SIM" org.eventb.core.accurate="true" org.eventb.core.poDesc="Action simulation" org.eventb.core.poStamp="0">"#
+        ),
+        "in:\n{contents}"
+    );
+    assert!(contents.contains(
+        r#"org.eventb.core.predicate="a'&gt;a" org.eventb.core.source="/prj/M0.bum|org.eventb.core.machineFile#M0|org.eventb.core.event#_evt|org.eventb.core.action#_ea""#
+    ));
+}
+
+const M0_KEEP: &str = r#"<?xml version="1.0"?>
+<org.eventb.core.machineFile version="5" org.eventb.core.configuration="org.eventb.core.fwd">
+<org.eventb.core.variable name="_c" org.eventb.core.identifier="c"/>
+<org.eventb.core.invariant name="_i1" org.eventb.core.label="inv1" org.eventb.core.predicate="c ∈ ℤ"/>
+<org.eventb.core.event name="_init" org.eventb.core.convergence="0" org.eventb.core.extended="false" org.eventb.core.label="INITIALISATION">
+<org.eventb.core.action name="_ia" org.eventb.core.assignment="c ≔ 0" org.eventb.core.label="act1"/>
+</org.eventb.core.event>
+<org.eventb.core.event name="_evt" org.eventb.core.convergence="0" org.eventb.core.extended="false" org.eventb.core.label="evt">
+<org.eventb.core.guard name="_g1" org.eventb.core.label="grd1" org.eventb.core.predicate="c &lt; 10"/>
+</org.eventb.core.event>
+</org.eventb.core.machineFile>"#;
+
+const M1_KEEP: &str = r#"<?xml version="1.0"?>
+<org.eventb.core.machineFile version="5" org.eventb.core.configuration="org.eventb.core.fwd">
+<org.eventb.core.refinesMachine name="_r" org.eventb.core.target="M0"/>
+<org.eventb.core.variable name="_c" org.eventb.core.identifier="c"/>
+<org.eventb.core.event name="_init" org.eventb.core.convergence="0" org.eventb.core.extended="true" org.eventb.core.label="INITIALISATION"/>
+<org.eventb.core.event name="_evt" org.eventb.core.convergence="0" org.eventb.core.extended="false" org.eventb.core.label="evt">
+<org.eventb.core.refinesEvent name="_re" org.eventb.core.target="evt"/>
+<org.eventb.core.guard name="_h1" org.eventb.core.label="grd1" org.eventb.core.predicate="c &lt; 10"/>
+<org.eventb.core.action name="_ka" org.eventb.core.assignment="c ≔ c + 1" org.eventb.core.label="act1"/>
+</org.eventb.core.event>
+</org.eventb.core.machineFile>"#;
+
+#[test]
+fn changing_an_abstractly_untouched_variable_needs_equality() {
+    let files = generate("prj", vec![xml("M0.bum", M0_KEEP), xml("M1.bum", M1_KEEP)]);
+    let contents = &find(&files, "M1.bpo").contents;
+
+    // The abstract event leaves c alone; the concrete one assigns it.
+    // The after-value must equal the before-value.
+    assert!(
+        contents.contains(
+            r#"<org.eventb.core.poSequent name="evt/c/EQL" org.eventb.core.accurate="true" org.eventb.core.poDesc="Equality of common variables" org.eventb.core.poStamp="0">"#
+        ),
+        "in:\n{contents}"
+    );
+    assert!(contents.contains(r#"org.eventb.core.predicate="c+1=c""#));
+}
