@@ -302,7 +302,7 @@ mod tests {
         ] {
             let predicate = parse_predicate_str(source).unwrap();
             assert!(
-                !typed_predicate(&env, &predicate).is_some(),
+                typed_predicate(&env, &predicate).is_none(),
                 "accepted ill-typed predicate: {source}"
             );
         }
@@ -437,7 +437,7 @@ mod tests {
         for source in ["∅ = ∅", "id = id", "finite(∅)"] {
             let predicate = parse_predicate_str(source).unwrap();
             assert!(
-                !typed_predicate(&env, &predicate).is_some(),
+                typed_predicate(&env, &predicate).is_none(),
                 "accepted predicate with unresolved types: {source}"
             );
         }
