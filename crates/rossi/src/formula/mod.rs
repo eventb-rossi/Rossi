@@ -5,6 +5,7 @@
 //! structural component types live in [`crate::ast`].
 
 pub mod assignment;
+mod ba;
 mod caches;
 pub mod decl;
 pub mod expression;
