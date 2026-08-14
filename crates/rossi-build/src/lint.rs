@@ -521,21 +521,22 @@ enum ChainEnd {
 
 /// The ancestor-event chain an extended event materialises, root-first.
 ///
-/// The refinement target at each level is the explicit `refines` name or,
-/// when absent, the event's own name — mirroring
-/// `sc::machine::events::resolve_effective_refines` (Rodin XML leaves
-/// `refines` unset on a self-closing extended event). Only `extended` links
-/// are followed: a plain-refines ancestor's body is self-contained, so it
-/// terminates the chain and contributes its own clauses. Lookup takes the
-/// first name match; the SC's `events_by_label` map is last-wins, but the
-/// two diverge only on duplicate event labels (EB022).
+/// The refinement target at each level is the first explicit `refines` name
+/// or, when absent, the event's own name — mirroring the target resolution
+/// in `sc::machine::events::build_event_decl`, which keeps the first
+/// declared target (Rodin XML leaves `refines` unset on a self-closing
+/// extended event). Only `extended` links are followed: a plain-refines
+/// ancestor's body is self-contained, so it terminates the chain and
+/// contributes its own clauses. Lookup takes the first name match; the
+/// SC's `events_by_label` map is last-wins, but the two diverge only on
+/// duplicate event labels (EB022).
 fn extends_chain_root_first<'a>(e: &'a Event, ancestors: &[&'a Machine]) -> Vec<&'a Event> {
     let mut chain = Vec::new();
     let mut cur = e;
     for anc in ancestors {
         let target = cur
             .refines
-            .last()
+            .first()
             .map_or(cur.name.as_str(), |t| t.name.as_str());
         let Some(ev) = anc.events.iter().find(|ae| ae.name == target) else {
             break;

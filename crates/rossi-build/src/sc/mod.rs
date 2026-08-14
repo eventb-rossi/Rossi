@@ -250,19 +250,34 @@ impl ScModel {
             .collect()
     }
 
-    /// The abstract event `event` refines, resolved in the refined
-    /// machine. The checker records implicit refinements too
-    /// (INITIALISATION, extended events), so the declared target is
-    /// authoritative.
+    /// The abstract event `event` refines (the first when it merges
+    /// several), resolved in the refined machine. The checker records
+    /// implicit refinements too (INITIALISATION, extended events), so
+    /// the declared targets are authoritative.
     pub fn abstract_event(
         &self,
         machine: &CheckedMachine,
         event: &EventDecl,
     ) -> Option<&Rc<EventDecl>> {
-        let refines = event.refines.as_ref()?;
-        self.refined_machine(machine)?
-            .events_by_label
-            .get(&refines.abstract_label)
+        self.abstract_events(machine, event).into_iter().next()
+    }
+
+    /// Every abstract event `event` refines, in declaration order,
+    /// resolved in the refined machine. More than one entry means the
+    /// event merges those abstract events.
+    pub fn abstract_events(
+        &self,
+        machine: &CheckedMachine,
+        event: &EventDecl,
+    ) -> Vec<&Rc<EventDecl>> {
+        let Some(refined) = self.refined_machine(machine) else {
+            return Vec::new();
+        };
+        event
+            .refines
+            .iter()
+            .filter_map(|re| refined.events_by_label.get(&re.abstract_label))
+            .collect()
     }
 }
 

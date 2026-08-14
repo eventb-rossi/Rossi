@@ -185,7 +185,9 @@ pub struct EventDecl {
     pub extended: bool,
     pub accurate: bool,
     pub source: HandleUri,
-    pub refines: Option<RefinesEventDecl>,
+    /// Refined abstract events in source order; several entries mean
+    /// this event merges them.
+    pub refines: Vec<RefinesEventDecl>,
     /// Own parameters, alphabetically sorted (Rodin's emission order).
     pub parameters: Vec<ParameterDecl>,
     /// Own guards, in source order.
@@ -457,7 +459,7 @@ fn render_event(
         .attr(attr::LABEL, ev.label.clone())
         .attr(attr::SOURCE, ev.source.as_str());
 
-    if let Some(re) = &ev.refines {
+    for re in &ev.refines {
         scev.push(names.generated(|name| render_refines_event(re, name)));
     }
 
@@ -614,7 +616,7 @@ mod tests {
             extended: false,
             accurate: true,
             source: mk_uri(),
-            refines: None,
+            refines: Vec::new(),
             parameters: vec![],
             guards: vec![],
             actions: vec![],
@@ -627,7 +629,7 @@ mod tests {
             extended: true,
             accurate: true,
             source: mk_uri(),
-            refines: None,
+            refines: Vec::new(),
             parameters: vec![],
             guards: vec![],
             actions: vec![],
@@ -640,7 +642,7 @@ mod tests {
             extended: true,
             accurate: true,
             source: mk_uri(),
-            refines: None,
+            refines: Vec::new(),
             parameters: vec![],
             guards: vec![],
             actions: vec![],

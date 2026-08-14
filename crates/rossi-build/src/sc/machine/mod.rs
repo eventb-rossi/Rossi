@@ -800,7 +800,7 @@ mod tests {
             .expect("abstract_step rendered");
         let refines_target = model.machines["M1"].events_by_label["concrete_step"]
             .refines
-            .as_ref()
+            .first()
             .expect("concrete_step refines abstract_step")
             .sc_target
             .as_str();

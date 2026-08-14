@@ -76,6 +76,11 @@ pub enum RuleId {
     /// assignment operator (`:=`/`≔`, `:∈`/`::`, `:|`/`:∣`) where a predicate is
     /// required; the intended operator is almost always `=`.
     AssignmentInPredicate,
+    /// EB027 — An event merging several abstract events violates a merge
+    /// constraint: the abstract events' actions differ, their action labels
+    /// do not coincide, a shared abstract parameter name has conflicting
+    /// types, or an extended event declares several targets.
+    EventMergeMismatch,
 }
 
 impl RuleId {
@@ -107,6 +112,7 @@ impl RuleId {
             RuleId::NewEventAssignsInheritedVariable => "EB024",
             RuleId::DisappearedVariable => "EB025",
             RuleId::AssignmentInPredicate => "EB026",
+            RuleId::EventMergeMismatch => "EB027",
         }
     }
 
@@ -138,6 +144,7 @@ impl RuleId {
             RuleId::NewEventAssignsInheritedVariable => "New event assigns inherited variable",
             RuleId::DisappearedVariable => "Disappeared variable assigned",
             RuleId::AssignmentInPredicate => "Assignment operator in predicate",
+            RuleId::EventMergeMismatch => "Merged abstract events mismatch",
         }
     }
 
@@ -213,6 +220,9 @@ impl RuleId {
             RuleId::AssignmentInPredicate => {
                 "An invariant, guard, witness, or axiom uses an assignment operator (`:=`/`≔`, `:∈`/`::`, or `:|`/`:∣`) where a predicate is required. An assignment cannot stand in a predicate position; the intended operator is most likely `=` for equality."
             }
+            RuleId::EventMergeMismatch => {
+                "An event that merges several abstract events must merge compatible ones: the abstract events' actions must be identical with coinciding labels, an abstract parameter name shared between them must have one type, and an extended event cannot merge at all."
+            }
         }
     }
 
@@ -236,6 +246,7 @@ impl RuleId {
             | RuleId::NewEventAssignsInheritedVariable
             | RuleId::DisappearedVariable
             | RuleId::AssignmentInPredicate
+            | RuleId::EventMergeMismatch
             | RuleId::DuplicateComponent => Severity::Error,
             RuleId::WellDefinedness => Severity::Info,
             RuleId::DeadVariable
@@ -277,6 +288,7 @@ impl RuleId {
             RuleId::NewEventAssignsInheritedVariable,
             RuleId::DisappearedVariable,
             RuleId::AssignmentInPredicate,
+            RuleId::EventMergeMismatch,
         ]
     }
 }

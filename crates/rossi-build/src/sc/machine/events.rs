@@ -86,14 +86,6 @@ impl<'a> EventKind<'a> {
             EventKind::Ordinary(e) => Convergence::from_status(e.status),
         }
     }
-    fn explicit_refines(&self) -> Option<&'a str> {
-        match self {
-            EventKind::Init(_) => None,
-            // The checker still follows one target; the last one keeps
-            // the previous reader's behavior for multi-target sources.
-            EventKind::Ordinary(e) => e.refines.last().map(|t| t.name.as_str()),
-        }
-    }
     /// Span of the event's name token, for diagnostics about the event itself.
     fn name_span(&self) -> Option<rossi::ast::Span> {
         match self {
@@ -254,6 +246,16 @@ fn report_inherited_label_conflicts(
 /// INITIALISATION needs no special-casing: its declared convergence is
 /// always `Ordinary` (see [`EventKind::convergence`]), and both rules are
 /// no-ops for an ordinary declaration, so an INIT event never downgrades.
+/// Rank for the "weakest abstract convergence wins" rule of merged
+/// events: ordinary < anticipated < convergent.
+fn convergence_rank(c: Convergence) -> u8 {
+    match c {
+        Convergence::Ordinary => 0,
+        Convergence::Anticipated => 1,
+        Convergence::Convergent => 2,
+    }
+}
+
 fn resolve_convergence(
     declared: Convergence,
     abstract_cvg: Option<Convergence>,
@@ -383,12 +385,13 @@ fn witness_scope(
 fn resolve_witnesses(
     context: &mut EventCheckContext<'_, '_, '_>,
     event_env: &TypeEnv,
-    abstract_decl: Option<&EventDecl>,
+    abstract_decls: &[(&str, &Rc<EventDecl>)],
     inherited_chain: Option<&EventDecl>,
 ) -> (Vec<WitnessDecl>, bool) {
-    let Some(abstract_decl) = abstract_decl else {
+    let Some((_, abstract_decl)) = abstract_decls.first() else {
         return (Vec::new(), true);
     };
+    let abstract_decl: &EventDecl = abstract_decl;
     // The concrete parameter set the requirements are weighed against: own
     // plus any inherited through extension (an extended event re-declares
     // nothing but inherits its abstract's parameters).
@@ -404,19 +407,36 @@ fn resolve_witnesses(
     }
     let mut required =
         required_witness_names(abstract_decl, &concrete_param_names, machine.abstract_only);
+    // Merged abstract events share their actions, so the primed
+    // requirements coincide; only the extra events' parameters widen
+    // the required set.
+    for (_, decl) in abstract_decls.iter().skip(1) {
+        for p in decl.chain_parameters() {
+            if !concrete_param_names.contains(&p.name) {
+                required.insert(p.name.clone());
+            }
+        }
+    }
     if required.is_empty() {
         // A refining event with nothing to witness: any provided witness is
         // not-permissible and dropped.
         return (Vec::new(), true);
     }
 
-    let wscope = witness_scope(
+    let mut wscope = witness_scope(
         event_env,
         abstract_decl,
         machine.abstract_only,
         machine.concrete_vars,
         machine.parent,
     );
+    // A merged event's witnesses may name any merged abstract event's
+    // parameters; type conflicts among them are already EB027 errors.
+    for (_, decl) in abstract_decls.iter().skip(1) {
+        for p in decl.chain_parameters() {
+            wscope.insert(p.name.clone(), p.ty.clone());
+        }
+    }
 
     // Keep each *permissible* provided witness, in source order, and clear its
     // requirement: its label is a required name and its predicate type-checks.
@@ -541,25 +561,112 @@ pub(super) fn build_event_decl(
     // longer a lossless reflection of the source.
     let witness_dup_accurate = event_dups.witness_labels.names.is_empty();
 
-    let (effective_refines, parent_event_decl) =
-        resolve_effective_refines(context.kind, context.machine.parent);
-
-    // Explicit refines target missing from parent — an error in Rodin
-    // (AbstractEventNotFoundError + EventRefinementError, both Error
-    // markers), and the whole concrete event is dropped from the output.
-    // (Implicit and INIT are already gated upstream.)
-    if let Some(refines) = context.kind.explicit_refines()
-        && parent_event_decl.is_none()
-    {
+    // -----------------------------------------------------------------
+    // Refinement targets. The declared list is filtered first: an
+    // explicit INITIALISATION target is rejected, a repeated target is
+    // dropped with a warning, and an extended event keeps one target.
+    // -----------------------------------------------------------------
+    let mut merge_accurate = true;
+    let mut explicit_labels: Vec<&str> = Vec::new();
+    if let EventKind::Ordinary(e) = context.kind {
+        for target in &e.refines {
+            let target_name = target.name.as_str();
+            if target_name == crate::sc::initialisation_label() {
+                context.diagnostics.push(Diagnostic {
+                    severity: Severity::Error,
+                    origin: format!("{}.{}", context.machine.machine_name, label),
+                    message: "INITIALISATION cannot be a refinement target — clause dropped"
+                        .to_string(),
+                    rule_id: None,
+                    span: target.span.or(context.kind.name_span()),
+                });
+                merge_accurate = false;
+                continue;
+            }
+            if explicit_labels.contains(&target_name) {
+                context.diagnostics.push(Diagnostic {
+                    severity: Severity::Warning,
+                    origin: format!("{}.{}", context.machine.machine_name, label),
+                    message: format!(
+                        "ambiguous abstract event '{target_name}' — repeated refines clause dropped"
+                    ),
+                    rule_id: None,
+                    span: target.span.or(context.kind.name_span()),
+                });
+                continue;
+            }
+            explicit_labels.push(target_name);
+        }
+    }
+    if context.kind.extended() && explicit_labels.len() > 1 {
         context.diagnostics.push(Diagnostic {
             severity: Severity::Error,
             origin: format!("{}.{}", context.machine.machine_name, label),
-            message: format!("refines target '{refines}' not found in parent — event dropped"),
-            rule_id: Some(crate::RuleId::CrossReferenceNotFound),
+            message: "an extended event cannot merge several abstract events — only the first \
+                      target is kept"
+                .to_string(),
+            rule_id: Some(crate::RuleId::EventMergeMismatch),
             span: context.kind.name_span(),
         });
-        return None;
+        explicit_labels.truncate(1);
+        merge_accurate = false;
     }
+    let explicit = !explicit_labels.is_empty();
+
+    // Implicit refinement: INITIALISATION refines the parent's, and an
+    // extended event without a declared target refines its namesake.
+    // `lint::extends_chain_root_first` and `lint::inherited_init_chain`
+    // mirror this resolution on the raw AST; keep them in sync.
+    let target_labels: Vec<&str> = if explicit {
+        explicit_labels
+    } else {
+        let implicit = match context.kind {
+            EventKind::Init(_) => context
+                .machine
+                .parent
+                .filter(|p| {
+                    p.events_by_label
+                        .contains_key(crate::sc::initialisation_label())
+                })
+                .map(|_| crate::sc::initialisation_label()),
+            EventKind::Ordinary(e) if e.extended => context
+                .machine
+                .parent
+                .filter(|p| p.events_by_label.contains_key(&e.name))
+                .map(|_| e.name.as_str()),
+            EventKind::Ordinary(_) => None,
+        };
+        implicit.into_iter().collect()
+    };
+
+    // Resolve each target. An explicit target missing from the parent —
+    // an error in Rodin (AbstractEventNotFoundError + EventRefinementError,
+    // both Error markers) — drops the whole concrete event from the
+    // output. (Implicit targets are pre-gated above.)
+    let mut resolved: Vec<(&str, &Rc<EventDecl>)> = Vec::new();
+    for target in &target_labels {
+        match context
+            .machine
+            .parent
+            .and_then(|p| p.events_by_label.get(*target))
+        {
+            Some(decl) => resolved.push((target, decl)),
+            None => {
+                context.diagnostics.push(Diagnostic {
+                    severity: Severity::Error,
+                    origin: format!("{}.{}", context.machine.machine_name, label),
+                    message: format!(
+                        "refines target '{target}' not found in parent — event dropped"
+                    ),
+                    rule_id: Some(crate::RuleId::CrossReferenceNotFound),
+                    span: context.kind.name_span(),
+                });
+                return None;
+            }
+        }
+    }
+    let effective_refines: Option<&str> = resolved.first().map(|(l, _)| *l);
+    let parent_event_decl: Option<&Rc<EventDecl>> = resolved.first().map(|(_, d)| *d);
 
     let parent_event_internal_name = effective_refines.and_then(|abstract_label| {
         context
@@ -582,11 +689,93 @@ pub(super) fn build_event_decl(
             span: context.kind.name_span(),
         });
     }
-    let parent_event_decl = if inherited_render_state_missing {
-        None
+    let (parent_event_decl, resolved) = if inherited_render_state_missing {
+        (None, Vec::new())
     } else {
-        parent_event_decl
+        (parent_event_decl, resolved)
     };
+
+    // -----------------------------------------------------------------
+    // Merge conformance: an event merging several abstract events needs
+    // them compatible — identical actions matched by label against the
+    // first target, and one type per shared abstract parameter name.
+    // Failures keep the first target's shape and mark the event
+    // inaccurate.
+    // -----------------------------------------------------------------
+    if resolved.len() > 1 {
+        let action_string = |a: &ActionDecl| match &a.typed {
+            Some(typed) => crate::normalize::canonical_typed_assignment(typed),
+            None => crate::normalize::canonical_action(&a.action),
+        };
+        let first = resolved[0].1;
+        let first_actions: BTreeMap<&str, String> = first
+            .actions
+            .iter()
+            .map(|a| (a.label.as_str(), action_string(a)))
+            .collect();
+        for (abs_label, decl) in &resolved[1..] {
+            let mut mismatch = None;
+            if decl.actions.len() != first_actions.len() {
+                mismatch = Some("actions of merged abstract events must be identical");
+            } else {
+                for action in &decl.actions {
+                    let assignment = action_string(action);
+                    match first_actions.get(action.label.as_str()) {
+                        Some(expected) if *expected == assignment => {}
+                        Some(_) | None
+                            if first_actions.values().any(|other| *other == assignment) =>
+                        {
+                            mismatch = Some("labels of merged abstract actions must coincide");
+                            break;
+                        }
+                        Some(_) | None => {
+                            mismatch = Some("actions of merged abstract events must be identical");
+                            break;
+                        }
+                    }
+                }
+            }
+            if let Some(message) = mismatch {
+                context.diagnostics.push(Diagnostic {
+                    severity: Severity::Error,
+                    origin: format!("{}.{}", context.machine.machine_name, label),
+                    message: format!("cannot merge abstract event '{abs_label}': {message}"),
+                    rule_id: Some(crate::RuleId::EventMergeMismatch),
+                    span: context.kind.name_span(),
+                });
+                merge_accurate = false;
+            }
+        }
+
+        let mut parameter_types: BTreeMap<&str, &Type> = BTreeMap::new();
+        let mut conflicted: BTreeSet<&str> = BTreeSet::new();
+        for (_, decl) in &resolved {
+            for parameter in decl.chain_parameters() {
+                match parameter_types.get(parameter.name.as_str()) {
+                    Some(ty) if **ty != parameter.ty => {
+                        if conflicted.insert(parameter.name.as_str()) {
+                            context.diagnostics.push(Diagnostic {
+                                severity: Severity::Error,
+                                origin: format!("{}.{}", context.machine.machine_name, label),
+                                message: format!(
+                                    "abstract event parameter '{}' type conflict between \
+                                     merged events",
+                                    parameter.name
+                                ),
+                                rule_id: Some(crate::RuleId::EventMergeMismatch),
+                                span: context.kind.name_span(),
+                            });
+                            merge_accurate = false;
+                        }
+                    }
+                    Some(_) => {}
+                    None => {
+                        parameter_types.insert(parameter.name.as_str(), &parameter.ty);
+                    }
+                }
+            }
+        }
+    }
 
     let inherited_chain: Option<Rc<EventDecl>> = if context.kind.extended() {
         parent_event_decl.map(Rc::clone)
@@ -661,20 +850,27 @@ pub(super) fn build_event_decl(
         &invalid_parameter_names,
     );
 
-    let refines_decl = effective_refines
-        .zip(context.machine.parent)
-        .zip(parent_event_internal_name)
-        .map(|((abs_label, parent_cm), abstract_event_internal_name)| {
-            build_refines_event_decl(
+    let mut refines_decls: Vec<RefinesEventDecl> = Vec::new();
+    if let Some(parent_cm) = context.machine.parent {
+        for (abs_label, _) in &resolved {
+            let Some(abstract_event_internal_name) = parent_cm.event_internal_name(abs_label)
+            else {
+                // The first target's missing render state is handled
+                // above; a later target without one loses its clause.
+                merge_accurate = false;
+                continue;
+            };
+            refines_decls.push(build_refines_event_decl(
                 context.machine.ids,
                 context.machine.file_root,
                 context.machine.project_name,
                 label,
                 abs_label,
                 (parent_cm, abstract_event_internal_name),
-                context.kind.explicit_refines().is_some(),
-            )
-        });
+                explicit,
+            ));
+        }
+    }
 
     // An extended event inherits its immediate abstract event's inaccuracy:
     // because it copies the abstract clauses verbatim, an inaccurate parent
@@ -686,9 +882,13 @@ pub(super) fn build_event_decl(
 
     // Convergence: a declared convergence the checker cannot honour is
     // downgraded toward ordinary, and the downgrade itself marks the event
-    // inaccurate. The abstract convergence comes from the refined event
-    // (resolved for both plain and extended refinements).
-    let abstract_cvg = parent_event_decl.map(|p| p.convergence);
+    // inaccurate. The abstract convergence comes from the refined events —
+    // the weakest one when several are merged (ordinary < anticipated <
+    // convergent).
+    let abstract_cvg = resolved
+        .iter()
+        .map(|(_, decl)| decl.convergence)
+        .min_by_key(|c| convergence_rank(*c));
     let (convergence, downgrade_reason) = resolve_convergence(
         context.kind.convergence(),
         abstract_cvg,
@@ -709,12 +909,8 @@ pub(super) fn build_event_decl(
     // required-name computation. Only a refining event can owe witnesses (a new
     // event has no abstract decl, so nothing is required and any provided
     // witness is dropped).
-    let (witnesses, witness_accurate) = resolve_witnesses(
-        &mut context,
-        &scope,
-        parent_event_decl.map(|p| &**p),
-        inherited_chain.as_deref(),
-    );
+    let (witnesses, witness_accurate) =
+        resolve_witnesses(&mut context, &scope, &resolved, inherited_chain.as_deref());
 
     // Effective actions = the inherited chain (the parent decl already
     // carries its full root-first closure) ++ own. Materialised here rather
@@ -734,7 +930,8 @@ pub(super) fn build_event_decl(
         && !inherited_render_state_missing
         && convergence_accurate
         && witness_accurate
-        && witness_dup_accurate;
+        && witness_dup_accurate
+        && merge_accurate;
 
     // INITIALISATION repair: in Event-B every concrete variable must be
     // initialised, so any concrete, typed variable that no action (inherited
@@ -772,7 +969,7 @@ pub(super) fn build_event_decl(
         extended: context.kind.extended(),
         accurate,
         source,
-        refines: refines_decl,
+        refines: refines_decls,
         parameters: buckets.parameters,
         guards: buckets.guards,
         actions,
@@ -830,42 +1027,6 @@ fn build_repair_action(
         typed: checked.typed,
         source: source.clone(),
     }
-}
-
-/// Resolve `(effective_refines_label, parent_event_decl)` for `kind`.
-/// INIT events implicitly refine the parent's INITIALISATION when one
-/// exists; ordinary events prefer the explicit `refines` annotation but
-/// fall back to an implicit same-label match when extended.
-///
-/// `lint::extends_chain_root_first` mirrors the Ordinary half of this rule
-/// on the raw AST, and `lint::inherited_init_chain` mirrors the Init half —
-/// keep them in sync when changing the resolution.
-fn resolve_effective_refines<'a, 'b>(
-    kind: EventKind<'a>,
-    parent: Option<&'b CheckedMachine>,
-) -> (Option<&'a str>, Option<&'b Rc<EventDecl>>) {
-    let effective_refines: Option<&str> = match kind {
-        EventKind::Init(_) => parent
-            .filter(|p| {
-                p.events_by_label
-                    .contains_key(crate::sc::initialisation_label())
-            })
-            .map(|_| crate::sc::initialisation_label()),
-        EventKind::Ordinary(e) => {
-            let explicit = e.refines.last().map(|t| t.name.as_str());
-            let implicit = if e.refines.is_empty() && e.extended {
-                parent
-                    .filter(|p| p.events_by_label.contains_key(&e.name))
-                    .map(|_| e.name.as_str())
-            } else {
-                None
-            };
-            explicit.or(implicit)
-        }
-    };
-    let parent_event_decl =
-        effective_refines.and_then(|l| parent.and_then(|p| p.events_by_label.get(l)));
-    (effective_refines, parent_event_decl)
 }
 
 /// Build the event-local type scope: outer env + inherited parameter
