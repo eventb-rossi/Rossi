@@ -138,9 +138,21 @@ pub(super) fn generate(
 
     let ff = machine_factory(machine);
     let variables = super::tables::MachineVariables::new(&machine.record);
+    let variant_label = machine
+        .record
+        .variant
+        .as_ref()
+        .map(|variant| pc.rodin_ids.last_variant_label().unwrap_or(variant.label));
+    let variant = machine.record.variant.as_ref().zip(variant_label);
     for event in &machine.record.events {
         let mut scope = super::event::EventScope::new(model, machine, &variables, event, &ff);
-        super::event::generate_event(&mut po, &mut scope, &manager, &machine.record.invariants);
+        super::event::generate_event(
+            &mut po,
+            &mut scope,
+            &manager,
+            &machine.record.invariants,
+            variant,
+        );
     }
 
     manager.create_hypotheses(&mut po);

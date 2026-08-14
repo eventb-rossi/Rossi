@@ -177,3 +177,48 @@ fn integer_variant_needs_no_finiteness() {
     assert!(!contents.contains("VWD"));
     assert!(!contents.contains("FIN"));
 }
+
+#[test]
+fn convergent_events_decrease_the_variant() {
+    let machine = xml(
+        "M.bum",
+        r#"<?xml version="1.0"?>
+<org.eventb.core.machineFile version="5" org.eventb.core.configuration="org.eventb.core.fwd">
+<org.eventb.core.variable name="_x" org.eventb.core.identifier="x"/>
+<org.eventb.core.invariant name="_i1" org.eventb.core.label="inv1" org.eventb.core.predicate="x ∈ ℤ"/>
+<org.eventb.core.variant name="_v" org.eventb.core.expression="x"/>
+<org.eventb.core.event name="_init" org.eventb.core.convergence="0" org.eventb.core.extended="false" org.eventb.core.label="INITIALISATION">
+<org.eventb.core.action name="_a" org.eventb.core.assignment="x ≔ 10" org.eventb.core.label="act1"/>
+</org.eventb.core.event>
+<org.eventb.core.event name="_down" org.eventb.core.convergence="1" org.eventb.core.extended="false" org.eventb.core.label="down">
+<org.eventb.core.action name="_da" org.eventb.core.assignment="x ≔ x − 1" org.eventb.core.label="act1"/>
+</org.eventb.core.event>
+<org.eventb.core.event name="_wait" org.eventb.core.convergence="2" org.eventb.core.extended="false" org.eventb.core.label="wait">
+<org.eventb.core.action name="_wa" org.eventb.core.assignment="x :∣ x' ≤ x" org.eventb.core.label="act1"/>
+</org.eventb.core.event>
+</org.eventb.core.machineFile>"#,
+    );
+    let files = generate("prj", vec![machine]);
+    let contents = &find(&files, "M.bpo").contents;
+
+    for needle in [
+        // The convergent event proves membership in ℕ and a strict
+        // decrease of the after-value.
+        r#"<org.eventb.core.poSequent name="down/NAT" org.eventb.core.accurate="true" org.eventb.core.poDesc="Natural number variant of event" org.eventb.core.poStamp="0">"#,
+        r#"org.eventb.core.predicate="x∈ℕ""#,
+        r#"<org.eventb.core.poSequent name="down/VAR" org.eventb.core.accurate="true" org.eventb.core.poDesc="Variant of event" org.eventb.core.poStamp="0">"#,
+        r#"org.eventb.core.predicate="x − 1&lt;x""#,
+        // The anticipated event must not increase it, with its
+        // nondeterministic before-after predicate assumed.
+        r#"<org.eventb.core.poSequent name="wait/VAR" org.eventb.core.accurate="true" org.eventb.core.poDesc="Variant of event" org.eventb.core.poStamp="0">"#,
+        r#"org.eventb.core.predicate="x'≤x""#,
+    ] {
+        assert!(
+            contents.contains(needle),
+            "missing {needle} in:\n{contents}"
+        );
+    }
+    // No NAT for the anticipated event, nothing for INITIALISATION.
+    assert!(!contents.contains(r#"name="wait/NAT""#));
+    assert!(!contents.contains(r#"name="INITIALISATION/VAR""#));
+}

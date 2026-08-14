@@ -159,6 +159,7 @@ pub(super) fn generate_event(
     scope: &mut EventScope<'_>,
     machine_manager: &HypothesisManager,
     invariants: &[crate::sc::machine_record::InvariantDecl],
+    variant: Option<(&crate::sc::machine_record::VariantDecl, &str)>,
 ) {
     guard_module(po, scope);
     witness_module(po, scope);
@@ -167,6 +168,7 @@ pub(super) fn generate_event(
     action_module(po, scope);
     body_sim_module(po, scope);
     frame_sim_module(po, scope);
+    variant_module(po, scope, variant);
     scope.manager.create_hypotheses(po);
 }
 
@@ -843,4 +845,124 @@ fn is_redundant(scope: &EventScope<'_>, index: usize, is_theorem: bool) -> bool 
             table.index_of_concrete[k].is_some_and(|concrete_index| concrete_index < index)
         })
     })
+}
+
+/// `<evt>/NAT` and `<evt>/VAR` — a convergent event strictly decreases
+/// the variant; an anticipated one must not increase it. No obligation
+/// for ordinary events, for convergent events refining convergent
+/// abstractions (proved there), or for anticipated events of machines
+/// without a variant.
+pub(super) fn variant_module(
+    po: &mut PoFile,
+    scope: &mut EventScope<'_>,
+    variant: Option<(&crate::sc::machine_record::VariantDecl, &str)>,
+) {
+    use crate::sc::machine_record::Convergence;
+    let convergence = scope.event.convergence;
+    if convergence == Convergence::Ordinary {
+        return;
+    }
+    let abstract_convergent = !scope.abstract_events.events.is_empty()
+        && scope
+            .abstract_events
+            .events
+            .iter()
+            .all(|e| e.convergence == Convergence::Convergent);
+    if convergence == Convergence::Convergent && abstract_convergent {
+        return;
+    }
+    let Some((variant, label)) = variant else {
+        return;
+    };
+    let Some(expression) = &variant.typed else {
+        return;
+    };
+
+    let is_convergent = convergence == Convergence::Convergent;
+    let next = after_expression(scope, expression);
+    // An untouched variant obliges nothing — except that a convergent
+    // event must still strictly decrease it (an unprovable goal that
+    // correctly flags the model).
+    if next == *expression && !is_convergent {
+        return;
+    }
+
+    let ff = expression.factory();
+    let is_natural = matches!(expression.ty(), Some(rossi::formula::Type::Int));
+    let sources = vec![
+        PogSource::new(Role::Default, scope.event.source.clone()),
+        PogSource::new(Role::Default, variant.source.clone()),
+    ];
+
+    if is_natural && is_convergent {
+        let natural = ff.atomic_expression(
+            rossi::formula::tag::AtomicOp::Natural,
+            None,
+            Some(rossi::formula::Type::pow(rossi::formula::Type::Int)),
+        );
+        let goal = ff.relational_predicate(
+            rossi::formula::tag::RelationalOp::In,
+            expression.clone(),
+            natural,
+            None,
+        );
+        let name = variant_event_po_name(&scope.event.label, label, "NAT");
+        let hints = vec![scope.local_hypothesis_hint(po, &name)];
+        po.create_po(ProofObligation {
+            name,
+            nature: Nature::EventNaturalNumberVariant,
+            global_hypotheses: po.set_handle(scope.manager.full_hypothesis()),
+            local_hypotheses: Vec::new(),
+            goal: PogPredicate::new(goal, variant.source.clone()),
+            sources: sources.clone(),
+            hints,
+            accurate: scope.accurate,
+        });
+    }
+
+    let op = match (is_natural, is_convergent) {
+        (true, true) => rossi::formula::tag::RelationalOp::Lt,
+        (true, false) => rossi::formula::tag::RelationalOp::Le,
+        (false, true) => rossi::formula::tag::RelationalOp::Subset,
+        (false, false) => rossi::formula::tag::RelationalOp::SubsetEq,
+    };
+    let goal = ff.relational_predicate(op, next, expression.clone(), None);
+    let hyp = action_hypothesis(scope, &goal);
+    let name = variant_event_po_name(&scope.event.label, label, "VAR");
+    let hints = vec![scope.local_hypothesis_hint(po, &name)];
+    po.create_po(ProofObligation {
+        name,
+        nature: Nature::EventVariant,
+        global_hypotheses: po.set_handle(scope.manager.full_hypothesis()),
+        local_hypotheses: hyp,
+        goal: PogPredicate::new(goal, variant.source.clone()),
+        sources,
+        hints,
+        accurate: scope.accurate,
+    });
+}
+
+/// The variant's value after the event: assigned variables prime and
+/// deterministic after-values substitute in.
+fn after_expression(
+    scope: &EventScope<'_>,
+    expression: &rossi::formula::Expression,
+) -> rossi::formula::Expression {
+    let mut next = expression.clone();
+    if let Some(delta) = scope.concrete_actions.delta_prime.as_ref() {
+        next = next.substitute_free_idents(delta);
+    }
+    if let Some(primed_det) = scope.concrete_actions.table.primed_det.as_ref() {
+        next = next.substitute_free_idents(primed_det);
+    }
+    next
+}
+
+/// A single variant with the default label omits the label segment.
+fn variant_event_po_name(event_label: &str, label: &str, suffix: &str) -> String {
+    if label == "vrn" {
+        format!("{event_label}/{suffix}")
+    } else {
+        format!("{event_label}/{label}/{suffix}")
+    }
 }
