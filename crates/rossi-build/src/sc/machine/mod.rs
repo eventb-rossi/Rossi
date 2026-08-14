@@ -269,6 +269,20 @@ pub fn check_machine(
         })
         .unwrap_or_default();
 
+    // Of those, the ones that were already abstract-only in the parent
+    // vanished in an *earlier* refinement. A theorem guard may read a
+    // variable disappearing at this level, but never one of these.
+    let vanished_earlier_var_names: BTreeSet<String> = parent
+        .map(|p| {
+            p.record
+                .variables
+                .iter()
+                .filter(|v| !v.is_concrete && abstract_only_var_names.contains(&v.name))
+                .map(|v| v.name.clone())
+                .collect()
+        })
+        .unwrap_or_default();
+
     // A machine without a usable variant cannot host convergent events:
     // each is downgraded to ordinary (and marked inaccurate). `variant_usable`
     // is the single machine-wide flag that feeds every event's convergence.
@@ -304,6 +318,7 @@ pub fn check_machine(
         base_env: &env,
         parent,
         abstract_only: &abstract_only_var_names,
+        vanished_earlier: &vanished_earlier_var_names,
         declared_variable_names: &all_var_names,
         variant_usable,
         concrete_vars: &concrete_typed_vars,

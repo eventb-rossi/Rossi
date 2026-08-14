@@ -24,9 +24,10 @@ const PARENT_BUM: &str = r#"<?xml version="1.0"?>
 "#;
 
 // Child redeclares only `x`; inherits `y` without witness; declares new `w`.
-// Has an own event `stepone` whose guard references `y` (now abstract-only)
-// and action writes to `y` too. INITIALISATION extended=true; own action
-// writes to `w`.
+// Has an own event `stepone` with a plain guard referencing `y` (now
+// abstract-only) and a *theorem* guard doing the same — the plain guard is
+// dropped, the theorem guard is kept. INITIALISATION extended=true; own
+// action writes to `w`.
 const CHILD_BUM: &str = r#"<?xml version="1.0"?>
 <org.eventb.core.machineFile version="5" org.eventb.core.configuration="org.eventb.core.fwd">
 <org.eventb.core.refinesMachine name="_ref" org.eventb.core.target="P"/>
@@ -39,6 +40,7 @@ const CHILD_BUM: &str = r#"<?xml version="1.0"?>
 <org.eventb.core.event name="_step" org.eventb.core.convergence="0" org.eventb.core.extended="false" org.eventb.core.label="stepone">
 <org.eventb.core.guard name="_g_ok" org.eventb.core.label="grd_ok" org.eventb.core.predicate="x ≠ 0"/>
 <org.eventb.core.guard name="_g_bad" org.eventb.core.label="grd_bad" org.eventb.core.predicate="y &gt; 0"/>
+<org.eventb.core.guard name="_g_thm" org.eventb.core.label="thm1" org.eventb.core.predicate="y &lt; 100" org.eventb.core.theorem="true"/>
 <org.eventb.core.action name="_a_ok" org.eventb.core.assignment="x ≔ x + 1" org.eventb.core.label="act_ok"/>
 </org.eventb.core.event>
 </org.eventb.core.machineFile>
@@ -100,13 +102,20 @@ fn event_dropping_abstract_only_guard_marks_inaccurate() {
         !step.accurate,
         "stepone should be inaccurate (guard `y > 0` references abstract-only `y`)"
     );
-    // Only the `x ≠ 0` guard survives; `y > 0` is dropped.
+    // The `x ≠ 0` guard survives, `y > 0` is dropped, and the theorem
+    // guard `y < 100` is kept despite reading the abstract-only `y`.
     assert_eq!(
         step.guards.len(),
-        1,
-        "expected exactly one guard (grd_ok); got {:#?}",
+        2,
+        "expected grd_ok and thm1; got {:#?}",
         step.guards
     );
+    let thm = step
+        .guards
+        .values()
+        .find(|g| g.label == "thm1")
+        .expect("theorem guard kept");
+    assert!(thm.theorem, "kept guard must stay a theorem");
     // The action `x ≔ x + 1` doesn't touch abstract-only vars, so it
     // survives.
     assert_eq!(step.actions.len(), 1);

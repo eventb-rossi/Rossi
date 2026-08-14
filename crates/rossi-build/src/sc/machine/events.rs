@@ -110,6 +110,7 @@ pub(super) struct MachineCheckContext<'a> {
     pub(super) base_env: &'a TypeEnv,
     pub(super) parent: Option<&'a CheckedMachine>,
     pub(super) abstract_only: &'a BTreeSet<String>,
+    pub(super) vanished_earlier: &'a BTreeSet<String>,
     pub(super) declared_variable_names: &'a BTreeSet<String>,
     pub(super) variant_usable: bool,
     pub(super) concrete_vars: &'a [String],
@@ -986,46 +987,49 @@ fn build_event_buckets(
         }
         // Disappeared-variable reference: the guard reads a variable that
         // vanished in this refinement (inherited from the parent but not
-        // redeclared, no witness). Reading a disappeared variable in a guard is
-        // an error (EB025) — except in a *theorem* guard, where it is permitted
-        // and reported only as the softer warning. Rodin allows the theorem
-        // case with no problem marker at all (MachineEventGuardFreeIdentsModule
-        // gates VariableHasDisappearedError on `!isTheorem`), so the Warning
-        // is deliberately stricter than Rodin and must not be "aligned" to an
-        // Error. Either way the guard is dropped and the event marked
-        // `accurate=false` — see `ITERATION.bcm`'s `stepone`/`steptwo`
-        // referencing `n`, `t` (Group R).
+        // redeclared, no witness). Reading a disappeared variable in a plain
+        // guard is an error (EB025): the guard is dropped and the event marked
+        // `accurate=false`. A *theorem* guard, however, may read a variable
+        // disappearing at this level: the guard is kept (typed via the
+        // inherited declaration, emitted with `theorem="true"`) and the event
+        // stays accurate. Rodin emits no marker at all for the kept case; the
+        // EB018 Warning is a deliberate extra notice and must not be "aligned"
+        // to an Error. A variable that vanished in an *earlier* refinement is
+        // unreadable even by a theorem guard.
         if !machine.abstract_only.is_empty()
             && let Some(bad) = crate::sc::identifier_walker::first_forbidden_identifier_in_predicate(
                 &g.predicate,
                 machine.abstract_only,
             )
         {
-            let (severity, message, rule) = if g.is_theorem {
-                (
-                    Severity::Warning,
-                    format!("theorem guard references abstract-only variable '{bad}' — dropped"),
-                    crate::RuleId::UndeclaredIdentifier,
+            let theorem_kept = g.is_theorem
+                && crate::sc::identifier_walker::first_forbidden_identifier_in_predicate(
+                    &g.predicate,
+                    machine.vanished_earlier,
                 )
+                .is_none();
+            if theorem_kept {
+                context.diagnostics.push(Diagnostic {
+                    severity: Severity::Warning,
+                    origin: clause_origin(machine.machine_name, label, g.label.as_deref(), "grd"),
+                    message: format!("theorem guard references abstract-only variable '{bad}'"),
+                    rule_id: Some(crate::RuleId::UndeclaredIdentifier),
+                    span: g.span,
+                });
             } else {
-                (
-                    Severity::Error,
-                    format!(
+                context.diagnostics.push(Diagnostic {
+                    severity: Severity::Error,
+                    origin: clause_origin(machine.machine_name, label, g.label.as_deref(), "grd"),
+                    message: format!(
                         "guard references variable '{bad}', which has disappeared in this \
                          refinement (declared in an abstract machine but not kept here)"
                     ),
-                    crate::RuleId::DisappearedVariable,
-                )
-            };
-            context.diagnostics.push(Diagnostic {
-                severity,
-                origin: clause_origin(machine.machine_name, label, g.label.as_deref(), "grd"),
-                message,
-                rule_id: Some(rule),
-                span: g.span,
-            });
-            accurate = false;
-            continue;
+                    rule_id: Some(crate::RuleId::DisappearedVariable),
+                    span: g.span,
+                });
+                accurate = false;
+                continue;
+            }
         }
         match build_guard_decl(
             machine.ids,

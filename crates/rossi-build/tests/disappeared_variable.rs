@@ -3,11 +3,13 @@
 //! The build/SC pipeline rejects an assignment to it, a read of it in an
 //! action's RHS, and a read of it in a (non-theorem) guard — each an error that
 //! drops the clause and marks the event `accurate=false` (Group R). A *theorem*
-//! guard may read a disappeared variable, so that case stays a warning.
+//! guard may read a variable disappearing at this level: the guard is kept,
+//! the event stays accurate, and only a softer warning is reported. A variable
+//! that vanished in an earlier refinement is unreadable even by a theorem.
 //! Gluing invariants legitimately reference disappeared variables and are never
 //! flagged.
 
-use rossi_build::{Project, ProjectComponent, RuleId, Severity, build};
+use rossi_build::{Project, ProjectComponent, RuleId, Severity, build, sc_view::ScView};
 
 /// Build a project from two `.eventb` machines: an abstract `M1` and a
 /// refinement `M2` whose body is supplied by the caller.
@@ -84,9 +86,10 @@ fn referencing_disappeared_variable_is_an_error() {
 }
 
 #[test]
-fn theorem_guard_reading_disappeared_variable_stays_a_warning() {
-    // A *theorem* guard may read a disappeared variable — Rodin permits it, so
-    // it is reported only as the softer EB018 warning, not the EB025 error.
+fn theorem_guard_reading_disappeared_variable_is_kept() {
+    // A *theorem* guard may read a variable disappearing at this level: the
+    // guard is kept (emitted with theorem="true"), the event stays accurate,
+    // and only the softer EB018 warning is reported, not the EB025 error.
     let r = build_refinement(
         "EVENT thm\n    WHERE\n        theorem @g1 v > 0\n    THEN\n        @a2 w := w + 1\n    END\n\n",
     );
@@ -95,12 +98,69 @@ fn theorem_guard_reading_disappeared_variable_stays_a_warning() {
         "a theorem guard read must not be EB025: {:#?}",
         r.diagnostics
     );
-    assert!(
-        r.diagnostics.iter().any(|d| {
+    let warning = r
+        .diagnostics
+        .iter()
+        .find(|d| {
             d.rule_id == Some(RuleId::UndeclaredIdentifier) && d.severity == Severity::Warning
-        }),
-        "expected the theorem-guard abstract-only warning: {:#?}",
-        r.diagnostics
+        })
+        .expect("the theorem-guard abstract-only warning");
+    assert!(
+        !warning.message.contains("dropped"),
+        "the kept guard's warning must not claim a drop: {}",
+        warning.message
+    );
+    let v = ScView::from_xml(&r.file("M2.bcm").expect("M2.bcm").contents).unwrap();
+    let thm = v.events.get("thm").expect("thm event present");
+    assert!(thm.accurate, "the event keeps its accuracy");
+    let guard = thm
+        .guards
+        .values()
+        .find(|g| g.label == "g1")
+        .expect("guard kept");
+    assert!(guard.theorem, "kept guard stays a theorem");
+}
+
+#[test]
+fn theorem_guard_reading_earlier_vanished_variable_is_an_error() {
+    // `v` disappears at M2; a theorem guard in M3 may no longer read it —
+    // the exemption covers only variables disappearing at this level.
+    let m1 = "MACHINE M1\n\
+        VARIABLES\n    v\n    w\n\
+        INVARIANTS\n    @i1 v >= 0\n    @i2 w >= 0\n\
+        EVENTS\n\
+        EVENT INITIALISATION\n    THEN\n        @a1 v := 0\n        @a2 w := 0\n    END\n\n\
+        EVENT tick\n    THEN\n        @a1 v := v + 1\n    END\n\
+        END\n";
+    let m2 = "MACHINE M2\n\
+        REFINES M1\n\
+        VARIABLES\n    w\n\
+        INVARIANTS\n    @i1 w >= 0\n\
+        EVENTS\n\
+        EVENT INITIALISATION\n    THEN\n        @a2 w := 0\n    END\n\
+        END\n";
+    let m3 = "MACHINE M3\n\
+        REFINES M2\n\
+        VARIABLES\n    w\n\
+        EVENTS\n\
+        EVENT INITIALISATION\n    THEN\n        @a2 w := 0\n    END\n\n\
+        EVENT thm\n    WHERE\n        theorem @g1 v > 0\n    THEN\n        @a2 w := w + 1\n    END\n\
+        END\n";
+    let mut components = ProjectComponent::from_eventb("M1.eventb", m1).unwrap();
+    components.extend(ProjectComponent::from_eventb("M2.eventb", m2).unwrap());
+    components.extend(ProjectComponent::from_eventb("M3.eventb", m3).unwrap());
+    let r = build(&Project::new("chain", components));
+    let found = disappeared(&r);
+    assert_eq!(found.len(), 1, "{:#?}", r.diagnostics);
+    assert_eq!(found[0].severity, Severity::Error);
+    assert_eq!(found[0].origin, "M3.thm.g1");
+    let v = ScView::from_xml(&r.file("M3.bcm").expect("M3.bcm").contents).unwrap();
+    let thm = v.events.get("thm").expect("thm event present");
+    assert!(!thm.accurate, "the event loses its accuracy");
+    assert!(
+        thm.guards.is_empty(),
+        "the guard is dropped: {:#?}",
+        thm.guards
     );
 }
 

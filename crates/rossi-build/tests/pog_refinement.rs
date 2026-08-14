@@ -187,3 +187,63 @@ fn changing_an_abstractly_untouched_variable_needs_equality() {
     );
     assert!(contents.contains(r#"org.eventb.core.predicate="c+1=c""#));
 }
+
+const MA_DROP: &str = r#"<?xml version="1.0"?>
+<org.eventb.core.machineFile version="5" org.eventb.core.configuration="org.eventb.core.fwd">
+<org.eventb.core.variable name="_v" org.eventb.core.identifier="v"/>
+<org.eventb.core.variable name="_w" org.eventb.core.identifier="w"/>
+<org.eventb.core.invariant name="_i1" org.eventb.core.label="inv1" org.eventb.core.predicate="v ∈ ℤ"/>
+<org.eventb.core.invariant name="_i2" org.eventb.core.label="inv2" org.eventb.core.predicate="w ∈ ℤ"/>
+<org.eventb.core.event name="_init" org.eventb.core.convergence="0" org.eventb.core.extended="false" org.eventb.core.label="INITIALISATION">
+<org.eventb.core.action name="_iv" org.eventb.core.assignment="v ≔ 0" org.eventb.core.label="act1"/>
+<org.eventb.core.action name="_iw" org.eventb.core.assignment="w ≔ 0" org.eventb.core.label="act2"/>
+</org.eventb.core.event>
+<org.eventb.core.event name="_evt" org.eventb.core.convergence="0" org.eventb.core.extended="false" org.eventb.core.label="evt">
+<org.eventb.core.guard name="_g1" org.eventb.core.label="grd1" org.eventb.core.predicate="w &lt; 10"/>
+<org.eventb.core.action name="_ea" org.eventb.core.assignment="w ≔ w + 1" org.eventb.core.label="act1"/>
+</org.eventb.core.event>
+</org.eventb.core.machineFile>"#;
+
+const MB_DROP: &str = r#"<?xml version="1.0"?>
+<org.eventb.core.machineFile version="5" org.eventb.core.configuration="org.eventb.core.fwd">
+<org.eventb.core.refinesMachine name="_r" org.eventb.core.target="MA"/>
+<org.eventb.core.variable name="_w" org.eventb.core.identifier="w"/>
+<org.eventb.core.event name="_init" org.eventb.core.convergence="0" org.eventb.core.extended="false" org.eventb.core.label="INITIALISATION">
+<org.eventb.core.witness name="_wv" org.eventb.core.label="v'" org.eventb.core.predicate="v' = 0"/>
+<org.eventb.core.action name="_iw" org.eventb.core.assignment="w ≔ 0" org.eventb.core.label="act2"/>
+</org.eventb.core.event>
+<org.eventb.core.event name="_evt" org.eventb.core.convergence="0" org.eventb.core.extended="false" org.eventb.core.label="evt">
+<org.eventb.core.refinesEvent name="_re" org.eventb.core.target="evt"/>
+<org.eventb.core.guard name="_h1" org.eventb.core.label="grd1" org.eventb.core.predicate="w &lt; 10"/>
+<org.eventb.core.guard name="_ht" org.eventb.core.label="thm1" org.eventb.core.predicate="v &gt; 0" org.eventb.core.theorem="true"/>
+<org.eventb.core.action name="_ea" org.eventb.core.assignment="w ≔ w + 1" org.eventb.core.label="act1"/>
+</org.eventb.core.event>
+</org.eventb.core.machineFile>"#;
+
+#[test]
+fn theorem_guard_over_disappearing_variable_gets_a_theorem_obligation() {
+    let files = generate("prj", vec![xml("MA.bum", MA_DROP), xml("MB.bum", MB_DROP)]);
+    let contents = &find(&files, "MB.bpo").contents;
+
+    // The theorem guard reads the dropped `v`; it survives the check and
+    // must be proved like any other theorem guard, in a sequent that
+    // stays accurate.
+    assert!(
+        contents.contains(
+            r#"<org.eventb.core.poSequent name="evt/thm1/THM" org.eventb.core.accurate="true" org.eventb.core.poDesc="Theorem" org.eventb.core.poStamp="0">"#
+        ),
+        "in:\n{contents}"
+    );
+    assert!(
+        contents.contains(r#"org.eventb.core.predicate="v&gt;0""#),
+        "in:\n{contents}"
+    );
+    // The dropped variable keeps its typed declaration in ABSHYP, so the
+    // goal is well-typed for provers.
+    assert!(
+        contents.contains(r#"<org.eventb.core.poIdentifier name="v" org.eventb.core.type="ℤ"/>"#),
+        "in:\n{contents}"
+    );
+    // Its well-definedness is trivial — no WD sequent.
+    assert!(!contents.contains("evt/thm1/WD"), "in:\n{contents}");
+}
