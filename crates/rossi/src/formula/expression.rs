@@ -164,6 +164,41 @@ impl Expression {
         self.0.ty.is_some()
     }
 
+    /// Whether this expression denotes a type: `ℤ`, `BOOL`, a carrier
+    /// set, a power set or relation or cartesian product of type
+    /// expressions, or a parametric type built from a type constructor.
+    pub fn is_type_expression(&self) -> bool {
+        match self.kind() {
+            ExpressionKind::Atomic(AtomicOp::Integer | AtomicOp::Bool) => true,
+            ExpressionKind::FreeIdentifier(name) => match self.ty() {
+                Some(Type::Pow(base)) => {
+                    matches!(base.as_ref(), Type::Given(given) if given == name)
+                }
+                _ => false,
+            },
+            ExpressionKind::Unary {
+                op: UnaryExprOp::Pow,
+                child,
+            } => child.is_type_expression(),
+            ExpressionKind::Binary {
+                op: BinaryExprOp::CProd | BinaryExprOp::Rel,
+                left,
+                right,
+            } => left.is_type_expression() && right.is_type_expression(),
+            ExpressionKind::Extended { tag, exprs, preds } => {
+                let Some(super::extension::Extension::Expr(extension)) =
+                    self.factory().extension(*tag)
+                else {
+                    return false;
+                };
+                extension.is_a_type_constructor()
+                    && preds.is_empty()
+                    && exprs.iter().all(Expression::is_type_expression)
+            }
+            _ => false,
+        }
+    }
+
     /// The factory this expression was built with.
     pub fn factory(&self) -> &FormulaFactory {
         &self.0.factory

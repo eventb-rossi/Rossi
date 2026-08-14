@@ -9,7 +9,7 @@ pub(crate) mod visit_mut;
 
 pub use context::Context;
 pub use event::{Event, EventStatus, InitialisationEvent};
-pub use machine::{Machine, Variant};
+pub use machine::{DEFAULT_VARIANT_LABEL, Machine, Variant};
 pub(crate) use visit_mut::VisitMut;
 
 use crate::keywords::KeywordId;

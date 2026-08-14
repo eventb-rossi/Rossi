@@ -313,7 +313,7 @@ fn resolve_symbol_identity_at_position(
 /// Resolve a cursor on an event's `refines`/`extends` TARGET name to the abstract
 /// event it names.
 ///
-/// The target is matched positionally by `Event::refines_span`, so it is told
+/// The target is matched positionally by its own span, so it is told
 /// apart from the event's own name even when the two are identical
 /// (`event ML_in extends ML_in`). The abstract event is found up the refinement
 /// chain — which excludes the cursor's own machine — so the local same-named

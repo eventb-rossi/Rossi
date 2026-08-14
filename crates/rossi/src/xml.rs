@@ -733,7 +733,6 @@ fn parse_machine_xml_with_name(
                                 actions: Vec::new(),
                                 span: None,
                                 name_span: None,
-                                refines_span: None,
                                 comment: event_comment,
                                 extended,
                             });
@@ -938,7 +937,6 @@ fn parse_machine_xml_with_name(
                                 actions: event_builder.actions,
                                 span: None,
                                 name_span: None,
-                                refines_span: None,
                                 comment: event_builder.comment,
                                 extended: event_builder.extended,
                             });
@@ -1760,9 +1758,9 @@ fn machine_to_xml(machine: &Machine) -> String {
         };
         let expr_str = printer.print_formula_expression(&variant.expression);
         let label_attr = match variant.label.as_deref() {
-            Some("vrn") | None if i == 0 => String::new(),
+            Some(crate::ast::DEFAULT_VARIANT_LABEL) | None if i == 0 => String::new(),
             label => {
-                let label = label.unwrap_or("vrn");
+                let label = label.unwrap_or(crate::ast::DEFAULT_VARIANT_LABEL);
                 format!(" org.eventb.core.label=\"{}\"", escape_xml(label))
             }
         };
@@ -2352,7 +2350,6 @@ mod tests {
             }],
             span: None,
             name_span: None,
-            refines_span: None,
             comment: None,
             extended: false,
         };
@@ -2580,7 +2577,6 @@ mod tests {
             }],
             span: None,
             name_span: None,
-            refines_span: None,
             comment: None,
             extended: false,
         };
@@ -2596,7 +2592,6 @@ mod tests {
             actions: vec![],
             span: None,
             name_span: None,
-            refines_span: None,
             comment: None,
             extended: false,
         };
@@ -2612,7 +2607,6 @@ mod tests {
             actions: vec![],
             span: None,
             name_span: None,
-            refines_span: None,
             comment: None,
             extended: false,
         };
@@ -2662,7 +2656,6 @@ mod tests {
             actions: vec![],
             span: None,
             name_span: None,
-            refines_span: None,
             comment: None,
             extended: false,
         };
@@ -2714,7 +2707,6 @@ mod tests {
             actions: vec![],
             span: None,
             name_span: None,
-            refines_span: None,
             comment: None,
             extended: false,
         };

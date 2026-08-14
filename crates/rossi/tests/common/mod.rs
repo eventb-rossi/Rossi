@@ -66,7 +66,6 @@ pub fn clear_spans(component: &mut Component) {
             for event in &mut machine.events {
                 event.span = None;
                 event.name_span = None;
-                event.refines_span = None;
                 for target in &mut event.refines {
                     target.span = None;
                 }

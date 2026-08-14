@@ -419,7 +419,7 @@ fn recovery_preserves_event_header_metadata() {
             Some("abstract")
         );
         assert_eq!(event.extended, extended);
-        let span = event.refines_span.expect("target span recovered");
+        let span = event.refines[0].span.expect("target span recovered");
         assert_eq!(&source[span.start..span.end], "abstract");
     }
 }

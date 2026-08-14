@@ -1193,7 +1193,6 @@ mod tests {
             actions: vec![la(act("v ≔ 1"))],
             span: None,
             name_span: None,
-            refines_span: None,
             comment: None,
             extended: false,
         }];
@@ -1491,7 +1490,6 @@ mod tests {
             actions: vec![la(act("x :∈ ℕ"))],
             span: None,
             name_span: None,
-            refines_span: None,
             comment: None,
             extended: false,
         }];
@@ -1524,7 +1522,6 @@ mod tests {
             actions: vec![la(act("f ≔ f <+ {1 ↦ 0}"))],
             span: None,
             name_span: None,
-            refines_span: None,
             comment: None,
             extended: false,
         }];
@@ -1602,7 +1599,6 @@ mod tests {
             actions: Vec::new(),
             span: None,
             name_span: None,
-            refines_span: None,
             comment: None,
             extended: false,
         }];

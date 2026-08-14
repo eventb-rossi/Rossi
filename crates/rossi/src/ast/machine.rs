@@ -55,8 +55,11 @@ pub struct Machine {
     pub metadata: Option<FileMetadata>,
 }
 
+/// The label Rodin gives a variant when none is written.
+pub const DEFAULT_VARIANT_LABEL: &str = "vrn";
+
 /// A machine variant: an expression bounding convergent events,
-/// optionally labeled (`None` stands for the default label `vrn`).
+/// optionally labeled (`None` stands for [`DEFAULT_VARIANT_LABEL`]).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Variant {
     /// Optional variant label
@@ -64,6 +67,14 @@ pub struct Variant {
 
     /// The variant expression
     pub expression: Expression,
+}
+
+impl Variant {
+    /// The variant's label, defaulting to [`DEFAULT_VARIANT_LABEL`].
+    #[must_use]
+    pub fn effective_label(&self) -> &str {
+        self.label.as_deref().unwrap_or(DEFAULT_VARIANT_LABEL)
+    }
 }
 
 impl Machine {

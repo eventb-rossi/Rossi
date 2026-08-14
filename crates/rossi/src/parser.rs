@@ -1104,7 +1104,6 @@ fn parse_event(pair: pest::iterators::Pair<Rule>) -> Result<Event, ParseError> {
             inner.next(); // consume kw_extends
             if let Some(parent_pair) = inner.next() {
                 event.extended = true;
-                event.refines_span = Some(Span::from_pest(parent_pair.as_span()));
                 event.refines.push(named_target(&parent_pair));
             }
         } else if peek.as_rule() == Rule::kw_refines {
@@ -1114,9 +1113,6 @@ fn parse_event(pair: pest::iterators::Pair<Rule>) -> Result<Event, ParseError> {
                 .is_some_and(|p| p.as_rule() == Rule::component_name)
             {
                 let parent_pair = inner.next().expect("peeked");
-                if event.refines_span.is_none() {
-                    event.refines_span = Some(Span::from_pest(parent_pair.as_span()));
-                }
                 event.refines.push(named_target(&parent_pair));
             }
         }
@@ -1156,9 +1152,6 @@ fn parse_event(pair: pest::iterators::Pair<Rule>) -> Result<Event, ParseError> {
                         .into_inner()
                         .filter(|p| p.as_rule() == Rule::component_name)
                     {
-                        if event.refines_span.is_none() {
-                            event.refines_span = Some(Span::from_pest(p.as_span()));
-                        }
                         event.refines.push(named_target(&p));
                     }
                 }
@@ -4660,7 +4653,6 @@ fn recover_events(
             event.span = Some(span);
             event.name_span = name_span;
             if let Some((targets, extended)) = header_target {
-                event.refines_span = targets.first().map(|(_, span)| *span);
                 for (name, span) in targets {
                     event.refines.push(NamedElement {
                         name,
@@ -5364,7 +5356,7 @@ mod tests {
             let event = machine.events.first().expect("one event");
             assert_eq!(event.refines.first().map(|t| t.name.as_str()), Some("f"));
             assert_eq!(event.extended, extended);
-            let span = event.refines_span.expect("refines target span captured");
+            let span = event.refines[0].span.expect("refines target span captured");
             assert_eq!(&source[span.start..span.end], "f");
             // The target span is the name after the keyword, never the event name.
             assert!(span.start > event.name_span.expect("name span").end);
@@ -5378,7 +5370,7 @@ mod tests {
         };
         let event = machine.events.first().expect("one event");
         let name = event.name_span.expect("name span");
-        let target = event.refines_span.expect("refines target span");
+        let target = event.refines[0].span.expect("refines target span");
         assert_eq!(&source[name.start..name.end], "ML_in");
         assert_eq!(&source[target.start..target.end], "ML_in");
         assert!(
@@ -5408,7 +5400,7 @@ mod tests {
             })
             .expect("machine recovered");
         let event = machine.events.first().expect("one event");
-        let span = event.refines_span.expect("refines target span");
+        let span = event.refines[0].span.expect("refines target span");
         // Slices correctly only when shifted to absolute coordinates.
         assert_eq!(&source[span.start..span.end], "e");
         assert!(

@@ -131,8 +131,8 @@ pub fn walk_labeled_action<V: VisitMut + ?Sized>(visitor: &mut V, action: &mut L
 }
 
 pub fn walk_event<V: VisitMut + ?Sized>(visitor: &mut V, event: &mut Event) {
-    for parameter in &mut event.parameters {
-        visitor.visit_named_element(parameter);
+    for named in event.refines.iter_mut().chain(&mut event.parameters) {
+        visitor.visit_named_element(named);
     }
     for predicate in event
         .guards
@@ -147,7 +147,6 @@ pub fn walk_event<V: VisitMut + ?Sized>(visitor: &mut V, event: &mut Event) {
     }
     visit_optional_span(visitor, &mut event.span);
     visit_optional_span(visitor, &mut event.name_span);
-    visit_optional_span(visitor, &mut event.refines_span);
 }
 
 pub fn walk_initialisation<V: VisitMut + ?Sized>(

@@ -354,7 +354,10 @@ impl PrettyPrinter {
                     None if i == 0 => {
                         writeln!(output, "{}{expr}", self.indent).unwrap();
                     }
-                    None => writeln!(output, "{}@vrn {expr}", self.indent).unwrap(),
+                    None => {
+                        let label = crate::ast::DEFAULT_VARIANT_LABEL;
+                        writeln!(output, "{}@{label} {expr}", self.indent).unwrap();
+                    }
                 }
             }
         }
