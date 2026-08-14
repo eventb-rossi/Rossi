@@ -138,7 +138,7 @@ fn variant_wd_and_finiteness() {
     for needle in [
         // A single default-labelled variant omits the label segment.
         r#"<org.eventb.core.poSequent name="VWD" org.eventb.core.accurate="true" org.eventb.core.poDesc="Well-definedness of variant" org.eventb.core.poStamp="0">"#,
-        r#"org.eventb.core.predicate="x≠0" org.eventb.core.source="/prj/M.bum|org.eventb.core.machineFile#M|org.eventb.core.variant#vrn"/>"#,
+        r#"org.eventb.core.predicate="x≠0" org.eventb.core.source="/prj/M.bum|org.eventb.core.machineFile#M|org.eventb.core.variant#_v"/>"#,
         r#"<org.eventb.core.poSequent name="FIN" org.eventb.core.accurate="true" org.eventb.core.poDesc="Finiteness of variant" org.eventb.core.poStamp="0">"#,
         r#"org.eventb.core.predicate="finite({10 ÷ x})""#,
         // Variant obligations plug into the full hypothesis directly.

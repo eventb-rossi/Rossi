@@ -617,6 +617,9 @@ fn build_variant_decl(
     // Rodin's default variant label is "vrn"; our parser drops any
     // non-default label from the .bum (only Expression is preserved).
     let label = "vrn";
+    // The identity lookup still uses the source file's actual label so
+    // a non-default one resolves to the retained internal name.
+    let source_label = ids.last_variant_label().unwrap_or(label);
     let ec = check_expression(expr, env);
     let usable = ec.free_identifier.is_none();
     if usable && ec.typed.is_none() {
@@ -629,7 +632,7 @@ fn build_variant_decl(
         });
     }
     let source =
-        crate::sc::file_child_source(ids, file_root, Kind::Variant, in_tag::VARIANT, label);
+        crate::sc::file_child_source(ids, file_root, Kind::Variant, in_tag::VARIANT, source_label);
     Ok((
         VariantDecl {
             label,

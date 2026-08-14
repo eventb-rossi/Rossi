@@ -43,6 +43,9 @@ pub struct PoSet {
     pub identifiers: BTreeMap<String, String>,
     /// Predicate rows, in document order.
     pub predicates: Vec<PoPredicate>,
+    /// The rows' internal names, parallel to `predicates` — the
+    /// targets of predicate selection hints.
+    pub predicate_names: Vec<String>,
 }
 
 /// A prover hint, with normalized handles.
@@ -142,6 +145,90 @@ impl PoView {
         out
     }
 
+    /// The sequent's hints resolved to the content they select, so the
+    /// comparison is independent of set naming: an interval hint
+    /// becomes the predicates of the chain from its end up to
+    /// (excluding) its start; a predicate hint becomes the row it
+    /// points at.
+    pub fn resolved_hints<'a>(&'a self, sequent_name: &str) -> Vec<ResolvedHint<'a>> {
+        let Some(sequent) = self.sequents.get(sequent_name) else {
+            return Vec::new();
+        };
+        sequent
+            .hints
+            .iter()
+            .map(|hint| match hint {
+                PoHint::Interval { start, end } => {
+                    ResolvedHint::Interval(self.interval_selection(sequent, start, end))
+                }
+                PoHint::Predicate(target) => ResolvedHint::Predicate(self.predicate_target(target)),
+            })
+            .collect()
+    }
+
+    /// The predicates an interval hint selects, or `None` when the
+    /// start set does not lie on the end set's chain — a dangling
+    /// handle must stay distinguishable from a whole-chain selection,
+    /// or hint regressions compare equal to correct output.
+    fn interval_selection<'a>(
+        &'a self,
+        sequent: &'a PoSequent,
+        start: &str,
+        end: &str,
+    ) -> Option<Vec<&'a PoPredicate>> {
+        let start_set = handle_segments(start)
+            .into_iter()
+            .find(|(ty, _)| ty == "org.eventb.core.poPredicateSet")
+            .map(|(_, name)| name);
+        let segments = handle_segments(end);
+        let end_is_seqhyp = segments
+            .iter()
+            .any(|(ty, _)| ty == "org.eventb.core.poSequent");
+        let end_set = if end_is_seqhyp {
+            sequent.parent_set.clone()
+        } else {
+            segments
+                .into_iter()
+                .find(|(ty, _)| ty == "org.eventb.core.poPredicateSet")
+                .map(|(_, name)| name)
+        };
+
+        let chain = self.chain_root_first(end_set.as_deref());
+        let cut = match start_set.as_deref() {
+            Some(start) => chain.iter().position(|name| *name == start)? + 1,
+            None => 0,
+        };
+        let mut out = Vec::new();
+        for set_name in &chain[cut..] {
+            if let Some(set) = self.sets.get(*set_name) {
+                out.extend(set.predicates.iter());
+            }
+        }
+        if end_is_seqhyp {
+            out.extend(sequent.local_hypotheses.iter());
+        }
+        Some(out)
+    }
+
+    /// The row a predicate hint points at.
+    fn predicate_target(&self, target: &str) -> Option<&PoPredicate> {
+        let segments = handle_segments(target);
+        let set_name = segments
+            .iter()
+            .find(|(ty, _)| ty == "org.eventb.core.poPredicateSet")
+            .map(|(_, name)| name)?;
+        let predicate_name = segments
+            .iter()
+            .find(|(ty, _)| ty == "org.eventb.core.poPredicate")
+            .map(|(_, name)| name)?;
+        let set = self.sets.get(set_name)?;
+        let position = set
+            .predicate_names
+            .iter()
+            .position(|name| name == predicate_name)?;
+        set.predicates.get(position)
+    }
+
     /// The set names from the root down to `leaf`, inclusive.
     fn chain_root_first<'a>(&'a self, leaf: Option<&'a str>) -> Vec<&'a str> {
         let mut chain = Vec::new();
@@ -156,6 +243,42 @@ impl PoView {
         chain.reverse();
         chain
     }
+}
+
+/// A hint resolved to the content it selects.
+#[derive(Debug, PartialEq)]
+pub enum ResolvedHint<'a> {
+    Interval(Option<Vec<&'a PoPredicate>>),
+    Predicate(Option<&'a PoPredicate>),
+}
+
+/// The `type#name` segments of a handle, unescaped, skipping the
+/// leading file path.
+fn handle_segments(handle: &str) -> Vec<(String, String)> {
+    let mut segments = Vec::new();
+    let mut current = String::new();
+    let mut parts: Vec<String> = Vec::new();
+    let mut chars = handle.chars();
+    while let Some(c) = chars.next() {
+        match c {
+            '\\' => {
+                if let Some(next) = chars.next() {
+                    current.push(next);
+                }
+            }
+            '|' => {
+                parts.push(std::mem::take(&mut current));
+            }
+            _ => current.push(c),
+        }
+    }
+    parts.push(current);
+    for part in parts.into_iter().skip(1) {
+        if let Some((ty, name)) = part.split_once('#') {
+            segments.push((ty.to_string(), name.to_string()));
+        }
+    }
+    segments
 }
 
 /// The element currently being filled while parsing.
@@ -224,6 +347,8 @@ fn handle_element(
             match &*scope {
                 Scope::Set(name) => {
                     if let Some(set) = view.sets.get_mut(name) {
+                        set.predicate_names
+                            .push(attr(e, b"name")?.unwrap_or_default());
                         set.predicates.push(row);
                     }
                 }

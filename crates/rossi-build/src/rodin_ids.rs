@@ -204,8 +204,10 @@ fn record_child(
         | Kind::Guard
         | Kind::Action
         | Kind::Witness
-        | Kind::Event
-        | Kind::Variant => attr(e, b"label")?,
+        | Kind::Event => attr(e, b"label")?,
+        // Old-format variants carry no label; index them under the
+        // default so their identity is still reachable.
+        Kind::Variant => attr(e, b"label")?.or_else(|| Some("vrn".to_string())),
         Kind::ExtendsContext | Kind::SeesContext | Kind::RefinesMachine | Kind::RefinesEvent => {
             attr(e, b"target")?
         }
