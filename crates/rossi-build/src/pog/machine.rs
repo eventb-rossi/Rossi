@@ -137,11 +137,6 @@ pub(super) fn generate(
 
     let ff = machine_factory(machine);
     let variables = super::tables::MachineVariables::new(&machine.record);
-    let variant = machine
-        .record
-        .variants
-        .last()
-        .map(|v| (v, v.label.as_str()));
     for event in &machine.record.events {
         let mut scope = super::event::EventScope::new(model, machine, &variables, event, &ff);
         super::event::generate_event(
@@ -149,7 +144,7 @@ pub(super) fn generate(
             &mut scope,
             &manager,
             &machine.record.invariants,
-            variant,
+            &machine.record.variants,
         );
     }
 
@@ -184,51 +179,53 @@ fn machine_factory(machine: &CheckedMachine) -> rossi::formula::FormulaFactory {
         .unwrap_or_else(rossi::formula::FormulaFactory::default_factory)
 }
 
-/// `VWD` (well-definedness) and `FIN` (finiteness) of the variant.
+/// `VWD` (well-definedness) and `FIN` (finiteness), per variant in
+/// declaration order.
 fn generate_variant_pos(machine: &CheckedMachine, po: &mut PoFile) {
-    let Some(variant) = machine.record.variants.last() else {
-        return;
-    };
-    let Some(typed) = &variant.typed else {
-        return;
-    };
-    let label = variant.label.clone();
-    let sources = vec![PogSource::new(Role::Default, variant.source.clone())];
+    let variants = &machine.record.variants;
+    let single_default = variants.len() == 1 && variants[0].label == "vrn";
+    for variant in variants {
+        let Some(typed) = &variant.typed else {
+            continue;
+        };
+        let sources = vec![PogSource::new(Role::Default, variant.source.clone())];
 
-    let wd = typed.wd_lemma();
-    if !is_trivial(&wd) {
-        po.create_po(ProofObligation {
-            name: variant_po_name(&label, "VWD"),
-            nature: Nature::VariantWellDefinedness,
-            global_hypotheses: po.set_handle(ALL_HYP_NAME),
-            local_hypotheses: Vec::new(),
-            goal: PogPredicate::new(wd, variant.source.clone()),
-            sources: sources.clone(),
-            hints: Vec::new(),
-            accurate: machine.accurate,
-        });
-    }
+        let wd = typed.wd_lemma();
+        if !is_trivial(&wd) {
+            po.create_po(ProofObligation {
+                name: variant_po_name(single_default, &variant.label, "VWD"),
+                nature: Nature::VariantWellDefinedness,
+                global_hypotheses: po.set_handle(ALL_HYP_NAME),
+                local_hypotheses: Vec::new(),
+                goal: PogPredicate::new(wd, variant.source.clone()),
+                sources: sources.clone(),
+                hints: Vec::new(),
+                accurate: machine.accurate,
+            });
+        }
 
-    if let Some(ty) = typed.ty()
-        && must_prove_finite(ty)
-    {
-        let finite = typed.factory().simple_predicate(typed.clone(), None);
-        po.create_po(ProofObligation {
-            name: variant_po_name(&label, "FIN"),
-            nature: Nature::VariantFiniteness,
-            global_hypotheses: po.set_handle(ALL_HYP_NAME),
-            local_hypotheses: Vec::new(),
-            goal: PogPredicate::new(finite, variant.source.clone()),
-            sources,
-            hints: Vec::new(),
-            accurate: machine.accurate,
-        });
+        if let Some(ty) = typed.ty()
+            && must_prove_finite(ty)
+        {
+            let finite = typed.factory().simple_predicate(typed.clone(), None);
+            po.create_po(ProofObligation {
+                name: variant_po_name(single_default, &variant.label, "FIN"),
+                nature: Nature::VariantFiniteness,
+                global_hypotheses: po.set_handle(ALL_HYP_NAME),
+                local_hypotheses: Vec::new(),
+                goal: PogPredicate::new(finite, variant.source.clone()),
+                sources,
+                hints: Vec::new(),
+                accurate: machine.accurate,
+            });
+        }
     }
 }
 
-/// A single variant with the default label omits the label segment.
-fn variant_po_name(label: &str, suffix: &str) -> String {
-    if label == "vrn" {
+/// A machine whose only variant carries the default label omits the
+/// label segment; every other shape includes it.
+fn variant_po_name(single_default: bool, label: &str, suffix: &str) -> String {
+    if single_default {
         suffix.to_string()
     } else {
         format!("{label}/{suffix}")

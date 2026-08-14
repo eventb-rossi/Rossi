@@ -222,3 +222,126 @@ fn convergent_events_decrease_the_variant() {
     assert!(!contents.contains(r#"name="wait/NAT""#));
     assert!(!contents.contains(r#"name="INITIALISATION/VAR""#));
 }
+
+/// The sequent block of `name` inside a `.bpo`, for hypothesis checks
+/// scoped to one obligation.
+fn sequent<'a>(contents: &'a str, name: &str) -> &'a str {
+    let open = format!(r#"<org.eventb.core.poSequent name="{name}""#);
+    let start = contents
+        .find(&open)
+        .unwrap_or_else(|| panic!("no sequent {name} in:\n{contents}"));
+    let end = contents[start..]
+        .find("</org.eventb.core.poSequent>")
+        .map(|e| start + e)
+        .unwrap_or(contents.len());
+    &contents[start..end]
+}
+
+#[test]
+fn lexicographic_variants_accumulate_hypotheses() {
+    let machine = xml(
+        "M.bum",
+        r#"<?xml version="1.0"?>
+<org.eventb.core.machineFile version="5" org.eventb.core.configuration="org.eventb.core.fwd">
+<org.eventb.core.variable name="_x" org.eventb.core.identifier="x"/>
+<org.eventb.core.variable name="_y" org.eventb.core.identifier="y"/>
+<org.eventb.core.variable name="_z" org.eventb.core.identifier="z"/>
+<org.eventb.core.invariant name="_i1" org.eventb.core.label="inv1" org.eventb.core.predicate="x ∈ ℤ"/>
+<org.eventb.core.invariant name="_i2" org.eventb.core.label="inv2" org.eventb.core.predicate="y ∈ ℤ"/>
+<org.eventb.core.invariant name="_i3" org.eventb.core.label="inv3" org.eventb.core.predicate="z ∈ ℤ"/>
+<org.eventb.core.variant name="_v1" org.eventb.core.expression="x" org.eventb.core.label="vrn1"/>
+<org.eventb.core.variant name="_v2" org.eventb.core.expression="y" org.eventb.core.label="vrn2"/>
+<org.eventb.core.event name="_init" org.eventb.core.convergence="0" org.eventb.core.extended="false" org.eventb.core.label="INITIALISATION">
+<org.eventb.core.action name="_a" org.eventb.core.assignment="x ≔ 10" org.eventb.core.label="act1"/>
+<org.eventb.core.action name="_b" org.eventb.core.assignment="y ≔ 10" org.eventb.core.label="act2"/>
+<org.eventb.core.action name="_c" org.eventb.core.assignment="z ≔ 0" org.eventb.core.label="act3"/>
+</org.eventb.core.event>
+<org.eventb.core.event name="_cvg" org.eventb.core.convergence="1" org.eventb.core.extended="false" org.eventb.core.label="cvg">
+<org.eventb.core.action name="_ca" org.eventb.core.assignment="x :∈ ℤ" org.eventb.core.label="act1"/>
+<org.eventb.core.action name="_cb" org.eventb.core.assignment="y :∈ ℤ" org.eventb.core.label="act2"/>
+</org.eventb.core.event>
+<org.eventb.core.event name="_ant" org.eventb.core.convergence="2" org.eventb.core.extended="false" org.eventb.core.label="ant">
+<org.eventb.core.action name="_aa" org.eventb.core.assignment="x :∈ ℤ" org.eventb.core.label="act1"/>
+<org.eventb.core.action name="_ab" org.eventb.core.assignment="y :∈ ℤ" org.eventb.core.label="act2"/>
+</org.eventb.core.event>
+<org.eventb.core.event name="_oy" org.eventb.core.convergence="1" org.eventb.core.extended="false" org.eventb.core.label="only_y">
+<org.eventb.core.action name="_oa" org.eventb.core.assignment="y :∈ ℤ" org.eventb.core.label="act1"/>
+</org.eventb.core.event>
+<org.eventb.core.event name="_st" org.eventb.core.convergence="1" org.eventb.core.extended="false" org.eventb.core.label="stutter">
+<org.eventb.core.action name="_sa" org.eventb.core.assignment="z ≔ z + 1" org.eventb.core.label="act1"/>
+</org.eventb.core.event>
+</org.eventb.core.machineFile>"#,
+    );
+    let files = generate("prj", vec![machine]);
+    let contents = &find(&files, "M.bpo").contents;
+
+    // Both variants modified: a non-strict obligation for the first,
+    // the strict one for the last, each assuming the earlier variants
+    // unchanged and the introduced before-after predicates.
+    let block = sequent(contents, "cvg/vrn1/NAT");
+    assert!(block.contains(r#"predicate="x∈ℕ""#), "in:\n{block}");
+    assert!(!block.contains(r#"predicate="x'∈ℤ""#), "in:\n{block}");
+    let block = sequent(contents, "cvg/vrn1/VAR");
+    assert!(block.contains(r#"predicate="x'≤x""#), "in:\n{block}");
+    assert!(block.contains(r#"predicate="x'∈ℤ""#), "in:\n{block}");
+    let block = sequent(contents, "cvg/vrn2/NAT");
+    assert!(block.contains(r#"predicate="y∈ℕ""#), "in:\n{block}");
+    assert!(block.contains(r#"predicate="x'∈ℤ""#), "in:\n{block}");
+    assert!(block.contains(r#"predicate="x'=x""#), "in:\n{block}");
+    let block = sequent(contents, "cvg/vrn2/VAR");
+    assert!(block.contains(r#"predicate="y'&lt;y""#), "in:\n{block}");
+    assert!(block.contains(r#"predicate="x'=x""#), "in:\n{block}");
+    assert!(block.contains(r#"predicate="y'∈ℤ""#), "in:\n{block}");
+
+    // Anticipated: never strict, and no NAT for the last participant.
+    let block = sequent(contents, "ant/vrn1/VAR");
+    assert!(block.contains(r#"predicate="x'≤x""#), "in:\n{block}");
+    let block = sequent(contents, "ant/vrn2/VAR");
+    assert!(block.contains(r#"predicate="y'≤y""#), "in:\n{block}");
+    assert!(contents.contains(r#"name="ant/vrn1/NAT""#));
+    assert!(!contents.contains(r#"name="ant/vrn2/NAT""#));
+
+    // An untouched variant generates nothing for the event.
+    assert!(!contents.contains(r#"name="only_y/vrn1/NAT""#));
+    assert!(!contents.contains(r#"name="only_y/vrn1/VAR""#));
+    let block = sequent(contents, "only_y/vrn2/VAR");
+    assert!(block.contains(r#"predicate="y'&lt;y""#), "in:\n{block}");
+
+    // A convergent event touching no variant still owes a strict
+    // decrease of the last one — an unprovable goal flagging the model.
+    assert!(!contents.contains(r#"name="stutter/vrn1/VAR""#));
+    let block = sequent(contents, "stutter/vrn2/VAR");
+    assert!(block.contains(r#"predicate="y&lt;y""#), "in:\n{block}");
+}
+
+#[test]
+fn single_nondefault_label_keeps_its_segment() {
+    let machine = xml(
+        "M.bum",
+        r#"<?xml version="1.0"?>
+<org.eventb.core.machineFile version="5" org.eventb.core.configuration="org.eventb.core.fwd">
+<org.eventb.core.variable name="_x" org.eventb.core.identifier="x"/>
+<org.eventb.core.invariant name="_i1" org.eventb.core.label="inv1" org.eventb.core.predicate="x ∈ ℤ"/>
+<org.eventb.core.variant name="_v" org.eventb.core.expression="10 ÷ x" org.eventb.core.label="bnd"/>
+<org.eventb.core.event name="_init" org.eventb.core.convergence="0" org.eventb.core.extended="false" org.eventb.core.label="INITIALISATION">
+<org.eventb.core.action name="_a" org.eventb.core.assignment="x ≔ 10" org.eventb.core.label="act1"/>
+</org.eventb.core.event>
+<org.eventb.core.event name="_down" org.eventb.core.convergence="1" org.eventb.core.extended="false" org.eventb.core.label="down">
+<org.eventb.core.action name="_da" org.eventb.core.assignment="x ≔ x − 1" org.eventb.core.label="act1"/>
+</org.eventb.core.event>
+</org.eventb.core.machineFile>"#,
+    );
+    let files = generate("prj", vec![machine]);
+    let contents = &find(&files, "M.bpo").contents;
+    assert!(contents.contains(r#"name="bnd/VWD""#), "in:\n{contents}");
+    assert!(
+        contents.contains(r#"name="down/bnd/NAT""#),
+        "in:\n{contents}"
+    );
+    assert!(
+        contents.contains(r#"name="down/bnd/VAR""#),
+        "in:\n{contents}"
+    );
+    assert!(!contents.contains(r#"name="VWD""#));
+    assert!(!contents.contains(r#"name="down/VAR""#));
+}
