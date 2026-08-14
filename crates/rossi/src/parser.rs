@@ -960,11 +960,16 @@ fn parse_machine(pair: pest::iterators::Pair<Rule>) -> Result<Component, ParseEr
                         .extend(collect_theorem_predicates(pair, Rule::kw_theorems)?);
                 }
                 Rule::machine_clause_variant => {
+                    let mut label = None;
                     for vp in pair.into_inner() {
                         match vp.as_rule() {
                             Rule::kw_variant => {}
+                            Rule::label => label = extract_label(vp),
                             _ => {
-                                machine.variant = Some(parse_expression(vp, &mut Fx::new())?);
+                                machine.variants.push(crate::ast::Variant {
+                                    label: label.take(),
+                                    expression: parse_expression(vp, &mut Fx::new())?,
+                                });
                             }
                         }
                     }
@@ -3895,6 +3900,34 @@ fn parse_context_with_recovery(
     ParseResult::with_errors(Some(Component::Context(context)), errors)
 }
 
+/// Split a recovered `VARIANT` clause body into its optionally labeled
+/// items: `[expr] (@label expr)*`. A label cannot contain whitespace and
+/// an expression cannot contain `@`, so every `@` starts a new item.
+fn split_variant_items(body: &str) -> Vec<(Option<String>, &str)> {
+    let mut boundaries: Vec<usize> = body
+        .char_indices()
+        .filter(|(_, c)| *c == '@')
+        .map(|(i, _)| i)
+        .collect();
+    boundaries.push(body.len());
+    let mut items = Vec::new();
+    let head = body[..boundaries[0]].trim();
+    if !head.is_empty() {
+        items.push((None, head));
+    }
+    for pair in boundaries.windows(2) {
+        let item = &body[pair[0] + 1..pair[1]];
+        let (label, expr) = match item.find(char::is_whitespace) {
+            Some(end) => (&item[..end], item[end..].trim()),
+            None => (item, ""),
+        };
+        if !expr.is_empty() {
+            items.push((Some(label.to_string()), expr));
+        }
+    }
+    items
+}
+
 /// Attempt to parse a machine with error recovery
 fn parse_machine_with_recovery(
     text: &RecoveryText,
@@ -3945,15 +3978,18 @@ fn parse_machine_with_recovery(
     let variant =
         clause_region(text, KeywordId::Variant, bound, &positions).map(|(_, region)| region);
 
-    // Best-effort recovery of the variant expression (for the outline): the
-    // region's content past the `VARIANT` keyword, if it parses.
+    // Best-effort recovery of the variant expressions (for the outline): the
+    // region's content past the `VARIANT` keyword, split into optionally
+    // labeled items, kept where they parse.
     if let Some(region) = variant {
         let kw_len = crate::keywords::spell(KeywordId::Variant).len();
         let body = text.masked[region.span.start + kw_len..region.span.end].trim();
-        if !body.is_empty()
-            && let Ok(expr) = parse_expression_str(body)
-        {
-            machine.variant = Some(expr);
+        for (label, part) in split_variant_items(body) {
+            if let Ok(expression) = parse_expression_str(part) {
+                machine
+                    .variants
+                    .push(crate::ast::Variant { label, expression });
+            }
         }
     }
 
@@ -4222,7 +4258,13 @@ impl RecoveryFormulaKind {
                 // Parseability probe only — spans are discarded.
                 try_parse_labeled_predicate_from_text(content, 0).is_ok()
             }
-            (Self::Component, KeywordId::Variant) => parse_expression_str(content).is_ok(),
+            (Self::Component, KeywordId::Variant) => {
+                let items = split_variant_items(content);
+                !items.is_empty()
+                    && items
+                        .iter()
+                        .all(|(_, part)| parse_expression_str(part).is_ok())
+            }
             (Self::Event, KeywordId::Then) => {
                 try_parse_labeled_action_from_text(content, 0).is_ok()
             }

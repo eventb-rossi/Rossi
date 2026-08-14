@@ -22,7 +22,7 @@ use rossi::formula::{BoundIdentDecl, FormulaFactory};
 use rossi::{
     ActionBody, Assignment, Component, Context, Event, EventStatus, Expression, ExpressionKind,
     Form, InitialisationEvent, LabeledAction, LabeledPredicate, Machine, NamedElement, Predicate,
-    PredicateKind, PrettyPrinter, parse,
+    PredicateKind, PrettyPrinter, Variant, parse,
 };
 
 fn ff() -> FormulaFactory {
@@ -655,7 +655,12 @@ fn arb_machine() -> impl Strategy<Value = Component> {
         proptest::collection::vec(arb_identifier(), 0..4),
         proptest::collection::vec(arb_axiom(), 0..3),
         proptest::collection::vec(arb_theorem(), 0..2),
-        proptest::option::of(arb_leaf_expression()),
+        // VARIANT items: an optional unlabeled first item, then labeled
+        // ones — the only shapes the text grammar can round-trip.
+        (
+            proptest::option::of(arb_leaf_expression()),
+            proptest::collection::vec((arb_label(), arb_leaf_expression()), 0..2),
+        ),
         proptest::option::of(arb_initialisation()),
         proptest::collection::vec(arb_event(), 0..3),
     )
@@ -666,7 +671,7 @@ fn arb_machine() -> impl Strategy<Value = Component> {
                 variables,
                 mut invariants,
                 theorems,
-                variant,
+                (first_variant, labeled_variants),
                 initialisation,
                 events,
             )| {
@@ -676,7 +681,18 @@ fn arb_machine() -> impl Strategy<Value = Component> {
                 machine.variables = variables.into_iter().map(NamedElement::new).collect();
                 invariants.extend(theorems);
                 machine.invariants = invariants;
-                machine.variant = variant;
+                machine.variants = first_variant
+                    .into_iter()
+                    .map(|expression| Variant {
+                        label: None,
+                        expression,
+                    })
+                    .chain(
+                        labeled_variants
+                            .into_iter()
+                            .map(|(label, expression)| Variant { label, expression }),
+                    )
+                    .collect();
                 machine.initialisation = initialisation;
                 machine.events = events;
                 Component::Machine(machine)

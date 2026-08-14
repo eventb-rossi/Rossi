@@ -1366,7 +1366,7 @@ END
     assert_eq!(&source[name.start..name.end], "INITIALISATION");
 
     // The variant expression recovered (best effort).
-    assert!(m.variant.is_some(), "variant recovered");
+    assert!(!m.variants.is_empty(), "variant recovered");
 
     // Clause regions cover variant and events; the EVENTS region ends at the
     // last event's END, not the machine END.
@@ -1548,7 +1548,7 @@ END
         invariants,
         vec![(Some("inv1"), false), (Some("thm1"), true)],
     );
-    assert!(m.variant.is_some(), "variant expression recovered");
+    assert!(!m.variants.is_empty(), "variant expression recovered");
 }
 
 #[test]

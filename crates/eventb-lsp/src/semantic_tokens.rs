@@ -559,7 +559,7 @@ impl<'a> SemanticTokensBuilder<'a> {
         }
 
         // VARIANT clause
-        if mch.variant.is_some() {
+        if !mch.variants.is_empty() {
             self.advance_past_keyword(KeywordId::Variant, &mut cur, bound);
         }
 

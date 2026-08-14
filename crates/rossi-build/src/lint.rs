@@ -435,8 +435,8 @@ fn invariant_refs(m: &Machine) -> BTreeSet<String> {
 /// References appearing in `m`'s variant, INITIALISATION, and events —
 /// everything [`invariant_refs`] doesn't cover.
 fn machine_body_refs(m: &Machine, acc: &mut BTreeSet<String>) {
-    if let Some(v) = &m.variant {
-        collect_referenced_in_expression(v, acc);
+    for v in &m.variants {
+        collect_referenced_in_expression(&v.expression, acc);
     }
     if let Some(init) = &m.initialisation {
         for la in &init.actions {

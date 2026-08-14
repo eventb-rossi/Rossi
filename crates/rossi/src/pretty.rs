@@ -340,15 +340,23 @@ impl PrettyPrinter {
             }
         }
 
-        if let Some(variant) = &machine.variant {
+        if !machine.variants.is_empty() {
             writeln!(output, "VARIANT").unwrap();
-            writeln!(
-                output,
-                "{}{}",
-                self.indent,
-                self.print_formula_expression(variant)
-            )
-            .unwrap();
+            for (i, variant) in machine.variants.iter().enumerate() {
+                let expr = self.print_formula_expression(&variant.expression);
+                match &variant.label {
+                    Some(label) => {
+                        writeln!(output, "{}@{label} {expr}", self.indent).unwrap();
+                    }
+                    // The grammar only allows a bare expression in first
+                    // position; spell out the default label elsewhere so
+                    // the output stays parseable.
+                    None if i == 0 => {
+                        writeln!(output, "{}{expr}", self.indent).unwrap();
+                    }
+                    None => writeln!(output, "{}@vrn {expr}", self.indent).unwrap(),
+                }
+            }
         }
 
         if machine.initialisation.is_some() || !machine.events.is_empty() {

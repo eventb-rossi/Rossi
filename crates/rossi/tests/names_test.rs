@@ -111,7 +111,7 @@ END
     };
     assert_eq!(m.sees, vec!["c1", "end-to-end", "variant-x"]);
     assert!(
-        m.variant.is_none(),
+        m.variants.is_empty(),
         "variant-x must not open a VARIANT clause"
     );
 }

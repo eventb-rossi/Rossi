@@ -641,8 +641,8 @@ fn push_component_formulas<'a>(component: &'a Component, stack: &mut Vec<Formula
                     .iter()
                     .map(|invariant| Formula::Predicate(&invariant.predicate)),
             );
-            if let Some(variant) = &machine.variant {
-                stack.push(Formula::Expression(variant));
+            for variant in &machine.variants {
+                stack.push(Formula::Expression(&variant.expression));
             }
             if let Some(initialisation) = &machine.initialisation {
                 stack.extend(

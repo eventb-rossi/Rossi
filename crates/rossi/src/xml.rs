@@ -583,7 +583,7 @@ fn parse_machine_xml_with_name(
     let mut sees = Vec::new();
     let mut variables = Vec::new();
     let mut invariants = Vec::new();
-    let mut variant = None;
+    let mut variants = Vec::new();
     let mut initialisation = None;
     let mut events = Vec::new();
     let mut current_event: Option<EventBuilder> = None;
@@ -670,13 +670,16 @@ fn parse_machine_xml_with_name(
                     }
                     "org.eventb.core.variant" => {
                         if let Some(expr_str) = get_xml_attr(&e, b"expression")? {
-                            variant = Some(parse_expression_attr(
-                                &expr_str,
-                                &origin,
-                                "variant",
-                                None,
-                                "expression",
-                            )?);
+                            variants.push(crate::ast::Variant {
+                                label: get_xml_attr(&e, b"label")?,
+                                expression: parse_expression_attr(
+                                    &expr_str,
+                                    &origin,
+                                    "variant",
+                                    None,
+                                    "expression",
+                                )?,
+                            });
                         }
                     }
                     // Self-closing `<event .../>` — common for extended
@@ -958,7 +961,7 @@ fn parse_machine_xml_with_name(
         sees,
         variables,
         invariants,
-        variant,
+        variants,
         initialisation,
         events,
         span: None,
@@ -1739,11 +1742,26 @@ fn machine_to_xml(machine: &Machine) -> String {
         "    ",
     );
 
-    // Variant
-    if let Some(variant) = &machine.variant {
-        let expr_str = printer.print_formula_expression(variant);
+    // Variants. The default label `vrn` stays implicit (no attribute) on
+    // the first variant only, matching the model layer's storage
+    // convention; the grammar requires every later variant to carry a
+    // label, so dropping it there would break the XML-to-text round-trip.
+    for (i, variant) in machine.variants.iter().enumerate() {
+        let name = if i == 0 {
+            "_vr".to_string()
+        } else {
+            format!("_vr{i}")
+        };
+        let expr_str = printer.print_formula_expression(&variant.expression);
+        let label_attr = match variant.label.as_deref() {
+            Some("vrn") | None if i == 0 => String::new(),
+            label => {
+                let label = label.unwrap_or("vrn");
+                format!(" org.eventb.core.label=\"{}\"", escape_xml(label))
+            }
+        };
         xml.push_str(&format!(
-            "    <org.eventb.core.variant name=\"_vr\" org.eventb.core.expression=\"{}\"/>\n",
+            "    <org.eventb.core.variant name=\"{name}\" org.eventb.core.expression=\"{}\"{label_attr}/>\n",
             escape_xml(&expr_str)
         ));
     }
@@ -2182,7 +2200,7 @@ mod tests {
             variables: vec![],
             invariants: vec![],
 
-            variant: None,
+            variants: vec![],
             initialisation: None,
             events: vec![],
             span: None,
@@ -2209,7 +2227,7 @@ mod tests {
             variables: vec![NamedElement::new("count".to_string())],
             invariants: vec![],
 
-            variant: None,
+            variants: vec![],
             initialisation: None,
             events: vec![],
             span: None,
@@ -2235,7 +2253,7 @@ mod tests {
             variables: vec![NamedElement::new("count".to_string())],
             invariants: vec![],
 
-            variant: None,
+            variants: vec![],
             initialisation: Some(InitialisationEvent {
                 actions: vec![LabeledAction {
                     label: Some("act1".to_string()),
@@ -2335,7 +2353,7 @@ mod tests {
             variables: vec![NamedElement::new("count".to_string())],
             invariants: vec![],
 
-            variant: None,
+            variants: vec![],
             initialisation: None,
             events: vec![event],
             span: None,
@@ -2595,7 +2613,7 @@ mod tests {
             variables: vec![],
             invariants: vec![],
 
-            variant: None,
+            variants: vec![],
             initialisation: None,
             events: vec![ordinary_event, convergent_event, anticipated_event],
             span: None,
@@ -2645,7 +2663,7 @@ mod tests {
             variables: vec![],
             invariants: vec![],
 
-            variant: None,
+            variants: vec![],
             initialisation: None,
             events: vec![event],
             span: None,
@@ -2697,7 +2715,7 @@ mod tests {
             variables: vec![],
             invariants: vec![],
 
-            variant: None,
+            variants: vec![],
             initialisation: None,
             events: vec![event],
             span: None,

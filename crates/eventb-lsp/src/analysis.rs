@@ -109,7 +109,7 @@ fn extract_machine_symbols(machine: &Machine, source: &str) -> Vec<DocumentSymbo
     }
 
     // Add VARIANT if present
-    if machine.variant.is_some() {
+    if !machine.variants.is_empty() {
         symbols.push(create_symbol(
             "variant".to_string(),
             SymbolKind::NUMBER,

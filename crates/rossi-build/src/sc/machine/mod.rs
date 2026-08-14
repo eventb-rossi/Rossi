@@ -286,7 +286,7 @@ pub fn check_machine(
     // A machine without a usable variant cannot host convergent events:
     // each is downgraded to ordinary (and marked inaccurate). `variant_usable`
     // is the single machine-wide flag that feeds every event's convergence.
-    let (variant_decl, variant_usable) = match &machine.variant {
+    let (variant_decl, variant_usable) = match machine.variants.last().map(|v| &v.expression) {
         Some(expr) => {
             match build_variant_decl(&pc.rodin_ids, &file_root, expr, &env, &machine.name) {
                 Ok((decl, usable)) => (Some(decl), usable),

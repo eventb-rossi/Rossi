@@ -136,8 +136,8 @@ fn drive<V: WalkVisitor>(component: &Component, v: &mut V) {
             for inv in &m.invariants {
                 let _ = occurrences::walk_predicate(&inv.predicate, &mut Vec::new(), v);
             }
-            if let Some(variant) = &m.variant {
-                let _ = occurrences::walk_expression(variant, &mut Vec::new(), v);
+            for variant in &m.variants {
+                let _ = occurrences::walk_expression(&variant.expression, &mut Vec::new(), v);
             }
             if let Some(init) = &m.initialisation {
                 for lp in init.with.iter().chain(&init.witnesses) {
@@ -588,7 +588,7 @@ mod tests {
         let Component::Machine(m) = &component else {
             panic!("machine");
         };
-        let variant = m.variant.as_ref().expect("variant");
+        let variant = &m.variants.first().expect("variant").expression;
         assert!(expression_mentions(variant, "x"));
         assert!(expression_mentions(variant, "y"));
         assert!(!expression_mentions(variant, "z"));

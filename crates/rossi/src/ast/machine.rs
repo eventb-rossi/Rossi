@@ -27,8 +27,10 @@ pub struct Machine {
     /// Theorems are stored here with `is_theorem = true`.
     pub invariants: Vec<LabeledPredicate>,
 
-    /// Variant (expression that must decrease for convergent events)
-    pub variant: Option<Expression>,
+    /// Variants (expressions that must decrease for convergent events),
+    /// in declaration order. Several labeled variants form a
+    /// lexicographic order.
+    pub variants: Vec<Variant>,
 
     /// Initialisation event
     pub initialisation: Option<InitialisationEvent>,
@@ -53,6 +55,17 @@ pub struct Machine {
     pub metadata: Option<FileMetadata>,
 }
 
+/// A machine variant: an expression bounding convergent events,
+/// optionally labeled (`None` stands for the default label `vrn`).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Variant {
+    /// Optional variant label
+    pub label: Option<String>,
+
+    /// The variant expression
+    pub expression: Expression,
+}
+
 impl Machine {
     /// Create a new machine with the given name
     pub fn new(name: String) -> Self {
@@ -62,7 +75,7 @@ impl Machine {
             sees: Vec::new(),
             variables: Vec::new(),
             invariants: Vec::new(),
-            variant: None,
+            variants: Vec::new(),
             initialisation: None,
             events: Vec::new(),
             span: None,

@@ -119,8 +119,8 @@ impl HoverContext {
                             .insert(variable.name.clone(), constraints);
                     }
                 }
-                if let Some(variant) = &machine.variant {
-                    self.variants.push(variant.clone());
+                for variant in &machine.variants {
+                    self.variants.push(variant.expression.clone());
                 }
             }
         }

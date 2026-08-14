@@ -160,10 +160,96 @@ fn test_parse_machine_with_variant_xml() {
     assert!(result.is_ok(), "Parse error: {:?}", result.err());
 
     if let Component::Machine(m) = result.unwrap() {
-        assert!(m.variant.is_some());
+        assert_eq!(m.variants.len(), 1);
     } else {
         panic!("Expected Machine component");
     }
+}
+
+#[test]
+fn test_parse_machine_with_labeled_variants_xml() {
+    let xml = r#"<?xml version="1.0" encoding="UTF-8"?>
+<org.eventb.core.machineFile version="5">
+    <org.eventb.core.variable identifier="n"/>
+    <org.eventb.core.variable identifier="k"/>
+    <org.eventb.core.variant expression="n" label="vrn1"/>
+    <org.eventb.core.variant expression="n − k" label="vrn2"/>
+</org.eventb.core.machineFile>"#;
+
+    let component = parse_xml(xml).expect("parse");
+    let Component::Machine(m) = &component else {
+        panic!("Expected Machine component");
+    };
+    assert_eq!(m.variants.len(), 2);
+    assert_eq!(m.variants[0].label.as_deref(), Some("vrn1"));
+    assert_eq!(m.variants[1].label.as_deref(), Some("vrn2"));
+
+    // The writer keeps every variant with its label, so a re-parse
+    // sees the same list.
+    let written = rossi::xml::to_xml(&component);
+    let Component::Machine(again) = parse_xml(&written).expect("reparse") else {
+        panic!("Expected Machine component");
+    };
+    assert_eq!(again.variants, m.variants);
+}
+
+#[test]
+fn test_unlabeled_second_variant_survives_round_trip() {
+    // A non-first variant without a label (accepted from foreign XML,
+    // stored as `None`) must not vanish or corrupt the round-trip: the
+    // writer spells out the default `vrn` label because the textual
+    // grammar requires a label on every variant after the first.
+    let xml = r#"<?xml version="1.0" encoding="UTF-8"?>
+<org.eventb.core.machineFile version="5">
+    <org.eventb.core.variable identifier="n"/>
+    <org.eventb.core.variant expression="n" label="v1"/>
+    <org.eventb.core.variant expression="n + 1"/>
+</org.eventb.core.machineFile>"#;
+
+    let component = parse_xml(xml).expect("parse");
+    let Component::Machine(m) = &component else {
+        panic!("Expected Machine component");
+    };
+    assert_eq!(m.variants.len(), 2);
+    assert_eq!(m.variants[1].label, None);
+
+    let written = rossi::xml::to_xml(&component);
+    let Component::Machine(again) = parse_xml(&written).expect("reparse") else {
+        panic!("Expected Machine component");
+    };
+    assert_eq!(again.variants.len(), 2);
+    assert_eq!(again.variants[0].label.as_deref(), Some("v1"));
+    assert_eq!(again.variants[1].label.as_deref(), Some("vrn"));
+
+    // The pretty-printer must also emit re-parseable text for the
+    // `None`-labeled second variant.
+    let text = rossi::pretty::PrettyPrinter::new().print_component(&component);
+    let reparsed = rossi::parse(&text).expect("printed text reparses");
+    let Component::Machine(back) = &reparsed else {
+        panic!("Expected Machine component");
+    };
+    assert_eq!(back.variants.len(), 2);
+    assert_eq!(back.variants[1].label.as_deref(), Some("vrn"));
+}
+
+#[test]
+fn test_explicit_vrn_label_on_second_variant_round_trip() {
+    // `VARIANT @v1 n @vrn n + 1`: the default label may only stay
+    // implicit on the first variant; dropping it from the second would
+    // re-parse as `[Some("v1"), None]` and corrupt the model.
+    let xml = r#"<?xml version="1.0" encoding="UTF-8"?>
+<org.eventb.core.machineFile version="5">
+    <org.eventb.core.variable identifier="n"/>
+    <org.eventb.core.variant expression="n" label="v1"/>
+    <org.eventb.core.variant expression="n + 1" label="vrn"/>
+</org.eventb.core.machineFile>"#;
+
+    let component = parse_xml(xml).expect("parse");
+    let written = rossi::xml::to_xml(&component);
+    let Component::Machine(again) = parse_xml(&written).expect("reparse") else {
+        panic!("Expected Machine component");
+    };
+    assert_eq!(again.variants[1].label.as_deref(), Some("vrn"));
 }
 
 #[test]

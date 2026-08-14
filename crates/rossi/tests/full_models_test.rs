@@ -305,9 +305,9 @@ fn test_variant_clause_simple_identifier() {
     "#;
 
     let m = common::parse_machine(source);
-    assert!(m.variant.is_some(), "Machine should have a variant");
+    assert_eq!(m.variants.len(), 1, "Machine should have a variant");
     assert!(
-        matches!(m.variant.as_ref().unwrap().kind(), ExpressionKind::FreeIdentifier(n) if n == "n"),
+        matches!(m.variants[0].expression.kind(), ExpressionKind::FreeIdentifier(n) if n == "n"),
         "Variant should be identifier 'n'"
     );
 }
@@ -333,8 +333,8 @@ fn test_variant_clause_arithmetic_expression() {
     "#;
 
     let m = common::parse_machine(source);
-    assert!(m.variant.is_some(), "Machine should have a variant");
-    match m.variant.as_ref().unwrap().kind() {
+    assert_eq!(m.variants.len(), 1, "Machine should have a variant");
+    match m.variants[0].expression.kind() {
         ExpressionKind::Associative { op, children } => {
             assert_eq!(*op, rossi::formula::tag::AssocExprOp::Plus);
             assert!(matches!(children[0].kind(), ExpressionKind::FreeIdentifier(n) if n == "x"));
@@ -342,6 +342,38 @@ fn test_variant_clause_arithmetic_expression() {
         }
         other => panic!("Expected a sum for the variant, got {:?}", other),
     }
+}
+
+#[test]
+fn test_variant_clause_labeled_items() {
+    // Labeled variants form a list in one VARIANT clause: the first item
+    // may be unlabeled, each further one starts at its @label.
+    let source = r#"
+    MACHINE test
+    VARIABLES
+        m k
+    INVARIANTS
+        @inv1 m >= 0
+        @inv2 k >= 0
+    VARIANT
+        k
+        @vrn1 m
+        @vrn2 m - k
+    EVENTS
+        EVENT INITIALISATION
+        THEN
+            m := 5
+            k := 0
+        END
+    END
+    "#;
+
+    let m = common::parse_machine(source);
+    let shape: Vec<Option<&str>> = m.variants.iter().map(|v| v.label.as_deref()).collect();
+    assert_eq!(shape, vec![None, Some("vrn1"), Some("vrn2")]);
+    assert!(
+        matches!(m.variants[0].expression.kind(), ExpressionKind::FreeIdentifier(n) if n == "k")
+    );
 }
 
 // ============================================================================
@@ -840,7 +872,7 @@ fn test_machine_theorems_between_invariants_and_variant() {
     assert_eq!(mch.invariants.len(), 2);
     assert!(!mch.invariants[0].is_theorem);
     assert!(mch.invariants[1].is_theorem);
-    assert!(mch.variant.is_some());
+    assert_eq!(mch.variants.len(), 1);
 }
 
 #[test]
@@ -860,7 +892,7 @@ fn test_machine_accepts_theorems_after_variant() {
     let mch = common::parse_machine(source);
     assert_eq!(mch.invariants.len(), 2);
     assert!(mch.invariants.iter().any(|i| i.is_theorem));
-    assert!(mch.variant.is_some());
+    assert_eq!(mch.variants.len(), 1);
 }
 
 #[test]
@@ -1038,7 +1070,7 @@ fn test_machine_full_valid_order() {
         1,
         "Should have exactly one invariant with is_theorem = true"
     );
-    assert!(m.variant.is_some());
+    assert_eq!(m.variants.len(), 1);
     assert!(m.initialisation.is_some());
 }
 

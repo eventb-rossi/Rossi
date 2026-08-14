@@ -666,8 +666,10 @@ machine_clause_theorems = {
     kw_theorems ~ labeled_predicate ~ (!machine_section_kw ~ labeled_predicate)*
 }
 
+// The first variant may be unlabeled (default label); every further one
+// needs its `@label` sigil to delimit the expressions.
 machine_clause_variant = {
-    kw_variant ~ expression
+    kw_variant ~ label? ~ expression ~ (label ~ expression)*
 }
 
 // ==========================

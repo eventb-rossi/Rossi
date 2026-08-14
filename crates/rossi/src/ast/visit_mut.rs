@@ -93,7 +93,7 @@ pub fn walk_machine<V: VisitMut + ?Sized>(visitor: &mut V, machine: &mut Machine
     for invariant in &mut machine.invariants {
         visitor.visit_labeled_predicate(invariant);
     }
-    // The variant is a formula-model expression — immutable, out of this
+    // The variants are formula-model expressions — immutable, out of this
     // legacy visitor's reach.
     if let Some(initialisation) = &mut machine.initialisation {
         visitor.visit_initialisation(initialisation);

@@ -62,7 +62,7 @@ pub mod xml;
 // typed model; `ast` holds the structural component types.
 pub use ast::{
     ActionBody, Component, Context, Event, EventStatus, FileMetadata, Ident, InitialisationEvent,
-    LabeledAction, LabeledPredicate, Machine, NamedElement,
+    LabeledAction, LabeledPredicate, Machine, NamedElement, Variant,
 };
 pub use deps::{ComponentId, ComponentKind, DependencyGraph, EdgeKind, RefinementAncestry};
 pub use error::{ParseError, ParseResult, Result};
