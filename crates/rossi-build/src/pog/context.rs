@@ -31,18 +31,7 @@ pub(super) fn generate(project: &Project, model: &ScModel, context: &CheckedCont
         .attr(attr::PO_STAMP, "0");
     let mut names = RodinNameGenerator::default();
     for abstract_context in model.abstract_contexts(context) {
-        push_identifiers(&mut abs_hyp, &mut names, &abstract_context.record);
-        for axiom in &abstract_context.record.axioms {
-            abs_hyp.push(
-                Element::new(xtag::PO_PREDICATE)
-                    .attr(attr::NAME, names.fresh())
-                    .attr(
-                        attr::PREDICATE,
-                        crate::normalize::canonical_typed_predicate(&axiom.typed),
-                    )
-                    .attr(attr::SOURCE, axiom.source.as_str()),
-            );
-        }
+        push_context_hypotheses(&mut abs_hyp, &mut names, &abstract_context.record);
     }
     push_identifiers(&mut abs_hyp, &mut names, &context.record);
     po.push(abs_hyp);
@@ -113,6 +102,27 @@ pub(super) fn generate(project: &Project, model: &ScModel, context: &CheckedCont
 
     manager.create_hypotheses(&mut po);
     po.into_sc_file(context.accurate)
+}
+
+/// A context's whole contribution to a hypothesis root set: its
+/// identifiers, then its axioms as predicate rows with generated names.
+pub(super) fn push_context_hypotheses(
+    set: &mut Element,
+    names: &mut RodinNameGenerator,
+    record: &ContextRecord,
+) {
+    push_identifiers(set, names, record);
+    for axiom in &record.axioms {
+        set.push(
+            Element::new(xtag::PO_PREDICATE)
+                .attr(attr::NAME, names.fresh())
+                .attr(
+                    attr::PREDICATE,
+                    crate::normalize::canonical_typed_predicate(&axiom.typed),
+                )
+                .attr(attr::SOURCE, axiom.source.as_str()),
+        );
+    }
 }
 
 /// A context's carrier sets and constants as `poIdentifier` rows,

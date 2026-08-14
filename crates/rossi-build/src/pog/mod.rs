@@ -8,6 +8,7 @@
 
 mod context;
 pub mod hyp;
+mod machine;
 pub mod model;
 pub mod natures;
 
@@ -32,7 +33,11 @@ pub fn generate(project: &Project, model: &ScModel) -> Vec<ScFile> {
                     files.push(context::generate(project, model, checked));
                 }
             }
-            Component::Machine(_) => {}
+            Component::Machine(_) => {
+                if let Some(checked) = model.machines.get(name) {
+                    files.push(machine::generate(project, pc, model, checked));
+                }
+            }
         }
     }
     files
