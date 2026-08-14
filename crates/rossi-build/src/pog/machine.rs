@@ -140,7 +140,7 @@ pub(super) fn generate(
     let variables = super::tables::MachineVariables::new(&machine.record);
     for event in &machine.record.events {
         let mut scope = super::event::EventScope::new(model, machine, &variables, event, &ff);
-        super::event::generate_event(&mut po, &mut scope);
+        super::event::generate_event(&mut po, &mut scope, &manager, &machine.record.invariants);
     }
 
     manager.create_hypotheses(&mut po);

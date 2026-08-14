@@ -18,16 +18,20 @@ use super::hyp::{ALL_HYP_NAME, CTX_HYP_NAME, HypothesisManager, HypothesisRow};
 use super::model::{Hint, PoFile, PogPredicate, PogSource, ProofObligation, Role, is_trivial};
 use super::natures::Nature;
 use super::tables::{
-    AbstractEventGuardList, ConcreteEventGuardTable, MachineVariables, assigned_variables,
+    AbstractEventActionTable, AbstractEventGuardList, ConcreteEventActionTable,
+    ConcreteEventGuardTable, MachineVariables, apply, assigned_variables,
 };
 
 /// Everything the event-scoped modules consume.
 pub(super) struct EventScope<'a> {
     pub event: &'a Rc<EventDecl>,
+    pub is_initialisation: bool,
     pub accurate: bool,
     pub manager: HypothesisManager,
     pub guards: ConcreteEventGuardTable,
     pub abstract_events: AbstractEventGuardList,
+    pub concrete_actions: ConcreteEventActionTable,
+    pub abstract_actions: AbstractEventActionTable,
 }
 
 impl<'a> EventScope<'a> {
@@ -38,7 +42,6 @@ impl<'a> EventScope<'a> {
         event: &'a Rc<EventDecl>,
         ff: &FormulaFactory,
     ) -> Self {
-        let _ = ff;
         let internal_name = machine
             .event_internal_name(&event.label)
             .unwrap_or(&event.label)
@@ -110,21 +113,201 @@ impl<'a> EventScope<'a> {
             }
         }
 
+        let concrete_actions = ConcreteEventActionTable::new(&event.actions, variables, ff);
+        let abstract_actions = match abstract_events.first_abstract_event() {
+            Some(abstract_event) => {
+                AbstractEventActionTable::new(&abstract_event.actions, &concrete_actions)
+            }
+            None => AbstractEventActionTable::new(&[], &concrete_actions),
+        };
+
         EventScope {
             event,
+            is_initialisation,
             accurate,
             manager,
             guards,
             abstract_events,
+            concrete_actions,
+            abstract_actions,
+        }
+    }
+
+    /// The interval hint selecting the event's local hypothesis chain
+    /// up to the sequent's own hypotheses.
+    fn local_hypothesis_hint(&self, po: &PoFile, sequent_name: &str) -> Hint {
+        Hint::Interval {
+            start: po.set_handle(self.manager.root_hypothesis()),
+            end: po.sequent_hypothesis_handle(sequent_name),
         }
     }
 }
 
 /// Generate every obligation of one event, then materialize its
 /// hypothesis chain.
-pub(super) fn generate_event(po: &mut PoFile, scope: &mut EventScope<'_>) {
+pub(super) fn generate_event(
+    po: &mut PoFile,
+    scope: &mut EventScope<'_>,
+    machine_manager: &HypothesisManager,
+    invariants: &[crate::sc::machine_record::InvariantDecl],
+) {
     guard_module(po, scope);
+    action_module(po, scope);
+    new_event_invariant_module(po, scope, machine_manager, invariants);
     scope.manager.create_hypotheses(po);
+}
+
+/// `<evt>/<act>/WD` and `<evt>/<act>/FIS` for the event's actions.
+///
+/// An action identical to an abstract one was already proved there:
+/// it gets no obligations, except that its feasibility is still due
+/// when the abstract hypotheses could not be assumed.
+fn action_module(po: &mut PoFile, scope: &mut EventScope<'_>) {
+    if scope.concrete_actions.table.actions.is_empty() {
+        return;
+    }
+    let hints = vec![Hint::Interval {
+        start: po.set_handle(scope.manager.root_hypothesis()),
+        end: po.set_handle(scope.manager.full_hypothesis()),
+    }];
+    let abstract_hyp = abstract_action_hypothesis(scope);
+
+    for k in 0..scope.concrete_actions.table.actions.len() {
+        let action = &scope.concrete_actions.table.actions[k];
+        let label = action.label.clone();
+        let source = action.source.clone();
+        let assignment = action.assignment.clone();
+        let sources = vec![PogSource::new(Role::Default, source.clone())];
+        let hyp = abstract_hyp.clone();
+        let not_same_as_abstract = scope.abstract_actions.index_of_abstract[k].is_none();
+
+        if not_same_as_abstract {
+            po.create_po(ProofObligation {
+                name: format!("{}/{label}/WD", scope.event.label),
+                nature: Nature::ActionWellDefinedness,
+                global_hypotheses: po.set_handle(scope.manager.full_hypothesis()),
+                local_hypotheses: hyp.clone(),
+                goal: PogPredicate::new(assignment.wd_lemma(), source.clone()),
+                sources: sources.clone(),
+                hints: hints.clone(),
+                accurate: scope.accurate,
+            });
+        }
+
+        if hyp.is_empty() || not_same_as_abstract {
+            po.create_po(ProofObligation {
+                name: format!("{}/{label}/FIS", scope.event.label),
+                nature: Nature::ActionFeasibility,
+                global_hypotheses: po.set_handle(scope.manager.full_hypothesis()),
+                local_hypotheses: hyp,
+                goal: PogPredicate::new(assignment.fis_predicate(), source),
+                sources,
+                hints: hints.clone(),
+                accurate: scope.accurate,
+            });
+        }
+    }
+}
+
+/// The abstract event's nondeterministic before-after predicates, as
+/// local hypotheses for the concrete action obligations.
+fn abstract_action_hypothesis(scope: &EventScope<'_>) -> Vec<PogPredicate> {
+    let table = &scope.abstract_actions.table;
+    table
+        .nondet
+        .iter()
+        .zip(&table.nondet_predicates)
+        .map(|(index, ba)| PogPredicate::new(ba.clone(), table.actions[*index].source.clone()))
+        .collect()
+}
+
+/// `<evt>/<inv>/INV` — invariant establishment (INITIALISATION) or
+/// preservation, for events refining nothing. The invariant must
+/// mention a variable the event assigns, unless the event is the
+/// INITIALISATION, which establishes every invariant.
+fn new_event_invariant_module(
+    po: &mut PoFile,
+    scope: &mut EventScope<'_>,
+    machine_manager: &HypothesisManager,
+    invariants: &[crate::sc::machine_record::InvariantDecl],
+) {
+    if !scope.abstract_events.events.is_empty() {
+        return;
+    }
+    for (index, invariant) in invariants.iter().enumerate() {
+        if invariant.is_theorem || is_trivial(&invariant.typed) {
+            continue;
+        }
+        let mentions_assigned = invariant.typed.free_identifiers().iter().any(|name| {
+            scope
+                .concrete_actions
+                .table
+                .assigned_variables
+                .contains(name)
+                || scope
+                    .abstract_actions
+                    .table
+                    .assigned_variables
+                    .contains(name)
+        });
+        if !mentions_assigned && !scope.is_initialisation {
+            continue;
+        }
+
+        let goal = apply(
+            &apply(
+                &invariant.typed,
+                scope.concrete_actions.delta_prime.as_ref(),
+            ),
+            scope.concrete_actions.table.primed_det.as_ref(),
+        );
+        let hyp = action_hypothesis(scope, &goal);
+        let name = format!("{}/{}/INV", scope.event.label, invariant.label);
+        let (set_name, predicate_name) = machine_manager.predicate_location(index);
+        let hints = vec![
+            scope.local_hypothesis_hint(po, &name),
+            Hint::Predicate(po.predicate_handle(&set_name, &predicate_name)),
+        ];
+        po.create_po(ProofObligation {
+            name,
+            nature: if scope.is_initialisation {
+                Nature::InvariantEstablishment
+            } else {
+                Nature::InvariantPreservation
+            },
+            global_hypotheses: po.set_handle(scope.manager.full_hypothesis()),
+            local_hypotheses: hyp,
+            goal: PogPredicate::new(goal, invariant.source.clone()),
+            sources: vec![
+                PogSource::new(Role::Default, scope.event.source.clone()),
+                PogSource::new(Role::Default, invariant.source.clone()),
+            ],
+            hints,
+            accurate: scope.accurate,
+        });
+    }
+}
+
+/// The concrete nondeterministic before-after predicates whose primed
+/// identifiers occur in the goal, as local hypotheses.
+fn action_hypothesis(
+    scope: &EventScope<'_>,
+    goal: &rossi::formula::Predicate,
+) -> Vec<PogPredicate> {
+    let free: std::collections::HashSet<&str> =
+        goal.free_identifiers().iter().map(String::as_str).collect();
+    let table = &scope.concrete_actions.table;
+    table
+        .nondet
+        .iter()
+        .zip(&table.nondet_predicates)
+        .filter(|(_, ba)| {
+            ba.free_identifiers()
+                .iter()
+                .any(|name| name.ends_with('\'') && free.contains(name.as_str()))
+        })
+        .map(|(index, ba)| PogPredicate::new(ba.clone(), table.actions[*index].source.clone()))
+        .collect()
 }
 
 /// `<evt>/<grd>/WD` for every effective guard with a non-trivial
