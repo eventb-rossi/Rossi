@@ -247,3 +247,91 @@ fn theorem_guard_over_disappearing_variable_gets_a_theorem_obligation() {
     // Its well-definedness is trivial — no WD sequent.
     assert!(!contents.contains("evt/thm1/WD"), "in:\n{contents}");
 }
+
+const MA_MERGE: &str = r#"<?xml version="1.0"?>
+<org.eventb.core.machineFile version="5" org.eventb.core.configuration="org.eventb.core.fwd">
+<org.eventb.core.variable name="_h" org.eventb.core.identifier="h"/>
+<org.eventb.core.variable name="_w" org.eventb.core.identifier="w"/>
+<org.eventb.core.invariant name="_i1" org.eventb.core.label="inv1" org.eventb.core.predicate="h ∈ ℤ"/>
+<org.eventb.core.invariant name="_i2" org.eventb.core.label="inv2" org.eventb.core.predicate="w ∈ ℤ"/>
+<org.eventb.core.event name="_init" org.eventb.core.convergence="0" org.eventb.core.extended="false" org.eventb.core.label="INITIALISATION">
+<org.eventb.core.action name="_ih" org.eventb.core.assignment="h ≔ 0" org.eventb.core.label="act1"/>
+<org.eventb.core.action name="_iw" org.eventb.core.assignment="w ≔ 0" org.eventb.core.label="act2"/>
+</org.eventb.core.event>
+<org.eventb.core.event name="_sh" org.eventb.core.convergence="0" org.eventb.core.extended="false" org.eventb.core.label="setHeight">
+<org.eventb.core.guard name="_g1" org.eventb.core.label="grd" org.eventb.core.predicate="h = 0"/>
+<org.eventb.core.action name="_a1" org.eventb.core.assignment="h ≔ 17" org.eventb.core.label="alfa"/>
+<org.eventb.core.action name="_a2" org.eventb.core.assignment="w ≔ 17" org.eventb.core.label="beta"/>
+</org.eventb.core.event>
+<org.eventb.core.event name="_sw" org.eventb.core.convergence="0" org.eventb.core.extended="false" org.eventb.core.label="setWidth">
+<org.eventb.core.guard name="_g2" org.eventb.core.label="grd" org.eventb.core.predicate="w = 0"/>
+<org.eventb.core.guard name="_g3" org.eventb.core.label="thm" org.eventb.core.predicate="w ≥ 0 ∨ w &lt; 0" org.eventb.core.theorem="true"/>
+<org.eventb.core.action name="_a3" org.eventb.core.assignment="h ≔ 17" org.eventb.core.label="alfa"/>
+<org.eventb.core.action name="_a4" org.eventb.core.assignment="w ≔ 17" org.eventb.core.label="beta"/>
+</org.eventb.core.event>
+</org.eventb.core.machineFile>"#;
+
+fn mb_merge(set_both_guard: &str) -> String {
+    format!(
+        r#"<?xml version="1.0"?>
+<org.eventb.core.machineFile version="5" org.eventb.core.configuration="org.eventb.core.fwd">
+<org.eventb.core.refinesMachine name="_r" org.eventb.core.target="MA"/>
+<org.eventb.core.variable name="_h" org.eventb.core.identifier="h"/>
+<org.eventb.core.variable name="_w" org.eventb.core.identifier="w"/>
+<org.eventb.core.event name="_init" org.eventb.core.convergence="0" org.eventb.core.extended="true" org.eventb.core.label="INITIALISATION"/>
+<org.eventb.core.event name="_sb" org.eventb.core.convergence="0" org.eventb.core.extended="false" org.eventb.core.label="setBoth">
+<org.eventb.core.refinesEvent name="_r1" org.eventb.core.target="setHeight"/>
+<org.eventb.core.refinesEvent name="_r2" org.eventb.core.target="setWidth"/>
+{set_both_guard}
+<org.eventb.core.action name="_ba" org.eventb.core.assignment="h ≔ 17" org.eventb.core.label="alfa"/>
+<org.eventb.core.action name="_bb" org.eventb.core.assignment="w ≔ 17" org.eventb.core.label="beta"/>
+</org.eventb.core.event>
+</org.eventb.core.machineFile>"#
+    )
+}
+
+#[test]
+fn merged_event_gets_the_disjunctive_obligation() {
+    let mb = mb_merge(
+        r#"<org.eventb.core.guard name="_g" org.eventb.core.label="grd" org.eventb.core.predicate="h = 0 ∨ w = 0"/>"#,
+    );
+    let files = generate("prj", vec![xml("MA.bum", MA_MERGE), xml("MB.bum", &mb)]);
+    let contents = &find(&files, "MB.bpo").contents;
+
+    // One disjunctive obligation: each abstract event's new non-theorem
+    // guards as one disjunct. The abstract theorem guard is excluded.
+    assert!(
+        contents.contains(
+            r#"<org.eventb.core.poSequent name="setBoth/MRG" org.eventb.core.accurate="true" org.eventb.core.poDesc="Guard strengthening (merge)" org.eventb.core.poStamp="0">"#
+        ),
+        "in:\n{contents}"
+    );
+    assert!(
+        contents.contains(r#"org.eventb.core.predicate="h=0∨w=0""#),
+        "in:\n{contents}"
+    );
+    // Sources: one ABSTRACT per merged event, then the concrete event.
+    assert!(contents.contains(
+        r#"org.eventb.core.poRole="ABSTRACT" org.eventb.core.source="/prj/MA.bum|org.eventb.core.machineFile#MA|org.eventb.core.event#_sh""#
+    ));
+    assert!(contents.contains(
+        r#"org.eventb.core.poRole="ABSTRACT" org.eventb.core.source="/prj/MA.bum|org.eventb.core.machineFile#MA|org.eventb.core.event#_sw""#
+    ));
+    assert!(contents.contains(
+        r#"org.eventb.core.poRole="CONCRETE" org.eventb.core.source="/prj/MB.bum|org.eventb.core.machineFile#MB|org.eventb.core.event#_sb""#
+    ));
+    // The split path stays quiet for a merge.
+    assert!(!contents.contains("/GRD"), "in:\n{contents}");
+}
+
+#[test]
+fn merged_obligation_vanishes_when_a_branch_holds_concretely() {
+    // The concrete event repeats setHeight's entire guard set, so that
+    // branch is trivially true and the whole obligation is discharged.
+    let mb = mb_merge(
+        r#"<org.eventb.core.guard name="_g" org.eventb.core.label="grd" org.eventb.core.predicate="h = 0"/>"#,
+    );
+    let files = generate("prj", vec![xml("MA.bum", MA_MERGE), xml("MB.bum", &mb)]);
+    let contents = &find(&files, "MB.bpo").contents;
+    assert!(!contents.contains("setBoth/MRG"), "in:\n{contents}");
+}

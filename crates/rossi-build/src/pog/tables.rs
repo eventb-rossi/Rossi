@@ -511,9 +511,9 @@ impl AbstractEventGuardList {
         concrete: &ConcreteEventGuardTable,
     ) -> Self {
         let events: Vec<std::rc::Rc<EventDecl>> = model
-            .abstract_event(machine, event)
-            .cloned()
+            .abstract_events(machine, event)
             .into_iter()
+            .cloned()
             .collect();
         let tables: Vec<AbstractEventGuardTable> = events
             .iter()
