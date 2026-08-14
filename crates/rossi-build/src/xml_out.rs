@@ -222,6 +222,12 @@ pub mod attr {
     pub const ABSTRACT: &str = "org.eventb.core.abstract";
     pub const CONCRETE: &str = "org.eventb.core.concrete";
     pub const COMMENT: &str = "org.eventb.core.comment";
+    pub const PO_STAMP: &str = "org.eventb.core.poStamp";
+    pub const PARENT_SET: &str = "org.eventb.core.parentSet";
+    pub const PO_DESC: &str = "org.eventb.core.poDesc";
+    pub const PO_ROLE: &str = "org.eventb.core.poRole";
+    pub const PO_SEL_HINT_FST: &str = "org.eventb.core.poSelHintFst";
+    pub const PO_SEL_HINT_SND: &str = "org.eventb.core.poSelHintSnd";
 }
 
 /// Element tags used in `.bcc`/`.bcm`.
@@ -244,6 +250,13 @@ pub mod tag {
     pub const SC_REFINES_MACHINE: &str = "org.eventb.core.scRefinesMachine";
     pub const SC_REFINES_EVENT: &str = "org.eventb.core.scRefinesEvent";
     pub const SC_EXTENDS_CONTEXT: &str = "org.eventb.core.scExtendsContext";
+    pub const PO_FILE: &str = "org.eventb.core.poFile";
+    pub const PO_PREDICATE_SET: &str = "org.eventb.core.poPredicateSet";
+    pub const PO_IDENTIFIER: &str = "org.eventb.core.poIdentifier";
+    pub const PO_PREDICATE: &str = "org.eventb.core.poPredicate";
+    pub const PO_SEQUENT: &str = "org.eventb.core.poSequent";
+    pub const PO_SOURCE: &str = "org.eventb.core.poSource";
+    pub const PO_SEL_HINT: &str = "org.eventb.core.poSelHint";
 }
 
 /// Element tags and segment strings used when consuming `.buc`/`.bum`
