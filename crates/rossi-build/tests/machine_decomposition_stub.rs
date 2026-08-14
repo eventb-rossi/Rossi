@@ -61,9 +61,12 @@ fn refinement_chain_of_stubs_does_not_crash() {
     let project = Project::new("decomp_stub", vec![m0, m1]);
     let r = build(&project);
 
-    assert_eq!(r.files.len(), 2);
+    // Two stub .bcm files plus their (empty) proof files.
+    assert_eq!(r.files.len(), 6);
     for f in &r.files {
         assert!(!f.accurate, "{} should be a stub", f.filename);
+    }
+    for f in r.files.iter().filter(|f| f.filename.ends_with(".bcm")) {
         assert!(
             f.contents
                 .contains("<org.eventb.core.scMachineFile org.eventb.core.configuration"),

@@ -19,8 +19,12 @@ use super::hyp::{ABS_HYP_NAME, ALL_HYP_NAME, HYP_PREFIX, HypothesisManager, Hypo
 use super::model::{Hint, PoFile, PogPredicate, PogSource, ProofObligation, Role, is_trivial};
 use super::natures::Nature;
 
-/// Generate `C.bpo` for a checked context.
-pub(super) fn generate(project: &Project, model: &ScModel, context: &CheckedContext) -> ScFile {
+/// Generate `C.bpo` and `C.bps` for a checked context.
+pub(super) fn generate(
+    project: &Project,
+    model: &ScModel,
+    context: &CheckedContext,
+) -> (ScFile, ScFile) {
     let mut po = PoFile::new(&project.name, context.name());
 
     // ABSHYP: for each abstract context, its identifiers then its
@@ -101,7 +105,7 @@ pub(super) fn generate(project: &Project, model: &ScModel, context: &CheckedCont
     }
 
     manager.create_hypotheses(&mut po);
-    po.into_sc_file(context.accurate)
+    po.into_sc_files(context.accurate)
 }
 
 /// A context's whole contribution to a hypothesis root set: its

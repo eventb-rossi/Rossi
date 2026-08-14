@@ -334,3 +334,41 @@ fn build_eventb_directory() {
 
     std::fs::remove_dir_all(&tmp).ok();
 }
+
+#[test]
+fn build_zip_replaces_proof_files_with_generated_ones() {
+    // A rebuilt archive carries our generated .bpo (obligations) and
+    // .bps (fresh unattempted statuses); the input's stale proof
+    // artifacts, .bpr included, are gone.
+    let tmp = tempdir_unique("rossi-cli-build-proofs");
+    let out_zip = tmp.join("out.zip");
+
+    let output = rossi_command()
+        .args([
+            "build",
+            "../rossi/examples/traffic-light.zip",
+            "--output",
+            out_zip.to_str().unwrap(),
+        ])
+        .output()
+        .expect("Failed to execute command");
+    assert!(
+        output.status.success(),
+        "stderr={}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+
+    let extracted = tmp.join("out");
+    extract_zip_to(&out_zip, &extracted);
+    let root = extracted.join("traffic-light");
+    let m0_bpo = std::fs::read_to_string(root.join("M0.bpo")).expect("M0.bpo");
+    assert!(m0_bpo.contains(r#"<org.eventb.core.poSequent name="INITIALISATION/inv3/INV""#));
+    let m0_bps = std::fs::read_to_string(root.join("M0.bps")).expect("M0.bps");
+    assert!(m0_bps.contains(r#"<org.eventb.core.psStatus name="INITIALISATION/inv3/INV" org.eventb.core.confidence="-99" org.eventb.core.poStamp="0" org.eventb.core.psManual="false"/>"#));
+    assert!(
+        !root.join("M0.bpr").exists(),
+        "stale proofs must be dropped"
+    );
+
+    std::fs::remove_dir_all(&tmp).ok();
+}

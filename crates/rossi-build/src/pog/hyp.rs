@@ -246,7 +246,7 @@ mod tests {
     fn render(manager: &HypothesisManager) -> String {
         let mut po = PoFile::new("prj", "C");
         manager.create_hypotheses(&mut po);
-        po.into_sc_file(true).contents
+        po.into_sc_files(true).0.contents
     }
 
     #[test]

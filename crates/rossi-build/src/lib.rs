@@ -59,7 +59,7 @@ pub use rules::RuleId;
 /// philosophy, except for project-integrity failures that stop checked-file
 /// emission.
 pub fn build(project: &Project) -> BuildResult {
-    sc::build_project(project).0
+    build_with_model(project).0
 }
 
 /// Like [`build`], additionally returning the typed model of every
@@ -68,14 +68,20 @@ pub fn build(project: &Project) -> BuildResult {
 /// IDE tooling — start from this instead of re-deriving state from the
 /// emitted XML. See [`sc_model`] for the record types.
 pub fn build_with_model(project: &Project) -> (BuildResult, sc_model::ScModel) {
-    sc::build_project(project)
+    let (mut result, model) = sc::build_project(project);
+    // Proof obligations follow the static check for every component it
+    // successfully checked: one `.bpo` (the sequents) and one `.bps`
+    // (their unattempted statuses) per component.
+    result.files.extend(pog::generate(project, &model));
+    (result, model)
 }
 
 /// The output of a build: emitted files plus diagnostics collected along the way.
 #[derive(Debug, Default, Clone)]
 pub struct BuildResult {
-    /// Emitted `.bcc` and `.bcm` files, in the order they were produced
-    /// (topological order on SEES/REFINES/EXTENDS).
+    /// Emitted files: `.bcc` / `.bcm` in the order they were produced
+    /// (topological order on SEES/REFINES/EXTENDS), then the generated
+    /// `.bpo` / `.bps` proof-obligation files in project order.
     pub files: Vec<ScFile>,
 
     /// All diagnostics emitted during the build.

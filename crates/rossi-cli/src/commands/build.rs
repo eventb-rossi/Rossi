@@ -1,4 +1,5 @@
-//! `rossi-build` — static-check Rodin Event-B projects and emit `.bcc` / `.bcm`.
+//! `rossi-build` — static-check Rodin Event-B projects and emit `.bcc` /
+//! `.bcm` plus the generated `.bpo` / `.bps` proof-obligation files.
 //!
 //! Process one project (a `.zip` archive or a directory of `.buc` / `.bum`
 //! files). Writes either a repackaged `.zip` (when `<out>` ends in `.zip`) or
@@ -28,8 +29,9 @@ pub struct BuildArgs {
     /// folder of `.eventb`/`.txt`), or an Event-B text / `.buc` / `.bum` file.
     pub input: PathBuf,
     /// Output path. If it ends in `.zip`, writes a repackaged archive
-    /// (sources + our generated `.bcc`/`.bcm`, proof artifacts dropped).
-    /// Otherwise, treated as a directory and loose files are written in.
+    /// (sources + our generated `.bcc`/`.bcm` and `.bpo`/`.bps`; the
+    /// input's proof artifacts are dropped). Otherwise, treated as a
+    /// directory and loose files are written in.
     /// Defaults to `<input-stem>.regen.zip` next to the input.
     #[arg(short, long)]
     pub output: Option<PathBuf>,

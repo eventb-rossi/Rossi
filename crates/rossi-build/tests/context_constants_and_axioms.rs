@@ -25,8 +25,11 @@ fn make_project() -> Project {
 #[test]
 fn emits_a_bcc_file() {
     let result = build(&make_project());
-    assert_eq!(result.files.len(), 1);
+    // The checked file plus the generated proof files.
+    assert_eq!(result.files.len(), 3);
     assert_eq!(result.files[0].filename, "C0.bcc");
+    assert!(result.file("C0.bpo").is_some());
+    assert!(result.file("C0.bps").is_some());
 }
 
 #[test]

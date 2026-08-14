@@ -661,7 +661,7 @@ fn collect_seen_contexts(
 /// in [`check_machine`] for the plugin reference. Composite values like
 /// `org.eventb.core.fwd;…` are deliberately not matched: those still
 /// run the standard forward SC alongside an extra module.
-fn is_decomposition_stub_config(cfg: &str) -> bool {
+pub(crate) fn is_decomposition_stub_config(cfg: &str) -> bool {
     cfg == "ch.ethz.eventb.decomposition.mchBase"
 }
 

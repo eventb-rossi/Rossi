@@ -5,8 +5,10 @@
 //!
 //! * `.bum` / `.buc` and `.project` are copied byte-exact from the input.
 //! * `.bcm` / `.bcc` from the input are **dropped** and replaced with ours.
-//! * `.bpr` / `.bpo` / `.bps` (proof artifacts) are **dropped** — they
-//!   reference checked content we just rebuilt and stale ones can confuse
+//! * `.bpo` / `.bps` from the input are **dropped** and replaced with the
+//!   generated obligations and their fresh (unattempted) statuses.
+//! * `.bpr` (proofs) are **dropped** without replacement — they reference
+//!   checked content we just rebuilt, and stale ones can confuse
 //!   downstream tools.
 //! * Everything else (iUML-B `.cd` / `.smd`, LaTeX exports, etc.) is copied
 //!   as-is so the archive layout matches the original.

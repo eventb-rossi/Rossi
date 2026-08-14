@@ -79,7 +79,8 @@ fn golden_bcc_files_are_byte_exact() {
         let pc = ProjectComponent::from_xml(buc_filename, buc_src).expect("parse");
         let project = Project::new(project_name, vec![pc]);
         let result = build(&project);
-        assert_eq!(result.files.len(), 1, "{project_name}: expected one file");
+        // The checked file plus the generated proof files.
+        assert_eq!(result.files.len(), 3, "{project_name}: expected 3 files");
         assert_eq!(
             result.files[0].filename,
             buc_filename.replace(".buc", ".bcc"),

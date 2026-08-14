@@ -24,13 +24,13 @@ use super::hyp::{
 use super::model::{Hint, PoFile, PogPredicate, PogSource, ProofObligation, Role, is_trivial};
 use super::natures::Nature;
 
-/// Generate `M.bpo` for a checked machine.
+/// Generate `M.bpo` and `M.bps` for a checked machine.
 pub(super) fn generate(
     project: &Project,
     pc: &ProjectComponent,
     model: &ScModel,
     machine: &CheckedMachine,
-) -> ScFile {
+) -> (ScFile, ScFile) {
     let mut po = PoFile::new(&project.name, machine.name());
 
     // CTXHYP: the seen contexts' identifiers and axioms, in hoist order.
@@ -156,7 +156,7 @@ pub(super) fn generate(
     }
 
     manager.create_hypotheses(&mut po);
-    po.into_sc_file(machine.accurate)
+    po.into_sc_files(machine.accurate)
 }
 
 /// The formula factory the machine's typed formulas were built with —

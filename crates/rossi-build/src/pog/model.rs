@@ -107,13 +107,17 @@ pub fn is_trivial(goal: &Predicate) -> bool {
 /// A `.bpo` file under construction.
 #[derive(Debug)]
 pub struct PoFile {
-    /// `M.bpo` — the emitted file name.
-    filename: String,
+    /// The component name; the emitted files are `<component>.bpo`
+    /// and `<component>.bps`.
+    component: String,
     /// Handle of the file's root element
     /// (`/prj/M.bpo|org.eventb.core.poFile#M`), the base of every
     /// predicate-set and sequent handle.
     root_handle: HandleUri,
     children: Vec<Rc<Element>>,
+    /// Names of the sequents created so far, in creation order — the
+    /// rows of the status file.
+    sequent_names: Vec<String>,
 }
 
 impl PoFile {
@@ -122,9 +126,10 @@ impl PoFile {
         let filename = format!("{component}.bpo");
         let root_handle = HandleUri::root(project, &filename, xtag::PO_FILE, component);
         PoFile {
-            filename,
+            component: component.to_string(),
             root_handle,
             children: Vec::new(),
+            sequent_names: Vec::new(),
         }
     }
 
@@ -201,20 +206,40 @@ impl PoFile {
             sequent.push(element);
         }
 
+        self.sequent_names.push(po.name);
         self.children.push(Rc::new(sequent));
     }
 
-    /// Render the finished file.
-    pub fn into_sc_file(self, accurate: bool) -> ScFile {
+    /// Render the finished obligation file and its status sidecar —
+    /// one status row per sequent, unattempted (confidence −99, the
+    /// prover's below-any-proof marker).
+    pub fn into_sc_files(self, accurate: bool) -> (ScFile, ScFile) {
+        let mut status_root = Element::new(xtag::PS_FILE);
+        for name in &self.sequent_names {
+            status_root.push(
+                Element::new(xtag::PS_STATUS)
+                    .attr(attr::NAME, name)
+                    .attr(attr::CONFIDENCE, "-99")
+                    .attr(attr::PO_STAMP, "0")
+                    .attr(attr::PS_MANUAL, "false"),
+            );
+        }
+        let status = ScFile {
+            filename: format!("{}.bps", self.component),
+            contents: status_root.to_document(),
+            accurate,
+        };
+
         let mut root = Element::new(xtag::PO_FILE).attr(attr::PO_STAMP, "0");
         for child in self.children {
             root.push(child);
         }
-        ScFile {
-            filename: self.filename,
+        let obligations = ScFile {
+            filename: format!("{}.bpo", self.component),
             contents: root.to_document(),
             accurate,
-        }
+        };
+        (obligations, status)
     }
 }
 
@@ -305,7 +330,7 @@ mod tests {
         let mut file = PoFile::new("prj", "M");
         let obligation = po(&file, btrue, Vec::new());
         file.create_po(obligation);
-        let rendered = file.into_sc_file(true);
+        let rendered = file.into_sc_files(true).0;
         assert!(!rendered.contents.contains("poSequent"));
     }
 
@@ -315,7 +340,7 @@ mod tests {
         let hyp = PogPredicate::new(nontrivial_goal(), source());
         let obligation = po(&file, nontrivial_goal(), vec![hyp.clone(), hyp]);
         file.create_po(obligation);
-        let contents = file.into_sc_file(true).contents;
+        let contents = file.into_sc_files(true).0.contents;
 
         // SEQHYP, then goal SEQHYQ, source SEQHYR, hints SEQHYS/SEQHYT.
         for needle in [

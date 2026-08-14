@@ -228,6 +228,8 @@ pub mod attr {
     pub const PO_ROLE: &str = "org.eventb.core.poRole";
     pub const PO_SEL_HINT_FST: &str = "org.eventb.core.poSelHintFst";
     pub const PO_SEL_HINT_SND: &str = "org.eventb.core.poSelHintSnd";
+    pub const CONFIDENCE: &str = "org.eventb.core.confidence";
+    pub const PS_MANUAL: &str = "org.eventb.core.psManual";
 }
 
 /// Element tags used in `.bcc`/`.bcm`.
@@ -257,6 +259,8 @@ pub mod tag {
     pub const PO_SEQUENT: &str = "org.eventb.core.poSequent";
     pub const PO_SOURCE: &str = "org.eventb.core.poSource";
     pub const PO_SEL_HINT: &str = "org.eventb.core.poSelHint";
+    pub const PS_FILE: &str = "org.eventb.core.psFile";
+    pub const PS_STATUS: &str = "org.eventb.core.psStatus";
 }
 
 /// Element tags and segment strings used when consuming `.buc`/`.bum`

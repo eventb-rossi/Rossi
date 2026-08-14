@@ -32,12 +32,25 @@ pub fn generate(project: &Project, model: &ScModel) -> Vec<ScFile> {
         match &pc.component {
             Component::Context(_) => {
                 if let Some(checked) = model.contexts.get(name) {
-                    files.push(context::generate(project, model, checked));
+                    let (obligations, status) = context::generate(project, model, checked);
+                    files.push(obligations);
+                    files.push(status);
                 }
             }
             Component::Machine(_) => {
                 if let Some(checked) = model.machines.get(name) {
-                    files.push(machine::generate(project, pc, model, checked));
+                    // A decomposition base machine is an attribute-only
+                    // stub: its proof files are empty stubs too, carrying
+                    // the same file-level inaccuracy as the checked stub.
+                    let (obligations, status) = if crate::sc::machine::is_decomposition_stub_config(
+                        &checked.record.configuration,
+                    ) {
+                        model::PoFile::new(&project.name, checked.name()).into_sc_files(false)
+                    } else {
+                        machine::generate(project, pc, model, checked)
+                    };
+                    files.push(obligations);
+                    files.push(status);
                 }
             }
         }

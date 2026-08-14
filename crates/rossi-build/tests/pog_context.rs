@@ -27,9 +27,10 @@ fn axiom_wd_and_theorem_obligations() {
 </org.eventb.core.contextFile>"#,
     );
     let files = generate("prj", vec![context]);
-    assert_eq!(files.len(), 1);
-    let contents = &files[0].contents;
+    assert_eq!(files.len(), 2);
     assert_eq!(files[0].filename, "C.bpo");
+    assert_eq!(files[1].filename, "C.bps");
+    let contents = &files[0].contents;
 
     // axm1 is a typing axiom: no obligations. axm2 needs its divisor
     // guarded; the WD obligation hypothesizes exactly the axioms before

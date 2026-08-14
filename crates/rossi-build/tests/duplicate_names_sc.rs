@@ -692,5 +692,6 @@ fn unique_names_do_not_trip_eb019() {
         ("c.eventb", "CONTEXT C\nEND\n"),
     ]));
     assert!(eb019_messages(&result).is_empty(), "{result:#?}");
-    assert_eq!(result.files.len(), 2, "{result:#?}");
+    // Two checked files plus their generated proof files.
+    assert_eq!(result.files.len(), 6, "{result:#?}");
 }
