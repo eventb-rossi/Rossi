@@ -52,6 +52,19 @@ pub struct HypothesisManager {
 /// The predicate-row prefix inside delta sets.
 pub const PRD_NAME_PREFIX: &str = "PRD";
 
+/// The root set of a context's chain, and the second set of a
+/// machine's (variables and inherited invariants).
+pub const ABS_HYP_NAME: &str = "ABSHYP";
+/// The root set of a machine's chain (seen contexts' identifiers and
+/// axioms).
+pub const CTX_HYP_NAME: &str = "CTXHYP";
+/// The final set of a component-level chain.
+pub const ALL_HYP_NAME: &str = "ALLHYP";
+/// The identifier set of a component-level chain.
+pub const IDENT_HYP_NAME: &str = "IDENT";
+/// The cut-point prefix of a component-level chain.
+pub const HYP_PREFIX: &str = "HYP";
+
 impl HypothesisManager {
     pub fn new(
         root_name: impl Into<String>,
