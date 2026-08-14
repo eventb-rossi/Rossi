@@ -19,7 +19,8 @@ use super::model::{Hint, PoFile, PogPredicate, PogSource, ProofObligation, Role,
 use super::natures::Nature;
 use super::tables::{
     AbstractEventActionTable, AbstractEventGuardList, ConcreteEventActionTable,
-    ConcreteEventGuardTable, MachineVariables, apply, assigned_variables,
+    ConcreteEventGuardTable, EventWitnessTable, MachineVariables, apply, assigned_variables,
+    merge_batches,
 };
 
 /// Everything the event-scoped modules consume.
@@ -32,6 +33,7 @@ pub(super) struct EventScope<'a> {
     pub abstract_events: AbstractEventGuardList,
     pub concrete_actions: ConcreteEventActionTable,
     pub abstract_actions: AbstractEventActionTable,
+    pub witnesses: EventWitnessTable,
 }
 
 impl<'a> EventScope<'a> {
@@ -116,10 +118,11 @@ impl<'a> EventScope<'a> {
         let concrete_actions = ConcreteEventActionTable::new(&event.actions, variables, ff);
         let abstract_actions = match abstract_events.first_abstract_event() {
             Some(abstract_event) => {
-                AbstractEventActionTable::new(&abstract_event.actions, &concrete_actions)
+                AbstractEventActionTable::new(&abstract_event.actions, variables, &concrete_actions)
             }
-            None => AbstractEventActionTable::new(&[], &concrete_actions),
+            None => AbstractEventActionTable::new(&[], variables, &concrete_actions),
         };
+        let witnesses = EventWitnessTable::new(event, variables, ff);
 
         EventScope {
             event,
@@ -130,6 +133,7 @@ impl<'a> EventScope<'a> {
             abstract_events,
             concrete_actions,
             abstract_actions,
+            witnesses,
         }
     }
 
@@ -152,9 +156,82 @@ pub(super) fn generate_event(
     invariants: &[crate::sc::machine_record::InvariantDecl],
 ) {
     guard_module(po, scope);
+    witness_module(po, scope);
+    invariant_module(po, scope, machine_manager, invariants);
     action_module(po, scope);
-    new_event_invariant_module(po, scope, machine_manager, invariants);
     scope.manager.create_hypotheses(po);
+}
+
+/// `<evt>/<w>/WWD` — well-definedness of every witness — and
+/// `<evt>/<w>/WFIS` — feasibility of the nondeterministic ones, the
+/// witness predicate with the witnessed identifier existentially
+/// bound. Goals are carried into the after-state: unassigned frame
+/// variables unprime and deterministic after-values substitute in.
+fn witness_module(po: &mut PoFile, scope: &mut EventScope<'_>) {
+    for index in 0..scope.witnesses.witnesses.len() {
+        let witness = &scope.witnesses.witnesses[index];
+        let label = witness.label.clone();
+        let source = witness.source.clone();
+        let predicate = witness.predicate.clone();
+        let deterministic = witness.deterministic;
+
+        witness_po(po, scope, &label, "WWD", predicate.wd_lemma(), &source);
+
+        if !is_trivial(&predicate) && !deterministic {
+            let fis = if predicate.free_identifiers().contains(&label) {
+                let ty = scope.manager.identifier_type(&label).cloned();
+                let bound = predicate.bind_idents(&[&label]);
+                let decl = predicate.factory().bound_ident_decl(&label, None, None, ty);
+                predicate.factory().quantified_predicate(
+                    rossi::formula::tag::QuantPredOp::Exists,
+                    vec![decl],
+                    bound,
+                    None,
+                )
+            } else {
+                predicate.clone()
+            };
+            witness_po(po, scope, &label, "WFIS", fis, &source);
+        }
+    }
+}
+
+/// One witness obligation, with the after-state substitution and the
+/// action hypotheses.
+fn witness_po(
+    po: &mut PoFile,
+    scope: &mut EventScope<'_>,
+    label: &str,
+    suffix: &str,
+    goal: rossi::formula::Predicate,
+    source: &crate::handles::HandleUri,
+) {
+    let name = format!("{}/{label}/{suffix}", scope.event.label);
+    if is_trivial(&goal) {
+        return;
+    }
+    let batch = merge_batches([
+        scope.concrete_actions.xi_unprime.as_ref(),
+        scope.concrete_actions.table.primed_det.as_ref(),
+    ]);
+    let goal = apply(&goal, batch.as_ref());
+    let hyp = action_hypothesis(scope, &goal);
+    let nature = if suffix == "WWD" {
+        Nature::WitnessWellDefinedness
+    } else {
+        Nature::WitnessFeasibility
+    };
+    let hints = vec![scope.local_hypothesis_hint(po, &name)];
+    po.create_po(ProofObligation {
+        name,
+        nature,
+        global_hypotheses: po.set_handle(scope.manager.full_hypothesis()),
+        local_hypotheses: hyp,
+        goal: PogPredicate::new(goal, source.clone()),
+        sources: vec![PogSource::new(Role::Default, source.clone())],
+        hints,
+        accurate: scope.accurate,
+    });
 }
 
 /// `<evt>/<act>/WD` and `<evt>/<act>/FIS` for the event's actions.
@@ -209,31 +286,55 @@ fn action_module(po: &mut PoFile, scope: &mut EventScope<'_>) {
     }
 }
 
-/// The abstract event's nondeterministic before-after predicates, as
-/// local hypotheses for the concrete action obligations.
+/// The abstract event's nondeterministic before-after predicates as
+/// local hypotheses for the concrete action obligations, preceded by
+/// the nondeterministic parameter-witness predicates. Bails out to no
+/// hypotheses at all when a parameter witness mentions a primed
+/// identifier — the after-state cannot be assumed there.
 fn abstract_action_hypothesis(scope: &EventScope<'_>) -> Vec<PogPredicate> {
+    let mut hyp = Vec::new();
+    for witness in &scope.witnesses.witnesses {
+        if witness.label.ends_with('\'') {
+            continue;
+        }
+        if witness
+            .predicate
+            .free_identifiers()
+            .iter()
+            .any(|name| name.ends_with('\''))
+        {
+            return Vec::new();
+        }
+        if !witness.deterministic {
+            hyp.push(PogPredicate::new(
+                witness.predicate.clone(),
+                witness.source.clone(),
+            ));
+        }
+    }
+
     let table = &scope.abstract_actions.table;
-    table
-        .nondet
-        .iter()
-        .zip(&table.nondet_predicates)
-        .map(|(index, ba)| PogPredicate::new(ba.clone(), table.actions[*index].source.clone()))
-        .collect()
+    for (index, ba) in table.nondet.iter().zip(&table.nondet_predicates) {
+        let predicate = apply(ba, scope.witnesses.event_det.as_ref());
+        hyp.push(PogPredicate::new(
+            predicate,
+            table.actions[*index].source.clone(),
+        ));
+    }
+    hyp
 }
 
 /// `<evt>/<inv>/INV` — invariant establishment (INITIALISATION) or
-/// preservation, for events refining nothing. The invariant must
-/// mention a variable the event assigns, unless the event is the
-/// INITIALISATION, which establishes every invariant.
-fn new_event_invariant_module(
+/// preservation. The invariant must mention a variable the concrete
+/// or abstract event assigns, unless the event is the INITIALISATION,
+/// which establishes every invariant.
+fn invariant_module(
     po: &mut PoFile,
     scope: &mut EventScope<'_>,
     machine_manager: &HypothesisManager,
     invariants: &[crate::sc::machine_record::InvariantDecl],
 ) {
-    if !scope.abstract_events.events.is_empty() {
-        return;
-    }
+    let refines = !scope.abstract_events.events.is_empty();
     for (index, invariant) in invariants.iter().enumerate() {
         if invariant.is_theorem || is_trivial(&invariant.typed) {
             continue;
@@ -254,14 +355,24 @@ fn new_event_invariant_module(
             continue;
         }
 
-        let goal = apply(
-            &apply(
-                &invariant.typed,
-                scope.concrete_actions.delta_prime.as_ref(),
-            ),
-            scope.concrete_actions.table.primed_det.as_ref(),
-        );
-        let hyp = action_hypothesis(scope, &goal);
+        let (goal, hyp, sources) = if refines {
+            refined_invariant_goal(scope, invariant)
+        } else {
+            let goal = apply(
+                &apply(
+                    &invariant.typed,
+                    scope.concrete_actions.delta_prime.as_ref(),
+                ),
+                scope.concrete_actions.table.primed_det.as_ref(),
+            );
+            let hyp = action_hypothesis(scope, &goal);
+            let sources = vec![
+                PogSource::new(Role::Default, scope.event.source.clone()),
+                PogSource::new(Role::Default, invariant.source.clone()),
+            ];
+            (goal, hyp, sources)
+        };
+
         let name = format!("{}/{}/INV", scope.event.label, invariant.label);
         let (set_name, predicate_name) = machine_manager.predicate_location(index);
         let hints = vec![
@@ -278,14 +389,98 @@ fn new_event_invariant_module(
             global_hypotheses: po.set_handle(scope.manager.full_hypothesis()),
             local_hypotheses: hyp,
             goal: PogPredicate::new(goal, invariant.source.clone()),
-            sources: vec![
-                PogSource::new(Role::Default, scope.event.source.clone()),
-                PogSource::new(Role::Default, invariant.source.clone()),
-            ],
+            sources,
             hints,
             accurate: scope.accurate,
         });
     }
+}
+
+/// The refined-event invariant goal: the abstract state is expressed
+/// through the witnesses, then the concrete after-state substitutes
+/// in. Three sequential batches:
+///
+/// 1. assigned variables prime (`v ↦ v'`), deterministic machine
+///    witnesses and the nondeterministic prime renaming replace the
+///    dropped abstract variables, and deterministic abstract
+///    assignments to dropped variables act as implicit witnesses;
+/// 2. deterministic parameter witnesses replace the dropped abstract
+///    parameters;
+/// 3. the unassigned frame unprimes (`v' ↦ v`) and deterministic
+///    after-values substitute in (`x' ↦ E`).
+fn refined_invariant_goal(
+    scope: &EventScope<'_>,
+    invariant: &crate::sc::machine_record::InvariantDecl,
+) -> (rossi::formula::Predicate, Vec<PogPredicate>, Vec<PogSource>) {
+    let first = merge_batches([
+        scope.concrete_actions.delta_prime.as_ref(),
+        scope.witnesses.machine_det.as_ref(),
+        scope.witnesses.prime_substitution.as_ref(),
+        scope.abstract_actions.disappearing_witnesses.as_ref(),
+    ]);
+    let goal = apply(&invariant.typed, first.as_ref());
+    let goal = apply(&goal, scope.witnesses.event_det.as_ref());
+    let third = merge_batches([
+        scope.concrete_actions.xi_unprime.as_ref(),
+        scope.concrete_actions.table.primed_det.as_ref(),
+    ]);
+    let goal = apply(&goal, third.as_ref());
+
+    let hyp = action_and_witness_hypothesis(scope, &goal);
+    let abstract_event = scope
+        .abstract_events
+        .first_abstract_event()
+        .expect("refined events have an abstract event");
+    let sources = vec![
+        PogSource::new(Role::Abstract, abstract_event.source.clone()),
+        PogSource::new(Role::Concrete, scope.event.source.clone()),
+        PogSource::new(Role::Default, invariant.source.clone()),
+    ];
+    (goal, hyp, sources)
+}
+
+/// The witness hypotheses whose witnessed identifier occurs in the
+/// goal (carried into the after-state), the identifiers they
+/// introduce, then the action hypotheses over the grown set.
+fn action_and_witness_hypothesis(
+    scope: &EventScope<'_>,
+    goal: &rossi::formula::Predicate,
+) -> Vec<PogPredicate> {
+    let mut free: std::collections::HashSet<String> =
+        goal.free_identifiers().iter().cloned().collect();
+
+    let batch = merge_batches([
+        scope.concrete_actions.table.primed_det.as_ref(),
+        scope.concrete_actions.xi_unprime.as_ref(),
+    ]);
+    let mut hyp = Vec::new();
+    for index in &scope.witnesses.nondet {
+        let witness = &scope.witnesses.witnesses[*index];
+        if free.contains(&witness.label) {
+            let predicate = apply(&witness.predicate, batch.as_ref());
+            hyp.push(PogPredicate::new(predicate, witness.source.clone()));
+        }
+    }
+    for predicate in hyp.clone() {
+        for name in predicate.predicate.free_identifiers() {
+            free.insert(name.clone());
+        }
+    }
+
+    let table = &scope.concrete_actions.table;
+    for (index, ba) in table.nondet.iter().zip(&table.nondet_predicates) {
+        if ba
+            .free_identifiers()
+            .iter()
+            .any(|name| name.ends_with('\'') && free.contains(name))
+        {
+            hyp.push(PogPredicate::new(
+                ba.clone(),
+                table.actions[*index].source.clone(),
+            ));
+        }
+    }
+    hyp
 }
 
 /// The concrete nondeterministic before-after predicates whose primed

@@ -107,6 +107,14 @@ impl HypothesisManager {
         }
     }
 
+    /// The type of a registered identifier.
+    pub fn identifier_type(&self, name: &str) -> Option<&Type> {
+        self.identifiers
+            .iter()
+            .find(|(n, _)| n == name)
+            .map(|(_, ty)| ty)
+    }
+
     /// The set holding exactly the rows before `index`, requesting its
     /// materialization. Returns the set's name.
     pub fn make_hypothesis(&mut self, index: usize) -> String {
