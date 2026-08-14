@@ -7,10 +7,12 @@
 //! refinement of its abstraction, and convergence of its events.
 
 mod context;
+mod event;
 pub mod hyp;
 mod machine;
 pub mod model;
 pub mod natures;
+mod tables;
 
 pub use model::{Hint, PoFile, PogPredicate, PogSource, ProofObligation, Role};
 pub use natures::Nature;

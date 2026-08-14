@@ -136,8 +136,42 @@ pub(super) fn generate(
 
     generate_variant_pos(pc, machine, &mut po);
 
+    let ff = machine_factory(machine);
+    let variables = super::tables::MachineVariables::new(&machine.record);
+    for event in &machine.record.events {
+        let mut scope = super::event::EventScope::new(model, machine, &variables, event, &ff);
+        super::event::generate_event(&mut po, &mut scope);
+    }
+
     manager.create_hypotheses(&mut po);
     po.into_sc_file(machine.accurate)
+}
+
+/// The formula factory the machine's typed formulas were built with —
+/// every formula of one project shares it. Falls back to the core
+/// factory for a machine with no formulas at all.
+fn machine_factory(machine: &CheckedMachine) -> rossi::formula::FormulaFactory {
+    machine
+        .record
+        .invariants
+        .first()
+        .map(|invariant| invariant.typed.factory().clone())
+        .or_else(|| {
+            machine.record.events.iter().find_map(|event| {
+                event
+                    .guards
+                    .first()
+                    .map(|guard| guard.typed.factory().clone())
+                    .or_else(|| {
+                        event
+                            .actions
+                            .iter()
+                            .find_map(|action| action.typed.as_ref())
+                            .map(|assignment| assignment.factory().clone())
+                    })
+            })
+        })
+        .unwrap_or_else(rossi::formula::FormulaFactory::default_factory)
 }
 
 /// `VWD` (well-definedness) and `FIN` (finiteness) of the variant.
