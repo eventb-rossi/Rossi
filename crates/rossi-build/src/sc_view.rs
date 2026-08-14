@@ -421,7 +421,7 @@ fn action_attr(e: &BytesStart) -> Result<ActionBody> {
 /// compared regardless of project-name differences. (Rodin stores the
 /// project name in the workspace hierarchy; our `Project::name` may
 /// use a different spelling derived from a zip filename.)
-fn normalize_source(s: Option<String>) -> Option<String> {
+pub(crate) fn normalize_source(s: Option<String>) -> Option<String> {
     let s = s?;
     // Input shape: `/Project/File.ext|...` — drop everything up to and
     // including the second `/`.

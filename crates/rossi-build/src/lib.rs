@@ -29,6 +29,7 @@ pub mod error;
 pub mod handles;
 pub mod lint;
 pub mod normalize;
+pub mod po_view;
 pub mod pog;
 pub mod project;
 pub mod proofs;
