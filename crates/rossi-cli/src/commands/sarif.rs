@@ -51,6 +51,22 @@ fn build_document(results: &[ValidationResult], category: Option<&str>) -> Value
         run["automationDetails"] = json!({ "id": category });
     }
 
+    // Proof-summary rows have no rule_id and so produce no SARIF result;
+    // surface their counts in the run-level properties bag instead.
+    let proof_summaries: Vec<Value> = results
+        .iter()
+        .filter_map(|r| {
+            let summary = r.proof_summary.as_ref()?;
+            Some(json!({
+                "file": r.file.display().to_string(),
+                "proofSummary": serde_json::to_value(summary).ok()?,
+            }))
+        })
+        .collect();
+    if !proof_summaries.is_empty() {
+        run["properties"] = json!({ "proofSummaries": proof_summaries });
+    }
+
     json!({
         "$schema": SCHEMA_URI,
         "version": "2.1.0",

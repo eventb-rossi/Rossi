@@ -174,6 +174,34 @@ pub struct ValidationResult {
     /// loose-text parse errors, where the source is available to resolve it.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub region: Option<Region>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub proof_summary: Option<ProofSummaryJson>,
+}
+
+/// Proof-obligation counts for one input, mirroring eventb-checker's
+/// `proofSummary` object. Carried on a synthetic success row so the JSON
+/// output stays a flat array of rows.
+#[derive(Debug, Serialize)]
+pub struct ProofSummaryJson {
+    pub total: usize,
+    pub discharged: usize,
+    pub reviewed: usize,
+    pub pending: usize,
+    pub unattempted: usize,
+    pub broken: usize,
+}
+
+impl From<rossi_build::proofs::ProofSummary> for ProofSummaryJson {
+    fn from(s: rossi_build::proofs::ProofSummary) -> Self {
+        ProofSummaryJson {
+            total: s.total,
+            discharged: s.discharged,
+            reviewed: s.reviewed,
+            pending: s.pending,
+            unattempted: s.unattempted,
+            broken: s.broken,
+        }
+    }
 }
 
 impl ValidationResult {
@@ -634,6 +662,13 @@ fn validate_zip_file(file: &Path, cli: &ValidateArgs) -> Vec<ValidationResult> {
             fold_semantic(&project, input, cli, &prefix, &mut results);
         }
     }
+
+    fold_proofs(
+        rossi_build::proofs::check_zip_bytes(&bytes),
+        input,
+        &mut results,
+    );
+
     results
 }
 
@@ -703,6 +738,12 @@ fn validate_zip_flat_fallback(
         }
     }
 
+    fold_proofs(
+        rossi_build::proofs::check_zip_bytes(bytes),
+        input,
+        &mut results,
+    );
+
     results
 }
 
@@ -743,7 +784,32 @@ fn validate_directory(dir: &Path, cli: &ValidateArgs) -> Vec<ValidationResult> {
         Err(e) => results.extend(validate_directory_fallback(dir, &e, cli)),
     }
 
+    fold_proofs(
+        rossi_build::proofs::check_directory(dir),
+        input,
+        &mut results,
+    );
+
     results
+}
+
+/// Append proof-status diagnostics and the summary row for one input.
+/// Runs whenever the archive/directory contains proof files — there is no
+/// flag; an input without `.bpr`/`.bpo`/`.bps` files is a silent no-op.
+/// A zip/IO failure here is ignored: the component-parsing path has
+/// already reported the unreadable input.
+fn fold_proofs(
+    report: rossi_build::error::Result<rossi_build::proofs::ProofReport>,
+    input: Input,
+    out: &mut Vec<ValidationResult>,
+) {
+    let Ok(report) = report else { return };
+    for diag in report.diagnostics {
+        out.push(fold_diagnostic(input, diag, None, None));
+    }
+    if let Some(summary) = report.summary {
+        out.push(proof_summary_result(input, summary));
+    }
 }
 
 /// Tolerant directory validation, used when the strict project load aborts on a
@@ -868,6 +934,28 @@ fn success_result(input: Input, inner: Option<String>, component: &Component) ->
         rule_id: None,
         origin: None,
         region: None,
+        proof_summary: None,
+    }
+}
+
+/// Synthetic success row carrying the proof-obligation counts for one input.
+fn proof_summary_result(
+    input: Input,
+    summary: rossi_build::proofs::ProofSummary,
+) -> ValidationResult {
+    ValidationResult {
+        file: input.path.to_path_buf(),
+        input: input.kind,
+        success: true,
+        inner_filename: None,
+        error: None,
+        component_type: None,
+        component_name: None,
+        severity: None,
+        rule_id: None,
+        origin: None,
+        region: None,
+        proof_summary: Some(summary.into()),
     }
 }
 
@@ -897,6 +985,7 @@ fn fold_diagnostic(
         rule_id: diag.rule_id,
         origin: Some(diag.origin),
         region,
+        proof_summary: None,
     }
 }
 
@@ -998,6 +1087,7 @@ fn error_result(
         rule_id,
         origin: None,
         region: None,
+        proof_summary: None,
     }
 }
 
@@ -1066,6 +1156,13 @@ fn text_line(result: &ValidationResult) -> (String, bool) {
         return (line, false);
     }
 
+    if let Some(proofs) = &result.proof_summary {
+        return (
+            format!("{file_info} - {}", format_proof_summary(proofs)),
+            false,
+        );
+    }
+
     let (glyph, is_error) = match result.severity {
         Some(Severity::Error) => ("✗", true),
         Some(Severity::Info) => ("i", false),
@@ -1088,13 +1185,35 @@ fn text_line(result: &ValidationResult) -> (String, bool) {
     )
 }
 
+/// `Proofs: 836/843 discharged, 6 reviewed, 1 pending, 289 broken` —
+/// zero categories are omitted, the discharged/total ratio always shows.
+fn format_proof_summary(proofs: &ProofSummaryJson) -> String {
+    let mut line = format!("Proofs: {}/{} discharged", proofs.discharged, proofs.total);
+    for (count, label) in [
+        (proofs.reviewed, "reviewed"),
+        (proofs.pending, "pending"),
+        (proofs.unattempted, "unattempted"),
+        (proofs.broken, "broken"),
+    ] {
+        if count > 0 {
+            line.push_str(&format!(", {count} {label}"));
+        }
+    }
+    line
+}
+
 /// The closing counts of the human report. They are counted through the same
 /// predicate as the exit code, so a run that exits 1 never claims `Failed: 0`.
+/// Proof-summary rows are bookkeeping, not validations; they are not counted.
 fn write_summary(
     report: &mut Report,
     results: &[ValidationResult],
     deny_warnings: bool,
 ) -> io::Result<()> {
+    let results: Vec<_> = results
+        .iter()
+        .filter(|r| r.proof_summary.is_none())
+        .collect();
     let total = results.len();
     let failed = results
         .iter()

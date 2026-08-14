@@ -254,10 +254,85 @@ fn test_cli_mixed_text_and_zip_files() {
     assert!(stdout.contains("Valid Context 'C0'"));
     assert!(stdout.contains("✓ ../rossi/examples/binary-search.zip:M0.bum"));
     assert!(stdout.contains("Valid Machine 'M0'"));
-    // Check summary
+    // Check proof status (binary-search.zip ships Rodin proof files, which
+    // are picked up even under --no-semantic)
+    assert!(stdout.contains("Proofs: 41/42 discharged, 1 pending"));
+    // Check summary (6 components + 1 EB015 warning row; the proof-summary
+    // row is bookkeeping and is not counted)
     assert!(stdout.contains("Summary:"));
-    assert!(stdout.contains("Total:  6"));
-    assert!(stdout.contains("Passed: 6 ✓"));
+    assert!(stdout.contains("Total:  7"));
+    assert!(stdout.contains("Passed: 7 ✓"));
+}
+
+#[test]
+fn validate_zip_reports_proof_status() {
+    // Proof files are checked whenever they're present — no flag. One
+    // obligation, never proved (EB015) and with a stale script (EB016);
+    // the summary row carries the counts. Warnings keep exit code 0.
+    let tmp = tempdir_unique("rossi-cli-validate-proofs");
+    let zip_path = tmp.join("proofs.zip");
+    write_zip(
+        &zip_path,
+        &[
+            (
+                "C0.buc",
+                br#"<?xml version="1.0" encoding="UTF-8"?>
+<org.eventb.core.contextFile version="3">
+    <org.eventb.core.carrierSet name="_s1" org.eventb.core.identifier="S"/>
+</org.eventb.core.contextFile>"#,
+            ),
+            (
+                "C0.bpo",
+                br#"<?xml version="1.0" encoding="UTF-8"?>
+<org.eventb.core.poFile>
+    <org.eventb.core.poSequent name="axm1/THM"/>
+    <org.eventb.core.poSequent name="inv1/INV"/>
+</org.eventb.core.poFile>"#,
+            ),
+            (
+                // Confidence is read from the .bps status (eventb-checker
+                // 1.6). axm1/THM is discharged-level but broken, so it
+                // counts pending and reports as EB016 only; inv1/INV is a
+                // plain pending obligation that reports as EB015.
+                "C0.bps",
+                br#"<?xml version="1.0" encoding="UTF-8"?>
+<org.eventb.core.psFile>
+    <org.eventb.core.psStatus name="axm1/THM" org.eventb.core.confidence="1000" org.eventb.core.psBroken="true"/>
+    <org.eventb.core.psStatus name="inv1/INV" org.eventb.core.confidence="50" org.eventb.core.psBroken="false"/>
+</org.eventb.core.psFile>"#,
+            ),
+        ],
+    );
+
+    let output = rossi_command()
+        .args(["validate", "--format", "json", zip_path.to_str().unwrap()])
+        .output()
+        .expect("Failed to execute command");
+
+    assert!(
+        output.status.success(),
+        "proof warnings should not flip the exit code; stderr={}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    for needle in [
+        "\"rule_id\": \"EB015\"",
+        "Proof obligation not discharged: inv1/INV (pending)",
+        "\"rule_id\": \"EB016\"",
+        "Broken proof: axm1/THM",
+        "\"proof_summary\"",
+        "\"pending\": 2",
+        "\"broken\": 1",
+    ] {
+        assert!(stdout.contains(needle), "expected {needle} in: {stdout}");
+    }
+    // The broken obligation reports once, as EB016 — never also as EB015.
+    assert!(
+        !stdout.contains("axm1/THM (pending)"),
+        "broken obligation must not also emit EB015: {stdout}"
+    );
+
+    std::fs::remove_dir_all(&tmp).ok();
 }
 
 const EXTENDED_LABEL_M0: &str = r#"MACHINE M0
