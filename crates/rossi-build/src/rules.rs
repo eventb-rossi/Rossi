@@ -10,7 +10,7 @@ use crate::Severity;
 /// Validation rule identifiers exposed in `Diagnostic.rule_id`.
 ///
 /// Codes use the stable `EBnnn` scheme (`"EB001"`..`"EB026"`); gaps are
-/// rules not yet implemented in rossi (EB015–17 proof status, EB020 unknown
+/// rules not yet implemented in rossi (EB020 unknown
 /// type) or removed as valueless (EB013 dead
 /// constant — every hit was already an EB006 typing Error). EB023 and
 /// EB024 are rossi-only extensions; EB025 is a refinement static-check
@@ -45,6 +45,13 @@ pub enum RuleId {
     UnmodifiedVariable,
     /// EB014 — INITIALISATION leaves one or more variables unassigned.
     IncompleteInitialisation,
+    /// EB015 — Proof obligation not fully discharged (pending, reviewed, or
+    /// unattempted).
+    UndischargedProof,
+    /// EB016 — Proof script is no longer valid (`psBroken` in `.bps`).
+    BrokenProof,
+    /// EB017 — A proof file (`.bpr`/`.bpo`/`.bps`) could not be parsed.
+    ProofFileParseError,
     /// EB018 — Undeclared identifier in a guard, witness, or action.
     UndeclaredIdentifier,
     /// EB019 — Same component name defined in more than one file.
@@ -89,6 +96,9 @@ impl RuleId {
             RuleId::DeadVariable => "EB011",
             RuleId::UnmodifiedVariable => "EB012",
             RuleId::IncompleteInitialisation => "EB014",
+            RuleId::UndischargedProof => "EB015",
+            RuleId::BrokenProof => "EB016",
+            RuleId::ProofFileParseError => "EB017",
             RuleId::UndeclaredIdentifier => "EB018",
             RuleId::DuplicateComponent => "EB019",
             RuleId::DuplicateIdentifier => "EB021",
@@ -117,6 +127,9 @@ impl RuleId {
             RuleId::DeadVariable => "Dead variable",
             RuleId::UnmodifiedVariable => "Unmodified variable",
             RuleId::IncompleteInitialisation => "Incomplete INITIALISATION",
+            RuleId::UndischargedProof => "Undischarged proof obligation",
+            RuleId::BrokenProof => "Broken proof",
+            RuleId::ProofFileParseError => "Proof file parse error",
             RuleId::UndeclaredIdentifier => "Undeclared identifier",
             RuleId::DuplicateComponent => "Duplicate component",
             RuleId::DuplicateIdentifier => "Duplicate identifier",
@@ -166,6 +179,15 @@ impl RuleId {
             }
             RuleId::IncompleteInitialisation => {
                 "INITIALISATION leaves one or more machine variables unassigned."
+            }
+            RuleId::UndischargedProof => {
+                "A proof obligation has not been fully discharged (it is pending, reviewed, or unattempted)."
+            }
+            RuleId::BrokenProof => {
+                "A proof obligation is marked as broken, meaning its proof script is no longer valid."
+            }
+            RuleId::ProofFileParseError => {
+                "A proof-related file (.bpr/.bpo/.bps) could not be parsed as XML."
             }
             RuleId::UndeclaredIdentifier => {
                 "A guard, witness, or action references an identifier that is not in scope."
@@ -219,6 +241,9 @@ impl RuleId {
             RuleId::DeadVariable
             | RuleId::UnmodifiedVariable
             | RuleId::IncompleteInitialisation
+            | RuleId::UndischargedProof
+            | RuleId::BrokenProof
+            | RuleId::ProofFileParseError
             | RuleId::ShadowedName => Severity::Warning,
         }
     }
@@ -241,6 +266,9 @@ impl RuleId {
             RuleId::DeadVariable,
             RuleId::UnmodifiedVariable,
             RuleId::IncompleteInitialisation,
+            RuleId::UndischargedProof,
+            RuleId::BrokenProof,
+            RuleId::ProofFileParseError,
             RuleId::UndeclaredIdentifier,
             RuleId::DuplicateComponent,
             RuleId::DuplicateIdentifier,
@@ -285,6 +313,9 @@ mod tests {
         assert_eq!(RuleId::DeadVariable.code(), "EB011");
         assert_eq!(RuleId::UnmodifiedVariable.code(), "EB012");
         assert_eq!(RuleId::IncompleteInitialisation.code(), "EB014");
+        assert_eq!(RuleId::UndischargedProof.code(), "EB015");
+        assert_eq!(RuleId::BrokenProof.code(), "EB016");
+        assert_eq!(RuleId::ProofFileParseError.code(), "EB017");
         assert_eq!(RuleId::UndeclaredIdentifier.code(), "EB018");
         assert_eq!(RuleId::DuplicateComponent.code(), "EB019");
         assert_eq!(RuleId::DuplicateIdentifier.code(), "EB021");
