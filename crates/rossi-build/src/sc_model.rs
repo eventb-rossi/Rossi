@@ -12,7 +12,7 @@ pub use crate::sc::context_record::{
     AxiomDecl, CarrierSetDecl, ConstantDecl, ContextRecord, ExtendsDecl,
 };
 pub use crate::sc::machine_record::{
-    ActionDecl, EventDecl, GuardDecl, InvariantDecl, MachineRecord, ParameterDecl,
+    ActionDecl, Convergence, EventDecl, GuardDecl, InvariantDecl, MachineRecord, ParameterDecl,
     RefinesEventDecl, RefinesMachineDecl, SeesContextDecl, VariableDecl, VariantDecl, WitnessDecl,
 };
 pub use crate::sc::{CheckedContext, CheckedMachine, ScModel};

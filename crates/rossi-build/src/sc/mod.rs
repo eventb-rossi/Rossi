@@ -150,6 +150,27 @@ impl CheckedMachine {
             .and_then(|event| event.attr_value(crate::xml_out::attr::NAME))
     }
 
+    /// The Rodin-internal `name=` of a labelled child of a rendered
+    /// event — e.g. the `scGuard` row for guard `grd1` of event `evt`.
+    /// Downstream passes use these names where the checked files are
+    /// the identity reference for event-scoped elements.
+    pub fn event_child_internal_name(
+        &self,
+        event_label: &str,
+        child_tag: &str,
+        child_label: &str,
+    ) -> Option<&str> {
+        let event = self.event_elems.get(event_label)?;
+        event
+            .children
+            .iter()
+            .find(|child| {
+                child.tag == child_tag
+                    && child.attr_value(crate::xml_out::attr::LABEL) == Some(child_label)
+            })
+            .and_then(|child| child.attr_value(crate::xml_out::attr::NAME))
+    }
+
     /// The type environment in scope inside `event`: the machine env
     /// (variables + seen constants) extended with every parameter of
     /// the event's extended-event chain. `event` should come from this
@@ -173,6 +194,102 @@ impl CheckedMachine {
 pub struct ScModel {
     pub contexts: HashMap<String, CheckedContext>,
     pub machines: HashMap<String, CheckedMachine>,
+}
+
+impl ScModel {
+    /// The contexts visible to `machine`, in hoist order: for each SEES
+    /// target, its ancestors first (oldest first), then the target
+    /// itself, each context appearing exactly once. This is the order
+    /// the checked machine's internal-context blocks are emitted in.
+    pub fn seen_contexts(&self, machine: &CheckedMachine) -> Vec<&CheckedContext> {
+        let names = seen_context_closure(
+            machine.record.sees.iter().map(|s| s.name.as_str()),
+            &self.contexts,
+        );
+        names
+            .iter()
+            .filter_map(|name| self.contexts.get(name))
+            .collect()
+    }
+
+    /// The contexts `context` transitively extends, oldest first — the
+    /// order its internal-context blocks are emitted in.
+    pub fn abstract_contexts(&self, context: &CheckedContext) -> Vec<&CheckedContext> {
+        context
+            .ancestors()
+            .iter()
+            .filter_map(|name| self.contexts.get(name))
+            .collect()
+    }
+
+    /// The machine `machine` directly refines, when it was checked.
+    pub fn refined_machine(&self, machine: &CheckedMachine) -> Option<&CheckedMachine> {
+        let refines = machine.record.refines.as_ref()?;
+        self.machines.get(&refines.parent_name)
+    }
+
+    /// The invariants `machine` inherits from its refinement ancestors:
+    /// ancestors oldest first, each machine's own invariants in
+    /// declaration order — the order of the checked machine's invariant
+    /// closure before its own invariants.
+    pub fn inherited_invariants(
+        &self,
+        machine: &CheckedMachine,
+    ) -> Vec<(&CheckedMachine, &machine_record::InvariantDecl)> {
+        machine
+            .ancestors()
+            .iter()
+            .filter_map(|name| self.machines.get(name))
+            .flat_map(|ancestor| {
+                ancestor
+                    .record
+                    .invariants
+                    .iter()
+                    .map(move |inv| (ancestor, inv))
+            })
+            .collect()
+    }
+
+    /// The abstract event `event` refines, resolved in the refined
+    /// machine. The checker records implicit refinements too
+    /// (INITIALISATION, extended events), so the declared target is
+    /// authoritative.
+    pub fn abstract_event(
+        &self,
+        machine: &CheckedMachine,
+        event: &EventDecl,
+    ) -> Option<&Rc<EventDecl>> {
+        let refines = event.refines.as_ref()?;
+        self.refined_machine(machine)?
+            .events_by_label
+            .get(&refines.abstract_label)
+    }
+}
+
+/// All contexts reachable from the `sees` targets, in hoist order:
+/// each target's ancestors first, then the target, deduplicated.
+/// Unresolvable names are skipped — their diagnostics are reported by
+/// the reference checks.
+pub(crate) fn seen_context_closure<'a>(
+    sees: impl IntoIterator<Item = &'a str>,
+    checked: &HashMap<String, CheckedContext>,
+) -> Vec<String> {
+    let mut seen: std::collections::HashSet<&str> = std::collections::HashSet::new();
+    let mut out: Vec<String> = Vec::new();
+    for sees_name in sees {
+        let Some(ctx) = checked.get(sees_name) else {
+            continue;
+        };
+        for ancestor in ctx.ancestors() {
+            if seen.insert(ancestor) {
+                out.push(ancestor.clone());
+            }
+        }
+        if seen.insert(sees_name) {
+            out.push(sees_name.to_string());
+        }
+    }
+    out
 }
 
 /// EB019: every component name must be unique within a project — a duplicate

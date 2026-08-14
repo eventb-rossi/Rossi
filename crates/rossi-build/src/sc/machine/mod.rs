@@ -651,23 +651,7 @@ fn collect_seen_contexts(
     machine: &Machine,
     checked: &HashMap<String, CheckedContext>,
 ) -> Vec<String> {
-    use std::collections::HashSet;
-    let mut seen: HashSet<String> = HashSet::new();
-    let mut out: Vec<String> = Vec::new();
-    for sees_name in &machine.sees {
-        let Some(ctx) = checked.get(sees_name) else {
-            continue;
-        };
-        for a in ctx.ancestors() {
-            if seen.insert(a.clone()) {
-                out.push(a.clone());
-            }
-        }
-        if seen.insert(sees_name.clone()) {
-            out.push(sees_name.clone());
-        }
-    }
-    out
+    crate::sc::seen_context_closure(machine.sees.iter().map(String::as_str), checked)
 }
 
 /// True for configurations whose Rodin SC pipeline (as installed by an
