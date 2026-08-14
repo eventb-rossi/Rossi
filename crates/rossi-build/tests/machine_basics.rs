@@ -585,7 +585,52 @@ mod variant {
         let r = build(&project());
         let bcm = &r.file("Mch.bcm").expect("Mch.bcm").contents;
         let view = ScView::from_xml(bcm).unwrap();
-        assert_eq!(view.variant.as_deref(), Some("n"));
+        assert_eq!(view.variants.get("vrn").map(String::as_str), Some("n"));
+    }
+
+    /// Two labeled variants, emitted in declaration order with their
+    /// labels; a third one reusing a label is dropped (EB022 keeps the
+    /// first occurrence).
+    const MULTI_VARIANT_BUM: &str = r#"<?xml version="1.0"?>
+<org.eventb.core.machineFile version="5" org.eventb.core.configuration="org.eventb.core.fwd">
+<org.eventb.core.variable name="_v" org.eventb.core.identifier="n"/>
+<org.eventb.core.variable name="_w" org.eventb.core.identifier="k"/>
+<org.eventb.core.invariant name="_i" org.eventb.core.label="inv1" org.eventb.core.predicate="n ∈ ℕ"/>
+<org.eventb.core.invariant name="_j" org.eventb.core.label="inv2" org.eventb.core.predicate="k ∈ ℕ"/>
+<org.eventb.core.variant name="_v1" org.eventb.core.expression="n" org.eventb.core.label="vrn1"/>
+<org.eventb.core.variant name="_v2" org.eventb.core.expression="n − k" org.eventb.core.label="vrn2"/>
+<org.eventb.core.variant name="_v3" org.eventb.core.expression="k" org.eventb.core.label="vrn1"/>
+<org.eventb.core.event name="_init" org.eventb.core.convergence="0" org.eventb.core.extended="false" org.eventb.core.label="INITIALISATION">
+<org.eventb.core.action name="_a0" org.eventb.core.assignment="n ≔ 10" org.eventb.core.label="act1"/>
+<org.eventb.core.action name="_a1" org.eventb.core.assignment="k ≔ 0" org.eventb.core.label="act2"/>
+</org.eventb.core.event>
+</org.eventb.core.machineFile>
+"#;
+
+    #[test]
+    fn labeled_variants_emitted_in_order_and_duplicates_dropped() {
+        let r = build(&Project::new(
+            "mbn",
+            vec![ProjectComponent::from_xml("Mch.bum", MULTI_VARIANT_BUM).unwrap()],
+        ));
+        let bcm = &r.file("Mch.bcm").expect("Mch.bcm").contents;
+        let view = ScView::from_xml(bcm).unwrap();
+        let variants: Vec<(&str, &str)> = view
+            .variants
+            .iter()
+            .map(|(l, e)| (l.as_str(), e.as_str()))
+            .collect();
+        assert_eq!(variants, vec![("vrn1", "n"), ("vrn2", "n − k")]);
+        let first = bcm.find(r#"org.eventb.core.label="vrn1""#).unwrap();
+        let second = bcm.find(r#"org.eventb.core.label="vrn2""#).unwrap();
+        assert!(first < second, "declaration order preserved");
+        assert!(
+            r.diagnostics
+                .iter()
+                .any(|d| d.message.contains("variant label `vrn1`")),
+            "EB022 for the duplicated label: {:?}",
+            r.diagnostics
+        );
     }
 }
 

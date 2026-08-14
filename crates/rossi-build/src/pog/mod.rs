@@ -47,7 +47,7 @@ pub fn generate(project: &Project, model: &ScModel) -> Vec<ScFile> {
                     ) {
                         model::PoFile::new(&project.name, checked.name()).into_sc_files(false)
                     } else {
-                        machine::generate(project, pc, model, checked)
+                        machine::generate(project, model, checked)
                     };
                     files.push(obligations);
                     files.push(status);

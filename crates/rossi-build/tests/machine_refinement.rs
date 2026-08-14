@@ -567,7 +567,7 @@ mod inherited_param_scope {
             invariant.predicate
         );
 
-        let variant = m0.record.variant.as_ref().expect("variant in record");
+        let variant = m0.record.variants.first().expect("variant in record");
         let variant_typed = variant.typed.as_ref().expect("variant type-checks");
         assert_eq!(
             canonical_typed_expression(variant_typed),

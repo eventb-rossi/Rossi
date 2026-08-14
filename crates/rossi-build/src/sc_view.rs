@@ -40,7 +40,9 @@ pub struct ScView {
     /// Invariants keyed by `source` URI (label can collide across refinement).
     pub invariants: BTreeMap<String, InvariantRow>,
     pub variables: BTreeMap<String, VariableRow>,
-    pub variant: Option<String>,
+    /// Variants keyed by label (an absent label attribute is the
+    /// default `vrn`), value the expression text.
+    pub variants: BTreeMap<String, String>,
     pub events: BTreeMap<String, EventRow>,
 }
 
@@ -164,7 +166,18 @@ fn ingest_element(
         tag::SC_AXIOM => handle_axiom(view, e)?,
         tag::SC_INVARIANT => handle_invariant(view, e)?,
         tag::SC_VARIABLE => handle_variable(view, e)?,
-        tag::SC_VARIANT => view.variant = string_attr(e, b"expression")?,
+        tag::SC_VARIANT => {
+            if let Some(expression) = string_attr(e, b"expression")? {
+                // An absent label is the default `vrn`; a legacy
+                // generator materialized the literal `VARIANT` for the
+                // same label-less case — normalize both.
+                let label = match string_attr(e, b"label")?.as_deref() {
+                    None | Some("VARIANT") => "vrn".to_string(),
+                    Some(label) => label.to_string(),
+                };
+                view.variants.insert(label, expression);
+            }
+        }
         tag::SC_EVENT => handle_event(view, inside_event, e)?,
         tag::SC_PARAMETER => handle_parameter(view, inside_event, e)?,
         tag::SC_GUARD => handle_guard(view, inside_event, e)?,

@@ -13,7 +13,7 @@
 use rossi::formula::Type;
 
 use crate::ScFile;
-use crate::project::{Project, ProjectComponent};
+use crate::project::Project;
 use crate::sc::{CheckedMachine, ScModel};
 use crate::xml_out::{Element, RodinNameGenerator, attr, tag as xtag};
 
@@ -27,7 +27,6 @@ use super::natures::Nature;
 /// Generate `M.bpo` and `M.bps` for a checked machine.
 pub(super) fn generate(
     project: &Project,
-    pc: &ProjectComponent,
     model: &ScModel,
     machine: &CheckedMachine,
 ) -> (ScFile, ScFile) {
@@ -134,16 +133,15 @@ pub(super) fn generate(
         }
     }
 
-    generate_variant_pos(pc, machine, &mut po);
+    generate_variant_pos(machine, &mut po);
 
     let ff = machine_factory(machine);
     let variables = super::tables::MachineVariables::new(&machine.record);
-    let variant_label = machine
+    let variant = machine
         .record
-        .variant
-        .as_ref()
-        .map(|variant| pc.rodin_ids.last_variant_label().unwrap_or(variant.label));
-    let variant = machine.record.variant.as_ref().zip(variant_label);
+        .variants
+        .last()
+        .map(|v| (v, v.label.as_str()));
     for event in &machine.record.events {
         let mut scope = super::event::EventScope::new(model, machine, &variables, event, &ff);
         super::event::generate_event(
@@ -187,18 +185,14 @@ fn machine_factory(machine: &CheckedMachine) -> rossi::formula::FormulaFactory {
 }
 
 /// `VWD` (well-definedness) and `FIN` (finiteness) of the variant.
-fn generate_variant_pos(pc: &ProjectComponent, machine: &CheckedMachine, po: &mut PoFile) {
-    let Some(variant) = &machine.record.variant else {
+fn generate_variant_pos(machine: &CheckedMachine, po: &mut PoFile) {
+    let Some(variant) = machine.record.variants.last() else {
         return;
     };
     let Some(typed) = &variant.typed else {
         return;
     };
-    let label = pc
-        .rodin_ids
-        .last_variant_label()
-        .unwrap_or(variant.label)
-        .to_string();
+    let label = variant.label.clone();
     let sources = vec![PogSource::new(Role::Default, variant.source.clone())];
 
     let wd = typed.wd_lemma();

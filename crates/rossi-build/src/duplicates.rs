@@ -57,6 +57,9 @@ pub(crate) struct MachineFileDuplicates {
     pub(crate) variables: NamespaceDuplicates,
     /// EB022 — invariant labels.
     pub(crate) invariant_labels: NamespaceDuplicates,
+    /// EB022 — variant labels (an unlabeled variant uses the default
+    /// `vrn`, so two unlabeled variants collide).
+    pub(crate) variant_labels: NamespaceDuplicates,
     /// EB022 — event labels (INITIALISATION included).
     pub(crate) event_labels: NamespaceDuplicates,
 }
@@ -202,6 +205,15 @@ pub(crate) fn machine_file_duplicates(m: &Machine) -> MachineFileDuplicates {
             &scope,
             &m.name,
         ),
+        variant_labels: namespace_duplicates(
+            m.variants
+                .iter()
+                .map(|v| (v.label.as_deref().unwrap_or("vrn"), None)),
+            RuleId::DuplicateLabel,
+            "variant label",
+            &scope,
+            &m.name,
+        ),
         event_labels: namespace_duplicates(
             m.events.iter().map(|e| (e.name.as_str(), e.span)).chain(
                 m.initialisation
@@ -293,6 +305,7 @@ pub fn component_duplicate_diagnostics(component: &Component) -> Vec<Diagnostic>
             let mut diags: Vec<Diagnostic> = [
                 file.variables.diagnostics,
                 file.invariant_labels.diagnostics,
+                file.variant_labels.diagnostics,
                 file.event_labels.diagnostics,
             ]
             .into_iter()

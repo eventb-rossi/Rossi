@@ -66,7 +66,8 @@ pub struct MachineRecord {
     /// Own invariants only — the parent closure travels via
     /// [`super::CheckedMachine::invariant_elems`].
     pub invariants: Vec<InvariantDecl>,
-    pub variant: Option<VariantDecl>,
+    /// Variants in declaration order; several form a lexicographic order.
+    pub variants: Vec<VariantDecl>,
     /// Events in emission order: INITIALISATION first when present,
     /// then ordinary events in source order. `Rc`-shared so the
     /// per-label lookup table on [`super::CheckedMachine`] can hand
@@ -124,7 +125,8 @@ pub struct VariableDecl {
 
 #[derive(Debug, Clone)]
 pub struct VariantDecl {
-    pub label: &'static str,
+    /// The source label; `vrn` when the variant was unlabeled.
+    pub label: String,
     /// Expression AST as parsed. Retained so downstream passes do not
     /// need to re-parse the XML representation, and the render-time
     /// fallback when `typed` is absent.
@@ -372,7 +374,7 @@ pub(crate) fn render_machine_root(
     for v in &record.variables {
         root.push(names.retained(Rc::new(render_variable(v))));
     }
-    if let Some(va) = &record.variant {
+    for va in &record.variants {
         root.push(names.generated(|name| render_variant(va, name)));
     }
     for e in &record.events {
@@ -433,7 +435,7 @@ fn render_variant(va: &VariantDecl, internal_name: String) -> Element {
     Element::new(tag::SC_VARIANT)
         .attr(attr::NAME, internal_name)
         .attr(attr::EXPRESSION, expression)
-        .attr(attr::LABEL, va.label)
+        .attr(attr::LABEL, va.label.clone())
         .attr(attr::SOURCE, va.source.as_str())
 }
 
@@ -557,7 +559,7 @@ mod tests {
             sees: vec![],
             variables: vec![],
             invariants: vec![],
-            variant: None,
+            variants: vec![],
             events: vec![],
             ancestors: vec![],
         }

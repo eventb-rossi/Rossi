@@ -66,14 +66,14 @@ fn reports_every_checked_formula_location_and_omits_trivial_lemmas() {
 }
 
 #[test]
-fn uses_the_last_source_variant_label_when_multiple_variants_are_present() {
+fn reports_each_variant_under_its_own_label() {
     let machine = ProjectComponent::from_xml(
         "M.bum",
         r#"<?xml version="1.0"?>
 <org.eventb.core.machineFile version="5" org.eventb.core.configuration="org.eventb.core.fwd">
 <org.eventb.core.variable name="_x" org.eventb.core.identifier="x"/>
 <org.eventb.core.invariant name="_type" org.eventb.core.label="type" org.eventb.core.predicate="x ∈ ℤ"/>
-<org.eventb.core.variant name="_first" org.eventb.core.expression="x" org.eventb.core.label="v1"/>
+<org.eventb.core.variant name="_first" org.eventb.core.expression="20 ÷ (x + 1)" org.eventb.core.label="v1"/>
 <org.eventb.core.variant name="_last" org.eventb.core.expression="10 ÷ x" org.eventb.core.label="v2"/>
 </org.eventb.core.machineFile>"#,
     )
@@ -81,9 +81,17 @@ fn uses_the_last_source_variant_label_when_multiple_variants_are_present() {
 
     let diagnostics = findings(&project(vec![machine]));
 
-    assert_eq!(diagnostics.len(), 1);
-    assert_eq!(diagnostics[0].origin, "M.v2");
-    assert_eq!(diagnostics[0].message, "Well-definedness condition: x≠0");
+    let rows: Vec<(&str, &str)> = diagnostics
+        .iter()
+        .map(|d| (d.origin.as_str(), d.message.as_str()))
+        .collect();
+    assert_eq!(
+        rows,
+        vec![
+            ("M.v1", "Well-definedness condition: x+1≠0"),
+            ("M.v2", "Well-definedness condition: x≠0"),
+        ]
+    );
 }
 
 #[test]

@@ -418,10 +418,10 @@ fn describe_diff(ours: &ScView, theirs: &ScView) -> String {
             }
         }
     }
-    if ours.variant != theirs.variant {
+    if ours.variants != theirs.variants {
         parts.push(format!(
-            "variant {:?} vs {:?}",
-            ours.variant, theirs.variant
+            "variants {:?} vs {:?}",
+            ours.variants, theirs.variants
         ));
     }
     if parts.is_empty() {

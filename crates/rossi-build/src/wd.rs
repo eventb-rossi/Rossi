@@ -37,14 +37,14 @@ pub fn run(project: &Project, model: &ScModel) -> Vec<Diagnostic> {
                         &invariant.typed,
                     );
                 }
-                if let Some(variant) = &machine.record.variant
-                    && let Some(typed) = &variant.typed
-                {
-                    let label = component
-                        .rodin_ids
-                        .last_variant_label()
-                        .unwrap_or(variant.label);
-                    push_expression(&mut diagnostics, format!("{name}.{label}"), typed);
+                for variant in &machine.record.variants {
+                    if let Some(typed) = &variant.typed {
+                        push_expression(
+                            &mut diagnostics,
+                            format!("{name}.{}", variant.label),
+                            typed,
+                        );
+                    }
                 }
                 for event in &machine.record.events {
                     push_event(&mut diagnostics, name, event);

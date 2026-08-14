@@ -167,6 +167,7 @@ pub fn check_machine(
     let file_dups = crate::duplicates::machine_file_duplicates(machine);
     let dup_vars = file_dups.variables.names;
     let dup_inv_labels = file_dups.invariant_labels.names;
+    let dup_variant_labels = file_dups.variant_labels.names;
     let dup_event_labels = file_dups.event_labels.names;
 
     // -----------------------------------------------------------------
@@ -283,22 +284,31 @@ pub fn check_machine(
         })
         .unwrap_or_default();
 
-    // A machine without a usable variant cannot host convergent events:
+    // A machine without any usable variant cannot host convergent events:
     // each is downgraded to ordinary (and marked inaccurate). `variant_usable`
-    // is the single machine-wide flag that feeds every event's convergence.
-    let (variant_decl, variant_usable) = match machine.variants.last().map(|v| &v.expression) {
-        Some(expr) => {
-            match build_variant_decl(&pc.rodin_ids, &file_root, expr, &env, &machine.name) {
-                Ok((decl, usable)) => (Some(decl), usable),
-                Err(diag) => {
-                    diags.push(diag);
-                    accurate = false;
-                    (None, false)
-                }
+    // is the machine-wide flag that feeds every event's convergence. A
+    // duplicated variant label keeps the first occurrence and drops the rest
+    // (the EB022 error is already reported), like the invariant rule.
+    let mut variant_decls: Vec<VariantDecl> = Vec::with_capacity(machine.variants.len());
+    let mut variant_usable = false;
+    let mut variant_kept = crate::duplicates::FirstKept::new(&dup_variant_labels);
+    for v in &machine.variants {
+        let label = v.label.as_deref().unwrap_or("vrn");
+        if variant_kept.drops(Some(label)) {
+            accurate = false;
+            continue;
+        }
+        match build_variant_decl(&pc.rodin_ids, &file_root, label, v, &env, &machine.name) {
+            Ok((decl, usable)) => {
+                variant_usable |= usable;
+                variant_decls.push(decl);
+            }
+            Err(diag) => {
+                diags.push(diag);
+                accurate = false;
             }
         }
-        None => (None, false),
-    };
+    }
 
     // This machine's concrete (own-declared), typed variables, in the same
     // alphabetical order as the emitted scVariables. These are the candidates
@@ -389,7 +399,7 @@ pub fn check_machine(
         sees: sees_decls,
         variables: variable_decls,
         invariants: invariant_decls,
-        variant: variant_decl,
+        variants: variant_decls,
         events: event_decls,
         ancestors,
     };
@@ -616,7 +626,7 @@ fn build_variable_decls(
     (decls, all_var_names, own_var_names)
 }
 
-/// Build the variant decl and report whether it is *usable* for the
+/// Build one variant decl and report whether it is *usable* for the
 /// convergence rule. A variant naming an out-of-scope identifier is emitted
 /// but unusable, matching Rodin's convergence behavior. A closed, ill-typed
 /// variant is rejected. rossi does not additionally enforce Rodin's "variant
@@ -625,16 +635,12 @@ fn build_variable_decls(
 fn build_variant_decl(
     ids: &RodinIds,
     file_root: &HandleUri,
-    expr: &rossi::Expression,
+    label: &str,
+    variant: &rossi::Variant,
     env: &TypeEnv,
     machine_name: &str,
 ) -> std::result::Result<(VariantDecl, bool), Diagnostic> {
-    // Rodin's default variant label is "vrn"; our parser drops any
-    // non-default label from the .bum (only Expression is preserved).
-    let label = "vrn";
-    // The identity lookup still uses the source file's actual label so
-    // a non-default one resolves to the retained internal name.
-    let source_label = ids.last_variant_label().unwrap_or(label);
+    let expr = &variant.expression;
     let ec = check_expression(expr, env);
     let usable = ec.free_identifier.is_none();
     if usable && ec.typed.is_none() {
@@ -647,10 +653,10 @@ fn build_variant_decl(
         });
     }
     let source =
-        crate::sc::file_child_source(ids, file_root, Kind::Variant, in_tag::VARIANT, source_label);
+        crate::sc::file_child_source(ids, file_root, Kind::Variant, in_tag::VARIANT, label);
     Ok((
         VariantDecl {
-            label,
+            label: label.to_string(),
             typed: ec.typed,
             expression: ec.expression,
             source,
@@ -702,7 +708,7 @@ fn emit_decomposition_stub(
             sees: Vec::new(),
             variables: Vec::new(),
             invariants: Vec::new(),
-            variant: None,
+            variants: Vec::new(),
             events: Vec::new(),
             ancestors: Vec::new(),
         },

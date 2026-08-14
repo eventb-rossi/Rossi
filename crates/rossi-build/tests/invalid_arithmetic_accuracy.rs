@@ -96,7 +96,7 @@ fn invalid_variant_is_diagnosed_omitted_and_marks_machine_inaccurate() {
     let bcm = result.file("M.bcm").expect("M.bcm");
 
     assert!(!bcm.accurate, "diagnostics: {:?}", result.diagnostics);
-    assert!(view.variant.is_none(), "invalid variant was emitted");
+    assert!(view.variants.is_empty(), "invalid variant was emitted");
     assert_type_error(&result, "variant expression is ill-typed");
 }
 
