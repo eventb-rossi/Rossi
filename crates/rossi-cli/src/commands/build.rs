@@ -14,6 +14,7 @@ use std::process::ExitCode;
 
 use clap::Args;
 
+use rossi_build::pog::reconcile::{reconcile_build_files, reconcile_pair};
 use rossi_build::project::discover_projects;
 use rossi_build::repack::repackage_zip_bytes_multi;
 use rossi_build::rodin_ids::RodinIds;
@@ -29,9 +30,10 @@ pub struct BuildArgs {
     /// folder of `.eventb`/`.txt`), or an Event-B text / `.buc` / `.bum` file.
     pub input: PathBuf,
     /// Output path. If it ends in `.zip`, writes a repackaged archive
-    /// (sources + our generated `.bcc`/`.bcm` and `.bpo`/`.bps`; the
-    /// input's proof artifacts are dropped). Otherwise, treated as a
-    /// directory and loose files are written in.
+    /// (sources and `.bpr` proofs plus our generated `.bcc`/`.bcm` and
+    /// `.bpo`/`.bps`, reconciled with the input's so unchanged
+    /// obligations keep their stamps and statuses). Otherwise, treated
+    /// as a directory and loose files are written in.
     /// Defaults to `<input-stem>.regen.zip` next to the input.
     #[arg(short, long)]
     pub output: Option<PathBuf>,
@@ -352,7 +354,7 @@ fn write_dir(out_dir: &Path, outcome: &BuildOutcome) -> Result<(), Box<dyn std::
                     format!("duplicate loose output destination {}", relative.display()).into(),
                 );
             }
-            pending.push((relative, f.contents.as_str()));
+            pending.push((relative, f.contents.clone()));
         }
     }
 
@@ -379,10 +381,42 @@ fn write_dir(out_dir: &Path, outcome: &BuildOutcome) -> Result<(), Box<dyn std::
     visit_resolved_output_paths(out_dir, &canonical_root, &parents, &pending, |path| {
         destinations.push(path)
     })?;
+    reconcile_pending(&mut pending, &destinations);
     for ((_, contents), destination) in pending.iter().zip(destinations) {
         std::fs::write(destination, contents)?;
     }
     Ok(())
+}
+
+/// Reconcile each pending `.bpo` / `.bps` pair against the destination
+/// files it is about to overwrite, so proof stamps and statuses carry
+/// across rebuilds. Previous state comes from the destination — the
+/// files actually being replaced — which for loose output may differ
+/// from the input; `.bpr` files on disk are never touched. Unreadable
+/// or missing destinations count as absent.
+fn reconcile_pending(pending: &mut [(PathBuf, String)], destinations: &[PathBuf]) {
+    for i in 0..pending.len() {
+        let Some(stem) = pending[i].0.to_str().and_then(|n| n.strip_suffix(".bpo")) else {
+            continue;
+        };
+        let bps_relative = PathBuf::from(format!("{stem}.bps"));
+        let Some(j) = pending
+            .iter()
+            .position(|(relative, _)| *relative == bps_relative)
+        else {
+            continue;
+        };
+        let old_bpo = std::fs::read_to_string(&destinations[i]).ok();
+        let old_bps = std::fs::read_to_string(&destinations[j]).ok();
+        let (bpo_out, bps_out) = reconcile_pair(
+            old_bpo.as_deref(),
+            old_bps.as_deref(),
+            &pending[i].1,
+            &pending[j].1,
+        );
+        pending[i].1 = bpo_out;
+        pending[j].1 = bps_out;
+    }
 }
 
 /// Convert an archive prefix to the one directory component allowed for loose
@@ -417,7 +451,7 @@ fn visit_resolved_output_paths(
     out_dir: &Path,
     canonical_root: &Path,
     parents: &std::collections::BTreeSet<PathBuf>,
-    pending: &[(PathBuf, &str)],
+    pending: &[(PathBuf, String)],
     mut visit: impl FnMut(PathBuf),
 ) -> Result<(), Box<dyn std::error::Error>> {
     let mut resolved_parents = std::collections::BTreeMap::new();
@@ -501,11 +535,16 @@ fn resolve_output_parent(
     }
 }
 
-/// Emit a flat zip from `BuildResult` alone (no source archive to merge with).
+/// Emit a flat zip from `BuildResult` alone (no source archive to merge
+/// with). A project-directory input contributes its previous proof
+/// state: generated `.bpo` / `.bps` pairs are reconciled against the
+/// directory's files and its top-level `.bpr` proofs are copied in
+/// byte-exact.
 fn synthesize_flat_zip(
     input: &Path,
     result: &BuildResult,
 ) -> Result<Vec<u8>, Box<dyn std::error::Error>> {
+    use std::io::Write;
     use zip::write::{SimpleFileOptions, ZipWriter};
 
     let prefix = input
@@ -514,13 +553,36 @@ fn synthesize_flat_zip(
         .map(|s| format!("{s}/"))
         .unwrap_or_default();
 
+    let mut files = result.files.clone();
+    if input.is_dir() {
+        reconcile_build_files(&mut files, |name| {
+            std::fs::read_to_string(input.join(name)).ok()
+        });
+    }
+
     let mut cursor = std::io::Cursor::new(Vec::<u8>::new());
     let mut w = ZipWriter::new(&mut cursor);
     let opts = SimpleFileOptions::default().compression_method(zip::CompressionMethod::Deflated);
-    for f in &result.files {
+    for f in &files {
         w.start_file(format!("{prefix}{}", f.filename), opts)?;
-        use std::io::Write;
         w.write_all(f.contents.as_bytes())?;
+    }
+    if input.is_dir() {
+        let mut proofs: Vec<PathBuf> = std::fs::read_dir(input)?
+            .flatten()
+            .map(|entry| entry.path())
+            .filter(|path| {
+                path.extension().and_then(|s| s.to_str()) == Some("bpr") && path.is_file()
+            })
+            .collect();
+        proofs.sort();
+        for path in proofs {
+            let Some(filename) = path.file_name().and_then(|s| s.to_str()) else {
+                continue;
+            };
+            w.start_file(format!("{prefix}{filename}"), opts)?;
+            w.write_all(&std::fs::read(&path)?)?;
+        }
     }
     w.finish()?;
     Ok(cursor.into_inner())

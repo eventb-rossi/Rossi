@@ -335,18 +335,13 @@ fn build_eventb_directory() {
     std::fs::remove_dir_all(&tmp).ok();
 }
 
-#[test]
-fn build_zip_replaces_proof_files_with_generated_ones() {
-    // A rebuilt archive carries our generated .bpo (obligations) and
-    // .bps (fresh unattempted statuses); the input's stale proof
-    // artifacts, .bpr included, are gone.
-    let tmp = tempdir_unique("rossi-cli-build-proofs");
-    let out_zip = tmp.join("out.zip");
+const TRAFFIC_LIGHT: &str = "../rossi/examples/traffic-light.zip";
 
+fn build_zip(input: &std::path::Path, out_zip: &std::path::Path) {
     let output = rossi_command()
         .args([
             "build",
-            "../rossi/examples/traffic-light.zip",
+            input.to_str().unwrap(),
             "--output",
             out_zip.to_str().unwrap(),
         ])
@@ -357,6 +352,60 @@ fn build_zip_replaces_proof_files_with_generated_ones() {
         "stderr={}",
         String::from_utf8_lossy(&output.stderr)
     );
+}
+
+fn zip_entry_bytes(zip_path: &std::path::Path, name: &str) -> Vec<u8> {
+    use std::io::Read;
+    let mut archive = zip::ZipArchive::new(std::fs::File::open(zip_path).unwrap()).unwrap();
+    let mut entry = archive.by_name(name).unwrap_or_else(|_| panic!("{name}"));
+    let mut bytes = Vec::new();
+    entry.read_to_end(&mut bytes).unwrap();
+    bytes
+}
+
+fn zip_entry_names(zip_path: &std::path::Path) -> Vec<String> {
+    let mut archive = zip::ZipArchive::new(std::fs::File::open(zip_path).unwrap()).unwrap();
+    (0..archive.len())
+        .map(|i| archive.by_index(i).unwrap().name().to_string())
+        .collect()
+}
+
+/// Rewrite one text entry of a zip through `transform`, copying every
+/// other entry as-is.
+fn rewrite_zip_entry(
+    zip_path: &std::path::Path,
+    out_path: &std::path::Path,
+    entry_name: &str,
+    transform: impl Fn(&str) -> String,
+) {
+    use std::io::{Read, Write};
+    let mut archive = zip::ZipArchive::new(std::fs::File::open(zip_path).unwrap()).unwrap();
+    let mut cursor = std::io::Cursor::new(Vec::new());
+    let mut writer = zip::ZipWriter::new(&mut cursor);
+    let options = zip::write::SimpleFileOptions::default();
+    for i in 0..archive.len() {
+        let mut entry = archive.by_index(i).unwrap();
+        let name = entry.name().to_string();
+        let mut bytes = Vec::new();
+        entry.read_to_end(&mut bytes).unwrap();
+        if name == entry_name {
+            bytes = transform(std::str::from_utf8(&bytes).unwrap()).into_bytes();
+        }
+        writer.start_file(name, options).unwrap();
+        writer.write_all(&bytes).unwrap();
+    }
+    writer.finish().unwrap();
+    std::fs::write(out_path, cursor.into_inner()).unwrap();
+}
+
+#[test]
+fn build_zip_preserves_proof_files() {
+    // A rebuilt archive carries our generated .bpo (obligations) and
+    // .bps (fresh unattempted statuses, as the input has none to carry)
+    // while the input's .bpr proofs are preserved byte-exact.
+    let tmp = tempdir_unique("rossi-cli-build-proofs");
+    let out_zip = tmp.join("out.zip");
+    build_zip(std::path::Path::new(TRAFFIC_LIGHT), &out_zip);
 
     let extracted = tmp.join("out");
     extract_zip_to(&out_zip, &extracted);
@@ -365,9 +414,148 @@ fn build_zip_replaces_proof_files_with_generated_ones() {
     assert!(m0_bpo.contains(r#"<org.eventb.core.poSequent name="INITIALISATION/inv3/INV""#));
     let m0_bps = std::fs::read_to_string(root.join("M0.bps")).expect("M0.bps");
     assert!(m0_bps.contains(r#"<org.eventb.core.psStatus name="INITIALISATION/inv3/INV" org.eventb.core.confidence="-99" org.eventb.core.poStamp="0" org.eventb.core.psManual="false"/>"#));
+    assert_eq!(
+        std::fs::read(root.join("M0.bpr")).expect("M0.bpr"),
+        zip_entry_bytes(std::path::Path::new(TRAFFIC_LIGHT), "traffic-light/M0.bpr"),
+        "proofs must be preserved byte-exact"
+    );
+
+    std::fs::remove_dir_all(&tmp).ok();
+}
+
+#[test]
+fn build_zip_rebuild_is_byte_stable() {
+    // Rebuilding an unchanged archive must be a no-op on proof state:
+    // every .bpo / .bps / .bpr entry comes out byte-identical.
+    let tmp = tempdir_unique("rossi-cli-build-stable");
+    let out1 = tmp.join("out1.zip");
+    let out2 = tmp.join("out2.zip");
+    build_zip(std::path::Path::new(TRAFFIC_LIGHT), &out1);
+    build_zip(&out1, &out2);
+
+    let proof_entries: Vec<String> = zip_entry_names(&out1)
+        .into_iter()
+        .filter(|n| n.ends_with(".bpo") || n.ends_with(".bps") || n.ends_with(".bpr"))
+        .collect();
+    assert!(!proof_entries.is_empty());
+    for name in &proof_entries {
+        assert_eq!(
+            zip_entry_bytes(&out1, name),
+            zip_entry_bytes(&out2, name),
+            "{name} must survive a rebuild unchanged"
+        );
+    }
+
+    std::fs::remove_dir_all(&tmp).ok();
+}
+
+#[test]
+fn build_zip_carries_doctored_statuses_across_rebuilds() {
+    // A proof status recorded between builds (here: one obligation
+    // discharged manually) must survive the next rebuild verbatim.
+    let tmp = tempdir_unique("rossi-cli-build-status-carry");
+    let out1 = tmp.join("out1.zip");
+    let doctored = tmp.join("doctored.zip");
+    let out2 = tmp.join("out2.zip");
+    build_zip(std::path::Path::new(TRAFFIC_LIGHT), &out1);
+
+    let discharged = r#"name="INITIALISATION/inv3/INV" org.eventb.core.confidence="1000" org.eventb.core.poStamp="0" org.eventb.core.psManual="true""#;
+    rewrite_zip_entry(&out1, &doctored, "traffic-light/M0.bps", |text| {
+        text.replacen(
+            r#"name="INITIALISATION/inv3/INV" org.eventb.core.confidence="-99" org.eventb.core.poStamp="0" org.eventb.core.psManual="false""#,
+            discharged,
+            1,
+        )
+    });
+    build_zip(&doctored, &out2);
+
+    let m0_bps = String::from_utf8(zip_entry_bytes(&out2, "traffic-light/M0.bps")).unwrap();
     assert!(
-        !root.join("M0.bpr").exists(),
-        "stale proofs must be dropped"
+        m0_bps.contains(discharged),
+        "the discharged row must carry over verbatim: {m0_bps}"
+    );
+
+    std::fs::remove_dir_all(&tmp).ok();
+}
+
+#[test]
+fn build_directory_output_preserves_proof_state() {
+    // Loose-file output reconciles against the destination directory:
+    // a second build leaves .bpo/.bps byte-identical, a status doctored
+    // in between carries over, and .bpr files on disk are never touched.
+    let tmp = tempdir_unique("rossi-cli-build-dir-proofs");
+    let src = tmp.join("src");
+    extract_zip_to(&std::path::PathBuf::from(TRAFFIC_LIGHT), &src);
+    let project = src.join("traffic-light");
+    let out_dir = tmp.join("out");
+
+    let run = || {
+        let output = rossi_command()
+            .args([
+                "build",
+                project.to_str().unwrap(),
+                "--output",
+                out_dir.to_str().unwrap(),
+            ])
+            .output()
+            .expect("Failed to execute command");
+        assert!(
+            output.status.success(),
+            "stderr={}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+    };
+
+    run();
+    let stray = out_dir.join("STRAY.bpr");
+    std::fs::write(&stray, "STRAY-PROOF").unwrap();
+    let bpo_first = std::fs::read(out_dir.join("M0.bpo")).unwrap();
+    let bps_first = std::fs::read(out_dir.join("M0.bps")).unwrap();
+
+    run();
+    assert_eq!(std::fs::read(out_dir.join("M0.bpo")).unwrap(), bpo_first);
+    assert_eq!(std::fs::read(out_dir.join("M0.bps")).unwrap(), bps_first);
+    assert_eq!(std::fs::read(&stray).unwrap(), b"STRAY-PROOF");
+
+    // Discharge one obligation in place; the next build keeps it.
+    let discharged = r#"name="INITIALISATION/inv3/INV" org.eventb.core.confidence="1000" org.eventb.core.poStamp="0" org.eventb.core.psManual="true""#;
+    let doctored = String::from_utf8(bps_first).unwrap().replacen(
+        r#"name="INITIALISATION/inv3/INV" org.eventb.core.confidence="-99" org.eventb.core.poStamp="0" org.eventb.core.psManual="false""#,
+        discharged,
+        1,
+    );
+    std::fs::write(out_dir.join("M0.bps"), &doctored).unwrap();
+    run();
+    assert_eq!(
+        std::fs::read_to_string(out_dir.join("M0.bps")).unwrap(),
+        doctored,
+        "the discharged row must carry over verbatim"
+    );
+
+    std::fs::remove_dir_all(&tmp).ok();
+}
+
+#[test]
+fn build_directory_to_zip_carries_proofs_and_statuses() {
+    // Directory input with .zip output: the source dir's .bpr proofs
+    // land in the archive byte-exact and its .bpo/.bps reconcile in.
+    let tmp = tempdir_unique("rossi-cli-build-dir-zip-proofs");
+    let src = tmp.join("src");
+    extract_zip_to(&std::path::PathBuf::from(TRAFFIC_LIGHT), &src);
+    let project = src.join("traffic-light");
+    let out_zip = tmp.join("out.zip");
+    build_zip(&project, &out_zip);
+
+    assert_eq!(
+        zip_entry_bytes(&out_zip, "traffic-light/M0.bpr"),
+        std::fs::read(project.join("M0.bpr")).unwrap(),
+        "the source dir's proofs must land in the archive byte-exact"
+    );
+    assert!(
+        zip_entry_names(&out_zip)
+            .iter()
+            .any(|n| n == "traffic-light/M0.bpo"),
+        "generated obligations must be present"
     );
 
     std::fs::remove_dir_all(&tmp).ok();
