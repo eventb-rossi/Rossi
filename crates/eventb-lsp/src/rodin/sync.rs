@@ -65,7 +65,14 @@ impl RodinSyncManager {
 
     /// Start watching `workspace_dir`. Performs one initial proof-status
     /// scan so existing Rodin results surface without waiting for a change.
+    ///
+    /// Watcher creation can take *minutes* when the platform's file-event
+    /// service is busy (macOS fseventsd on a churning volume), so callers
+    /// must invoke this off the request path — see the server's
+    /// `ensure_rodin_sync`, which runs it on a detached thread. `handle` is
+    /// the runtime the processing task should run on.
     pub(crate) fn start(
+        handle: &tokio::runtime::Handle,
         workspace_dir: PathBuf,
         written: WrittenFiles,
         analyzer: Analyzer,
@@ -82,7 +89,7 @@ impl RodinSyncManager {
         watcher.watch(&workspace_dir, notify::RecursiveMode::Recursive)?;
 
         let task_workspace = workspace_dir.clone();
-        let task = tokio::spawn(async move {
+        let task = handle.spawn(async move {
             // Initial scan: surface proof state Rodin left from earlier runs.
             refresh(&task_workspace, &analyzer).await;
 

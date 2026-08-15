@@ -337,6 +337,16 @@ impl Analyzer {
     }
 }
 
+/// Lifecycle of the Rodin workspace watcher. Creation happens on a detached
+/// thread (it can take minutes when the platform's file-event service is
+/// busy), so a `Starting` marker keeps concurrent starts from stacking up
+/// and lets shutdown or a workspace switch discard a late arrival.
+enum RodinSyncState {
+    Off,
+    Starting(PathBuf),
+    Ready(crate::rodin::sync::RodinSyncManager),
+}
+
 /// The Rossi Language Server
 pub struct RossiLanguageServer {
     /// LSP client for sending notifications and requests
@@ -382,8 +392,9 @@ pub struct RossiLanguageServer {
     /// Whether the client advertised `window.workDoneProgress` support.
     supports_work_done_progress: std::sync::atomic::AtomicBool,
     /// Watcher over the shared Rodin workspace, started lazily once such a
-    /// workspace exists; dropped (stopped) on shutdown.
-    rodin_sync: parking_lot::Mutex<Option<crate::rodin::sync::RodinSyncManager>>,
+    /// workspace exists; dropped (stopped) on shutdown. `Arc`'d because the
+    /// slow watcher creation completes on a detached thread.
+    rodin_sync: Arc<parking_lot::Mutex<RodinSyncState>>,
     /// Content hashes of files the server wrote into the Rodin workspace —
     /// the sync watcher's echo guard, shared with the build flow.
     rodin_written: crate::rodin::sync::WrittenFiles,
@@ -466,7 +477,7 @@ impl RossiLanguageServer {
             analyzer,
             rodin_open_in_flight: Arc::new(std::sync::atomic::AtomicBool::new(false)),
             supports_work_done_progress: std::sync::atomic::AtomicBool::new(false),
-            rodin_sync: parking_lot::Mutex::new(None),
+            rodin_sync: Arc::new(parking_lot::Mutex::new(RodinSyncState::Off)),
             rodin_written: Arc::new(parking_lot::Mutex::new(std::collections::HashMap::new())),
         }
     }
@@ -484,25 +495,49 @@ impl RossiLanguageServer {
             .map(|root| crate::rodin::default_workspace_dir(&root))
     }
 
-    /// Start the Rodin workspace watcher if it isn't running yet (or watches
-    /// a different directory after a config change). Failures degrade to a
-    /// log line — proof state then refreshes on the next build instead.
+    /// Start the Rodin workspace watcher if it isn't running (or starting)
+    /// for this directory yet. Creation runs on a detached thread — it can
+    /// take minutes when the platform's file-event service is backed up, and
+    /// must block neither the request handler nor (via the blocking pool)
+    /// runtime shutdown. Failures degrade to a log line — proof state then
+    /// refreshes on the next build instead.
     fn ensure_rodin_sync(&self, workspace_dir: &std::path::Path) {
-        let mut sync = self.rodin_sync.lock();
-        if sync
-            .as_ref()
-            .is_some_and(|manager| manager.workspace_dir() == workspace_dir)
         {
-            return;
+            let mut state = self.rodin_sync.lock();
+            let already = match &*state {
+                RodinSyncState::Ready(manager) => manager.workspace_dir() == workspace_dir,
+                RodinSyncState::Starting(dir) => dir == workspace_dir,
+                RodinSyncState::Off => false,
+            };
+            if already {
+                return;
+            }
+            *state = RodinSyncState::Starting(workspace_dir.to_path_buf());
         }
-        match crate::rodin::sync::RodinSyncManager::start(
-            workspace_dir.to_path_buf(),
-            Arc::clone(&self.rodin_written),
-            self.analyzer.clone(),
-        ) {
-            Ok(manager) => *sync = Some(manager),
-            Err(e) => info!("could not watch Rodin workspace {workspace_dir:?}: {e}"),
-        }
+
+        let slot = Arc::clone(&self.rodin_sync);
+        let written = Arc::clone(&self.rodin_written);
+        let analyzer = self.analyzer.clone();
+        let handle = tokio::runtime::Handle::current();
+        let dir = workspace_dir.to_path_buf();
+        std::thread::spawn(move || {
+            let started =
+                crate::rodin::sync::RodinSyncManager::start(&handle, dir.clone(), written, analyzer);
+            let mut state = slot.lock();
+            // Only install if nothing superseded this start (shutdown reset
+            // the state, or a config change targeted another directory).
+            let current = matches!(&*state, RodinSyncState::Starting(d) if *d == dir);
+            match started {
+                Ok(manager) if current => *state = RodinSyncState::Ready(manager),
+                Ok(_) => {}
+                Err(e) => {
+                    if current {
+                        *state = RodinSyncState::Off;
+                    }
+                    info!("could not watch Rodin workspace {dir:?}: {e}");
+                }
+            }
+        });
     }
 }
 
@@ -712,8 +747,9 @@ impl LanguageServer for RossiLanguageServer {
 
     async fn shutdown(&self) -> Result<()> {
         info!("Received shutdown request");
-        // Stop the Rodin workspace watcher and its processing task.
-        self.rodin_sync.lock().take();
+        // Stop the Rodin workspace watcher and its processing task (a
+        // creation still in flight sees the reset state and discards itself).
+        *self.rodin_sync.lock() = RodinSyncState::Off;
         Ok(())
     }
 
