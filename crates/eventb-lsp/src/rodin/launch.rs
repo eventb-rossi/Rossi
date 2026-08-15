@@ -186,33 +186,67 @@ pub fn project_registered(workspace_dir: &Path, project_name: &str) -> bool {
         .is_dir()
 }
 
-/// Seed workbench preferences so a fresh workspace opens usable: no Eclipse
-/// Welcome page hiding the project, and auto-refresh on, so a running Rodin
-/// picks up files rossi rebuilds underneath it. Best effort — a cosmetic
-/// preference must never block opening Rodin.
+/// Seed workbench preferences so the workspace opens usable: no Eclipse
+/// Welcome page hiding the project, and both auto-refresh mechanisms on, so
+/// a running Rodin picks up files rossi rebuilds underneath it
+/// (`refresh.enabled` starts Eclipse's polling monitor — the only detector
+/// on macOS/Linux, no native hooks exist there — and
+/// `refresh.lightweight.enabled` refreshes resources on access). Eclipse
+/// writes its own keys into these same files (e.g. `encoding=`), so seeding
+/// upserts our keys and preserves every other line; this workspace is
+/// tool-managed, so re-asserting our keys over a manual change is intended.
+/// Best effort — a preference must never block opening Rodin.
 pub fn seed_workspace_prefs(workspace_dir: &Path) {
     let settings_dir = workspace_dir
         .join(".metadata")
         .join(".plugins")
         .join("org.eclipse.core.runtime")
         .join(".settings");
-    let write = |file: &str, contents: &str| {
-        if let Err(e) = std::fs::write(settings_dir.join(file), contents) {
-            tracing::info!("could not seed {file}: {e}");
-        }
-    };
     if let Err(e) = std::fs::create_dir_all(&settings_dir) {
         tracing::info!("could not seed workspace preferences: {e}");
         return;
     }
-    write(
-        "org.eclipse.ui.prefs",
-        "eclipse.preferences.version=1\nshowIntro=false\n",
-    );
-    write(
+    let seed = |file: &str, keys: &[(&str, &str)]| {
+        if let Err(e) = upsert_prefs(&settings_dir.join(file), keys) {
+            tracing::info!("could not seed {file}: {e}");
+        }
+    };
+    seed("org.eclipse.ui.prefs", &[("showIntro", "false")]);
+    seed(
         "org.eclipse.core.resources.prefs",
-        "eclipse.preferences.version=1\nrefresh.enabled=true\n",
+        &[
+            ("refresh.enabled", "true"),
+            ("refresh.lightweight.enabled", "true"),
+        ],
     );
+}
+
+/// Set `key=value` pairs in an Eclipse `.prefs` file, preserving all other
+/// lines; a missing file starts from the standard version header. The keys
+/// involved are plain ASCII, so Java-properties escaping never applies.
+fn upsert_prefs(path: &Path, keys: &[(&str, &str)]) -> std::io::Result<()> {
+    let existing = match std::fs::read_to_string(path) {
+        Ok(text) => text,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+            "eclipse.preferences.version=1\n".to_string()
+        }
+        Err(e) => return Err(e),
+    };
+    let mut lines: Vec<&str> = existing
+        .lines()
+        .filter(|line| {
+            !keys.iter().any(|(key, _)| {
+                line.strip_prefix(key)
+                    .is_some_and(|rest| rest.starts_with('='))
+            })
+        })
+        .collect();
+    let upserts: Vec<String> = keys
+        .iter()
+        .map(|(key, value)| format!("{key}={value}"))
+        .collect();
+    lines.extend(upserts.iter().map(String::as_str));
+    std::fs::write(path, lines.join("\n") + "\n")
 }
 
 /// The `build.xml` driving the importer task; `projectDir` arrives via `-D`.
@@ -327,6 +361,52 @@ pub fn launch_gui(command: &str, args: &[String]) -> Result<(), String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn seeding_a_fresh_workspace_writes_both_prefs_files() {
+        let dir = crate::test_util::TempDir::new("rossi-prefs-fresh");
+        seed_workspace_prefs(dir.path());
+
+        let settings = dir
+            .path()
+            .join(".metadata/.plugins/org.eclipse.core.runtime/.settings");
+        let ui = std::fs::read_to_string(settings.join("org.eclipse.ui.prefs")).unwrap();
+        assert!(ui.contains("eclipse.preferences.version=1\n"));
+        assert!(ui.contains("showIntro=false\n"));
+        let resources =
+            std::fs::read_to_string(settings.join("org.eclipse.core.resources.prefs")).unwrap();
+        assert!(resources.contains("eclipse.preferences.version=1\n"));
+        assert!(resources.contains("refresh.enabled=true\n"));
+        assert!(resources.contains("refresh.lightweight.enabled=true\n"));
+    }
+
+    #[test]
+    fn seeding_preserves_foreign_keys_and_replaces_conflicting_ones() {
+        let dir = crate::test_util::TempDir::new("rossi-prefs-upsert");
+        let settings = dir
+            .path()
+            .join(".metadata/.plugins/org.eclipse.core.runtime/.settings");
+        std::fs::create_dir_all(&settings).unwrap();
+        // What Eclipse's own Workspace preference page leaves behind.
+        std::fs::write(
+            settings.join("org.eclipse.core.resources.prefs"),
+            "eclipse.preferences.version=1\nencoding=UTF-8\n\
+             refresh.lightweight.enabled=false\nversion=1\n",
+        )
+        .unwrap();
+
+        seed_workspace_prefs(dir.path());
+        seed_workspace_prefs(dir.path()); // idempotent
+
+        let resources =
+            std::fs::read_to_string(settings.join("org.eclipse.core.resources.prefs")).unwrap();
+        assert!(resources.contains("encoding=UTF-8\n"));
+        assert!(resources.contains("version=1\n"));
+        assert!(!resources.contains("refresh.lightweight.enabled=false"));
+        let occurrences = |needle: &str| resources.matches(needle).count();
+        assert_eq!(occurrences("refresh.enabled=true\n"), 1);
+        assert_eq!(occurrences("refresh.lightweight.enabled=true\n"), 1);
+    }
 
     #[test]
     fn default_rodin_path_per_platform() {
