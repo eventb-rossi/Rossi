@@ -14,10 +14,11 @@
 //!   be flattened root-first through the `parentSet` links, making the
 //!   comparison independent of which cut points were materialized.
 //!
-//! Stamps are ignored entirely — they encode edit history, not
-//! content.
+//! Stamps are parsed (so a regeneration can carry them forward from
+//! previous output) but excluded from every comparison — they encode
+//! edit history, not content.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 
 use quick_xml::Reader;
 use quick_xml::events::{BytesStart, Event};
@@ -47,6 +48,8 @@ pub struct PoSet {
     /// The rows' internal names, parallel to `predicates` — the
     /// targets of predicate selection hints.
     pub predicate_names: Vec<String>,
+    /// The set's `poStamp` attribute, verbatim.
+    pub stamp: Option<String>,
 }
 
 /// A prover hint, with normalized handles.
@@ -69,6 +72,8 @@ pub struct PoSequent {
     /// `(role, source)` rows, in document order.
     pub sources: Vec<(String, Option<String>)>,
     pub hints: Vec<PoHint>,
+    /// The sequent's `poStamp` attribute, verbatim.
+    pub stamp: Option<String>,
 }
 
 /// The parsed view of one `.bpo` file.
@@ -76,6 +81,8 @@ pub struct PoSequent {
 pub struct PoView {
     pub sets: BTreeMap<String, PoSet>,
     pub sequents: BTreeMap<String, PoSequent>,
+    /// The root element's file-level `poStamp` attribute, verbatim.
+    pub stamp: Option<String>,
 }
 
 impl PoView {
@@ -230,6 +237,53 @@ impl PoView {
         set.predicates.get(position)
     }
 
+    /// Whether the sequent named `name` is semantically unchanged
+    /// between `self` and `other`: same nature, accuracy, goal,
+    /// flattened hypothesis chain, visible identifiers, sources (as
+    /// sets), and resolved hints. The field set mirrors the corpus
+    /// gates' `diff_po_views` helper, which keeps its own copy for
+    /// per-field diagnostics.
+    pub fn sequent_eq(&self, other: &PoView, name: &str) -> bool {
+        let (Some(mine), Some(theirs)) = (self.sequents.get(name), other.sequents.get(name)) else {
+            return false;
+        };
+        let my_sources: BTreeSet<_> = mine.sources.iter().collect();
+        let their_sources: BTreeSet<_> = theirs.sources.iter().collect();
+        mine.description == theirs.description
+            && mine.accurate == theirs.accurate
+            && mine.goal == theirs.goal
+            && self.flattened_hypotheses(name) == other.flattened_hypotheses(name)
+            && self.flattened_identifiers(name) == other.flattened_identifiers(name)
+            && my_sources == their_sources
+            && self.resolved_hints(name) == other.resolved_hints(name)
+    }
+
+    /// Whether the top-level predicate set named `name` carries the
+    /// same content in both views, including everything inherited
+    /// through its parent chain — a change to any ancestor also counts
+    /// as a change to this set.
+    pub fn set_chain_eq(&self, other: &PoView, name: &str) -> bool {
+        self.sets.contains_key(name)
+            && other.sets.contains_key(name)
+            && self.chain_content(name) == other.chain_content(name)
+    }
+
+    /// The predicates and identifiers of the chain from the root down
+    /// to `leaf`, in chain order.
+    fn chain_content(&self, leaf: &str) -> (Vec<&PoPredicate>, BTreeMap<&str, &str>) {
+        let mut predicates = Vec::new();
+        let mut identifiers = BTreeMap::new();
+        for set_name in self.chain_root_first(Some(leaf)) {
+            if let Some(set) = self.sets.get(set_name) {
+                predicates.extend(set.predicates.iter());
+                for (name, ty) in &set.identifiers {
+                    identifiers.insert(name.as_str(), ty.as_str());
+                }
+            }
+        }
+        (predicates, identifiers)
+    }
+
     /// The set names from the root down to `leaf`, inclusive.
     fn chain_root_first<'a>(&'a self, leaf: Option<&'a str>) -> Vec<&'a str> {
         let mut chain = Vec::new();
@@ -269,6 +323,9 @@ fn handle_element(
     e: &BytesStart<'_>,
 ) -> Result<()> {
     match e.name().as_ref() {
+        b"org.eventb.core.poFile" if depth == 0 => {
+            view.stamp = string_attr(e, b"poStamp")?;
+        }
         b"org.eventb.core.poPredicateSet" if depth == 1 => {
             let name = string_attr(e, b"name")?.unwrap_or_default();
             let parent = string_attr(e, b"parentSet")?
@@ -278,6 +335,7 @@ fn handle_element(
                 name.clone(),
                 PoSet {
                     parent,
+                    stamp: string_attr(e, b"poStamp")?,
                     ..PoSet::default()
                 },
             );
@@ -288,6 +346,7 @@ fn handle_element(
             let sequent = PoSequent {
                 description: string_attr(e, b"poDesc")?.unwrap_or_default(),
                 accurate: string_attr(e, b"accurate")?.as_deref() == Some("true"),
+                stamp: string_attr(e, b"poStamp")?,
                 ..PoSequent::default()
             };
             view.sequents.insert(name.clone(), sequent);
