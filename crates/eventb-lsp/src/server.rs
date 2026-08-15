@@ -430,7 +430,10 @@ pub struct RossiLanguageServer {
     /// debounced paths.
     analyzer: Analyzer,
     /// Single-flight guard for the Open in Rodin flow: a second invocation
-    /// while one runs (builds, registers, launches) is refused, not queued.
+    /// while one runs (builds, registers, launches, and then waits for the
+    /// launched Rodin to take the workspace lock) is refused, not queued.
+    /// The boot wait is what keeps a second lens click during Rodin's
+    /// startup from launching a duplicate instance.
     rodin_open_in_flight: Arc<std::sync::atomic::AtomicBool>,
     /// Whether the client advertised `window.workDoneProgress` support.
     supports_work_done_progress: std::sync::atomic::AtomicBool,

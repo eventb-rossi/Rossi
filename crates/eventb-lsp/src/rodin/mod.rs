@@ -18,6 +18,7 @@ pub mod sync;
 
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
+use std::time::Duration;
 
 use crate::lsp_types::*;
 use tower_lsp::Client;
@@ -367,6 +368,35 @@ pub async fn open_in_rodin(client: Client, request: OpenRequest) {
             format!("Opened {project_name} in Rodin."),
         )
         .await;
+
+    // The caller's single-flight guard lives for this future: keep it held
+    // until the launched Rodin actually takes the workspace lock. Between
+    // the spawn above and lock acquisition the lock probe reads `Free`, so
+    // a second lens click during Rodin's boot would otherwise launch a
+    // duplicate instance (doomed to Eclipse's "workspace in use" dialog).
+    wait_for_workspace_lock(&request.workspace_dir, BOOT_LOCK_TIMEOUT).await;
+}
+
+/// How long a just-launched Rodin gets to take the workspace lock before
+/// [`open_in_rodin`] stops waiting for it (and with that stops holding the
+/// single-flight guard). Generous — cold Eclipse starts are slow — but
+/// bounded, so a Rodin that failed to come up re-enables the lens.
+const BOOT_LOCK_TIMEOUT: Duration = Duration::from_secs(60);
+
+/// Poll the workspace lock until it leaves [`lock::LockState::Free`] or the
+/// timeout passes. `Held` means the launched instance owns the workspace;
+/// `Unknown` (Windows, probe failures) ends the wait too — the probe cannot
+/// observe more there, and on Windows the `.lock` file appearing is itself
+/// the boot signal that moves the state off `Free`.
+async fn wait_for_workspace_lock(workspace_dir: &Path, timeout: Duration) {
+    const POLL: Duration = Duration::from_secs(1);
+    let deadline = tokio::time::Instant::now() + timeout;
+    while lock::workspace_lock_state(workspace_dir) == lock::LockState::Free {
+        if tokio::time::Instant::now() >= deadline {
+            return;
+        }
+        tokio::time::sleep(POLL).await;
+    }
 }
 
 /// `$/progress` reporting against a client-acknowledged token, degrading to
@@ -502,6 +532,13 @@ mod tests {
             default_workspace_dir(Path::new("/proj")),
             PathBuf::from("/proj/.rossi/rodin")
         );
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn boot_lock_wait_is_bounded_on_a_free_workspace() {
+        // A workspace nothing ever locks stays `Free`; the wait must end at
+        // the deadline instead of holding the single-flight guard forever.
+        wait_for_workspace_lock(Path::new("/nonexistent/rossi-boot-ws"), Duration::ZERO).await;
     }
 
     #[test]
