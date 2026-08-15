@@ -5,11 +5,14 @@
 //!
 //! * `.bum` / `.buc` and `.project` are copied byte-exact from the input.
 //! * `.bcm` / `.bcc` from the input are **dropped** and replaced with ours.
-//! * `.bpo` / `.bps` from the input are **dropped** and replaced with the
-//!   generated obligations and their fresh (unattempted) statuses.
-//! * `.bpr` (proofs) are **dropped** without replacement — they reference
-//!   checked content we just rebuilt, and stale ones can confuse
-//!   downstream tools.
+//! * `.bpo` / `.bps` from the input are **replaced** by the generated
+//!   obligations reconciled with them (see [`crate::pog::reconcile`]):
+//!   unchanged obligations keep their stamps and status rows, changed
+//!   ones are marked by a fresh stamp, and an unchanged component's
+//!   files come out byte-identical.
+//! * `.bpr` (proofs) are copied byte-exact — proofs are user data that
+//!   must survive regeneration; proofs of vanished obligations simply
+//!   become orphans.
 //! * Everything else (iUML-B `.cd` / `.smd`, LaTeX exports, etc.) is copied
 //!   as-is so the archive layout matches the original.
 //!
@@ -48,13 +51,16 @@ pub fn repackage_zip_bytes(
 /// prefix (e.g. `"MyProject/"`, or `""` for a flat archive) with the
 /// [`BuildResult`] to place under it. Returns a fresh zip's bytes:
 ///
-/// * All entries from the input *except* `.bcm` / `.bcc` / `.bpr` / `.bpo` / `.bps`
-///   are copied byte-exact (so each project's `.bum`/`.buc`/`.project` and any
-///   sibling-project directory — e.g. a source-only dir with no components —
-///   are preserved untouched).
-/// * One entry per [`crate::ScFile`] is written at `format!("{prefix}{filename}")`.
-///   Output entries are keyed by prefix + filename, so the same component
-///   basename appearing in several sub-projects never overwrites another.
+/// * All entries from the input *except* `.bcm` / `.bcc` / `.bpo` / `.bps`
+///   are copied byte-exact (so each project's `.bum`/`.buc`/`.project`, its
+///   `.bpr` proofs, and any sibling-project directory — e.g. a source-only
+///   dir with no components — are preserved untouched).
+/// * One entry per [`crate::ScFile`] is written at `format!("{prefix}{filename}")`,
+///   with each `.bpo` / `.bps` pair first reconciled against the input's
+///   entry of the same name so unchanged obligations keep their stamps and
+///   statuses. Output entries are keyed by prefix + filename, so the same
+///   component basename appearing in several sub-projects never overwrites
+///   another.
 ///
 /// `builds` is taken as an iterator of `(prefix, build_result)` borrows so
 /// callers can pass `results.iter().map(...)` without materializing an adapter
@@ -84,9 +90,20 @@ fn repackage_archive<'a, R: Read + Seek>(
         .map_err(zip_to_io)?;
     let options = SimpleFileOptions::default().compression_method(zip::CompressionMethod::Deflated);
 
+    // The previous `.bpo` / `.bps` contents, for reconciling the
+    // generated files against (unreadable entries count as absent).
+    let mut previous = std::collections::HashMap::new();
+
     for i in 0..archive.len() {
-        let entry = archive.by_index(i).map_err(zip_to_io)?;
+        let mut entry = archive.by_index(i).map_err(zip_to_io)?;
         if !keep_input_entry(entry.name()) {
+            let name = entry.name().to_string();
+            if name.ends_with(".bpo") || name.ends_with(".bps") {
+                let mut text = String::new();
+                if entry.read_to_string(&mut text).is_ok() {
+                    previous.insert(name, text);
+                }
+            }
             continue;
         }
         // raw_copy_file marks directory Unix modes as regular files.
@@ -107,7 +124,11 @@ fn repackage_archive<'a, R: Read + Seek>(
     }
 
     for (prefix, build_result) in builds {
-        for file in &build_result.files {
+        let mut files = build_result.files.clone();
+        crate::pog::reconcile::reconcile_build_files(&mut files, |name| {
+            previous.get(&format!("{prefix}{name}")).cloned()
+        });
+        for file in &files {
             let path = format!("{prefix}{}", file.filename);
             writer.start_file(&path, options).map_err(zip_to_io)?;
             writer.write_all(file.contents.as_bytes())?;
@@ -130,7 +151,6 @@ pub fn repackage_zip_file<P: AsRef<std::path::Path>>(
 fn keep_input_entry(name: &str) -> bool {
     let drop = name.ends_with(".bcm")
         || name.ends_with(".bcc")
-        || name.ends_with(".bpr")
         || name.ends_with(".bpo")
         || name.ends_with(".bps");
     !drop
@@ -261,8 +281,40 @@ mod tests {
         );
     }
 
+    /// A generated `.bpo` with one sequent, stamped `stamp` throughout.
+    fn bpo(stamp: &str) -> String {
+        format!(
+            r#"<?xml version="1.0" encoding="UTF-8" standalone="no"?>
+<org.eventb.core.poFile org.eventb.core.poStamp="{stamp}">
+<org.eventb.core.poPredicateSet name="ABSHYP" org.eventb.core.poStamp="{stamp}">
+<org.eventb.core.poIdentifier name="x" org.eventb.core.type="ℤ"/>
+</org.eventb.core.poPredicateSet>
+<org.eventb.core.poSequent name="evt/inv1/INV" org.eventb.core.accurate="true" org.eventb.core.poDesc="Invariant  preservation" org.eventb.core.poStamp="{stamp}">
+<org.eventb.core.poPredicateSet name="SEQHYP" org.eventb.core.parentSet="M.bpo|org.eventb.core.poFile#M|org.eventb.core.poPredicateSet#ABSHYP"/>
+<org.eventb.core.poPredicate name="SEQHYQ" org.eventb.core.predicate="x=0"/>
+</org.eventb.core.poSequent>
+</org.eventb.core.poFile>
+"#
+        )
+    }
+
+    /// A `.bps` with one row for the sequent in [`bpo`].
+    fn bps(confidence: &str) -> String {
+        format!(
+            "<?xml version=\"1.0\" encoding=\"UTF-8\" standalone=\"no\"?>\n\
+             <org.eventb.core.psFile>\n\
+             <org.eventb.core.psStatus name=\"evt/inv1/INV\" org.eventb.core.confidence=\"{confidence}\" org.eventb.core.poStamp=\"0\" org.eventb.core.psManual=\"false\"/>\n\
+             </org.eventb.core.psFile>\n"
+        )
+    }
+
     #[test]
-    fn drops_old_bcm_and_bcc_and_proofs_but_keeps_sources() {
+    fn replaces_checked_files_and_preserves_proofs() {
+        // The old obligations are semantically identical to the newly
+        // generated ones but carry non-zero stamps and a discharged
+        // status; GONE is a component that no longer exists.
+        let old_bpo = bpo("3");
+        let old_bps = bps("1000");
         let input = make_zip(&[
             ("m/.project", b"<project/>"),
             ("m/M.bum", b"<m/>"),
@@ -270,8 +322,11 @@ mod tests {
             ("m/M.bcm", b"OLD"),
             ("m/C.bcc", b"OLD"),
             ("m/M.bpr", b"OLD-PROOF"),
-            ("m/M.bpo", b"OLD-PROOF"),
-            ("m/M.bps", b"OLD-PROOF"),
+            ("m/M.bpo", old_bpo.as_bytes()),
+            ("m/M.bps", old_bps.as_bytes()),
+            ("m/GONE.bpo", b"<gone/>"),
+            ("m/GONE.bps", b"<gone/>"),
+            ("m/GONE.bpr", b"GONE-PROOF"),
             ("m/extras/notes.tex", b"% notes"),
         ]);
         let br = BuildResult {
@@ -286,6 +341,16 @@ mod tests {
                     contents: "NEW-BCC".into(),
                     accurate: true,
                 },
+                ScFile {
+                    filename: "M.bpo".into(),
+                    contents: bpo("0"),
+                    accurate: true,
+                },
+                ScFile {
+                    filename: "M.bps".into(),
+                    contents: bps("-99"),
+                    accurate: true,
+                },
             ],
             diagnostics: vec![],
         };
@@ -297,15 +362,22 @@ mod tests {
         assert!(names.contains(&"m/C.buc".to_string()));
         assert!(names.contains(&"m/.project".to_string()));
         assert!(names.contains(&"m/extras/notes.tex".to_string()));
-        assert!(names.contains(&"m/M.bcm".to_string()));
-        assert!(names.contains(&"m/C.bcc".to_string()));
-        assert!(!names.iter().any(|n| n.ends_with(".bpr")));
-        assert!(!names.iter().any(|n| n.ends_with(".bpo")));
-        assert!(!names.iter().any(|n| n.ends_with(".bps")));
-
         assert_eq!(read_entry(&out, "m/M.bcm"), b"NEW-BCM");
         assert_eq!(read_entry(&out, "m/C.bcc"), b"NEW-BCC");
         assert_eq!(read_entry(&out, "m/M.bum"), b"<m/>");
+
+        // Proofs are copied byte-exact, even for vanished components.
+        assert_eq!(read_entry(&out, "m/M.bpr"), b"OLD-PROOF");
+        assert_eq!(read_entry(&out, "m/GONE.bpr"), b"GONE-PROOF");
+
+        // The unchanged obligations come out byte-identical to the old
+        // files: stamps and the discharged status survive the rebuild.
+        assert_eq!(read_entry(&out, "m/M.bpo"), old_bpo.as_bytes());
+        assert_eq!(read_entry(&out, "m/M.bps"), old_bps.as_bytes());
+
+        // A vanished component's derived files are gone.
+        assert!(!names.iter().any(|n| n == "m/GONE.bpo"));
+        assert!(!names.iter().any(|n| n == "m/GONE.bps"));
     }
 
     #[test]
@@ -340,22 +412,54 @@ mod tests {
     #[test]
     fn multi_project_keys_outputs_by_prefix_not_filename() {
         // Two sibling projects sharing the SAME component filename — the case
-        // the old single-prefix repack collapsed into one entry.
+        // the old single-prefix repack collapsed into one entry. Each also
+        // carries its own previous proof statuses.
+        let bps_a = bps("777");
+        let bps_b = bps("888");
         let input = make_zip(&[
             ("A/M0.bum", b"<a/>"),
             ("A/M0.bcm", b"OLD-A"),
+            ("A/M0.bpo", bpo("1").as_bytes()),
+            ("A/M0.bps", bps_a.as_bytes()),
             ("B/M0.bum", b"<b/>"),
             ("B/M0.bcm", b"OLD-B"),
+            ("B/M0.bpo", bpo("2").as_bytes()),
+            ("B/M0.bps", bps_b.as_bytes()),
         ]);
-        let a = one_file("M0.bcm", "NEW-A");
-        let b = one_file("M0.bcm", "NEW-B");
+        let build = |bcm: &str| BuildResult {
+            files: vec![
+                ScFile {
+                    filename: "M0.bcm".into(),
+                    contents: bcm.into(),
+                    accurate: true,
+                },
+                ScFile {
+                    filename: "M0.bpo".into(),
+                    contents: bpo("0"),
+                    accurate: true,
+                },
+                ScFile {
+                    filename: "M0.bps".into(),
+                    contents: bps("-99"),
+                    accurate: true,
+                },
+            ],
+            diagnostics: vec![],
+        };
+        let a = build("NEW-A");
+        let b = build("NEW-B");
         let out = repackage_zip_bytes_multi(&input, [("A/", &a), ("B/", &b)]).unwrap();
 
-        // Each project's output lands under its own dir with its own bytes.
+        // Each project's output lands under its own dir with its own bytes,
+        // reconciled against its own previous state.
         assert_eq!(read_entry(&out, "A/M0.bcm"), b"NEW-A");
         assert_eq!(read_entry(&out, "B/M0.bcm"), b"NEW-B");
         assert_eq!(read_entry(&out, "A/M0.bum"), b"<a/>");
         assert_eq!(read_entry(&out, "B/M0.bum"), b"<b/>");
+        assert_eq!(read_entry(&out, "A/M0.bpo"), bpo("1").as_bytes());
+        assert_eq!(read_entry(&out, "B/M0.bpo"), bpo("2").as_bytes());
+        assert_eq!(read_entry(&out, "A/M0.bps"), bps_a.as_bytes());
+        assert_eq!(read_entry(&out, "B/M0.bps"), bps_b.as_bytes());
     }
 
     #[test]

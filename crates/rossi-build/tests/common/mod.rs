@@ -84,10 +84,10 @@ pub fn is_executable_file(path: &Path) -> bool {
 }
 
 /// Regenerate a corpus model: read the source archive, static-check it with
-/// rossi, and write a repackaged archive (original sources + our freshly
-/// generated `.bcc`/`.bcm`, proof artifacts dropped) to `out`. This is the
-/// "drop the build files and regenerate them with rossi" step shared by every
-/// corpus harness.
+/// rossi, and write a repackaged archive (original sources and `.bpr` proofs
+/// plus our freshly generated `.bcc`/`.bcm` and reconciled `.bpo`/`.bps`) to
+/// `out`. This is the "regenerate the build files with rossi" step shared by
+/// every corpus harness.
 pub fn regen_one(zip: &Path, out: &Path) -> Result<(), Box<dyn std::error::Error>> {
     let bytes = std::fs::read(zip)?;
     let fallback = zip
