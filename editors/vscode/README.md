@@ -137,7 +137,8 @@ This extension contributes the following settings:
 
 - `rossi.languageServer.path`: Path to the Event-B language server executable (default: searches in PATH)
 - `rossi.tool.path`: Path to the Rossi CLI executable used for import, export, build, validation, and conversion commands (default: `rossi`)
-- `rossi.rodin.path`: Path to the Rodin IDE executable, macOS `.app` bundle, or app name used by `Open in Rodin` (defaults: `/Applications/Rodin.app` on macOS, `rodin.exe` on Windows, `rodin` on Linux)
+- `rossi.rodin.path`: Path to the Rodin IDE executable, macOS `.app` bundle, or app name used by the `Open in Rodin` code lens (defaults: `/Applications/Rodin.app` on macOS, `rodin.exe` on Windows, `rodin` on Linux)
+- `rossi.rodin.workspace`: Directory used as the shared Rodin workspace by the `Open in Rodin` code lens; proofs made in Rodin persist there (default: `.rossi/rodin` inside the workspace folder)
 - `rossi.format.useUnicode`: Use Unicode operators (∧, ∨, ⇒, ∈) instead of ASCII (/\, \/, =>, :) when formatting (default: `true`)
 - `rossi.format.indentation`: Indentation string (spaces or tabs) to use when formatting (default: `"    "` - 4 spaces)
 - `rossi.diagnostics.enabled`: Enable real-time diagnostics for syntax errors (default: `true`)
@@ -245,7 +246,6 @@ Open the Command Palette and run:
 - `Rossi: Import Rodin Project`
 - `Rossi: Export Current File to Rodin ZIP`
 - `Rossi: Export Workspace to Rodin ZIP`
-- `Rossi: Open in Rodin`
 - `Rossi: Build Checked Rodin ZIP`
 - `Rossi: Validate Current File`
 - `Rossi: Validate Workspace`
@@ -253,7 +253,19 @@ Open the Command Palette and run:
 - `Rossi: Convert Current File to ASCII`
 - `Rossi: Check Toolchain`
 
-Rodin and conversion commands shell out to the configured `rossi.tool.path`. `Open in Rodin` exports a temporary Rodin project, registers it in a temporary workspace through Rodin’s headless Ant runner, and launches the configured `rossi.rodin.path`; edits made in Rodin are not synced back to `.eventb` files.
+Rodin and conversion commands shell out to the configured `rossi.tool.path`.
+
+### Open in Rodin
+
+An **Open in Rodin** code lens appears above every `MACHINE`/`CONTEXT` header
+(provided by the language server, so it works the same in other editors). It
+builds the file's directory into a persistent Rodin workspace — `.rossi/rodin`
+next to your sources by default (add `.rossi/` to `.gitignore`); override with
+`rossi.rodin.workspace` — and launches the Rodin IDE configured via
+`rossi.rodin.path` on it. Because the workspace persists, proofs made in Rodin
+live alongside the generated proof obligations and survive rebuilds: clicking
+the lens again after editing the model reconciles the regenerated obligations
+with the recorded proof state, so unchanged obligations keep their proofs.
 
 ## Contributing
 
