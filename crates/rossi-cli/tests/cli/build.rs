@@ -541,6 +541,36 @@ fn build_directory_output_preserves_proof_state() {
 }
 
 #[test]
+fn build_ignores_dot_directories_when_classifying_input() {
+    // A `.rossi/rodin` workspace (or any dot-directory) inside a source tree
+    // holds generated Rodin XML; if the walker saw its `.bum` files, the whole
+    // directory would be misread as a Rodin project. The hidden `.bum` here is
+    // deliberately invalid so taking that path fails loudly.
+    let tmp = tempdir_unique("rossi-cli-build-dot-dirs");
+    std::fs::write(tmp.join("main_ctx.eventb"), "CONTEXT main_ctx\nEND\n").unwrap();
+    let hidden = tmp.join(".rossi").join("rodin").join("proj");
+    std::fs::create_dir_all(&hidden).unwrap();
+    std::fs::write(hidden.join("Bogus.bum"), "not xml").unwrap();
+    std::fs::write(hidden.join("hidden_ctx.eventb"), "CONTEXT hidden_ctx\nEND\n").unwrap();
+    let out_zip = tmp.join("out.zip");
+    build_zip(&tmp, &out_zip);
+
+    let names = zip_entry_names(&out_zip);
+    assert!(
+        names.iter().any(|n| n.contains("main_ctx")),
+        "zip entries: {names:?}"
+    );
+    assert!(
+        names
+            .iter()
+            .all(|n| !n.contains("hidden_ctx") && !n.contains("Bogus")),
+        "dot-directory contents must not be built: {names:?}"
+    );
+
+    std::fs::remove_dir_all(&tmp).ok();
+}
+
+#[test]
 fn build_directory_to_zip_carries_proofs_and_statuses() {
     // Directory input with .zip output: the source dir's .bpr proofs
     // land in the archive byte-exact and its .bpo/.bps reconcile in.
