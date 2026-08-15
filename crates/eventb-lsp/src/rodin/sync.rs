@@ -141,6 +141,23 @@ impl RodinSyncManager {
             // Initial scan: surface proof state Rodin left from earlier runs.
             refresh(&task_workspace, &analyzer, None).await;
 
+            // Catch up on model edits Rodin saved while no server was
+            // watching: run every manifest-known XML through the same merge
+            // flow the watcher events use. For clean projects the semantic
+            // -identity check reduces this to a no-op; a genuinely diverged
+            // component merges its whole accumulated change (the flow is
+            // state-based, not event-based). Without this pass, such an edit
+            // would sit unmerged until the next rebuild overwrote it. Builds
+            // already writing into the workspace are waited out first — the
+            // same deferral the event loop applies.
+            while written.building() {
+                tokio::time::sleep(DEBOUNCE).await;
+            }
+            let batch = startup_model_batch(&task_workspace);
+            if !batch.is_empty() {
+                sync_model_edits(&task_workspace, batch, &analyzer).await;
+            }
+
             let mut pending: BTreeSet<PathBuf> = BTreeSet::new();
             loop {
                 tokio::select! {
@@ -228,6 +245,38 @@ fn classify_batch(
         }
     }
     changes
+}
+
+/// Every manifest-known component XML file currently present in the
+/// workspace's projects, shaped like a watcher batch — the startup catch-up
+/// input. Projects without a base manifest (never built by this server) are
+/// skipped: there is no ancestor to merge against. XML files the manifest
+/// does not know (components authored in Rodin) are skipped for the same
+/// reason, and files the manifest knows but Rodin deleted are skipped
+/// because deletions are deliberately not synced.
+fn startup_model_batch(workspace_dir: &Path) -> Vec<(PathBuf, String)> {
+    let mut batch = Vec::new();
+    let Ok(entries) = std::fs::read_dir(workspace_dir) else {
+        return batch;
+    };
+    for entry in entries.flatten() {
+        let project_dir = entry.path();
+        let Some(name) = project_dir.file_name().and_then(|n| n.to_str()) else {
+            continue;
+        };
+        if name.starts_with('.') || !project_dir.is_dir() {
+            continue;
+        }
+        let Some(manifest) = super::model_sync::load_manifest(workspace_dir, name) else {
+            continue;
+        };
+        for xml_name in manifest.files.values().flatten() {
+            if project_dir.join(xml_name).is_file() {
+                batch.push((project_dir.clone(), xml_name.clone()));
+            }
+        }
+    }
+    batch
 }
 
 /// A path whose on-disk content still hashes to what the server last wrote
@@ -762,6 +811,39 @@ mod tests {
             ProjectProofStatus::default(),
         )])));
         assert!(overlay.is_empty());
+    }
+
+    #[test]
+    fn startup_batch_covers_only_manifest_known_files_on_disk() {
+        let ws = TempDir::new("rossi-rodin-sync-startup");
+        // A built project: manifest knows base_ctx.buc and gone.bum, but only
+        // the former is on disk (the latter was deleted in Rodin).
+        let project = ws.path().join("proj");
+        std::fs::create_dir_all(&project).unwrap();
+        std::fs::write(project.join("base_ctx.buc"), "<contextFile/>").unwrap();
+        std::fs::write(project.join("rodin_authored.bum"), "<machineFile/>").unwrap();
+        super::super::model_sync::write_base(
+            ws.path(),
+            "proj",
+            Path::new("/src"),
+            &[super::super::model_sync::SourceFileRecord {
+                relative: PathBuf::from("model.eventb"),
+                text: "CONTEXT base_ctx\nEND\n".to_string(),
+                component_files: vec!["base_ctx.buc".to_string(), "gone.bum".to_string()],
+            }],
+        )
+        .unwrap();
+        // A directory without a manifest (never built by this server) and a
+        // hidden directory contribute nothing.
+        let foreign = ws.path().join("foreign");
+        std::fs::create_dir_all(&foreign).unwrap();
+        std::fs::write(foreign.join("M0.bum"), "<machineFile/>").unwrap();
+        std::fs::create_dir_all(ws.path().join(".metadata")).unwrap();
+
+        assert_eq!(
+            startup_model_batch(ws.path()),
+            vec![(project, "base_ctx.buc".to_string())]
+        );
     }
 
     #[test]

@@ -164,8 +164,9 @@ pub struct RodinConfig {
     /// project (Rodin's seeded auto-refresh then picks the edit up within a
     /// few seconds), and edits saved in Rodin flow back into the `.eventb`
     /// sources via the workspace watcher (three-way model merge, proof
-    /// status refresh). On by default; turning it off also stops the
-    /// watcher.
+    /// status refresh). Model edits Rodin saved while no server was running
+    /// are caught up when the watcher starts. On by default; turning it off
+    /// also stops the watcher.
     #[serde(default = "default_sync")]
     pub sync: bool,
 }
