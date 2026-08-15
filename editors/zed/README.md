@@ -22,6 +22,12 @@ grammar (see the Grammar note below); everything else is provided by
 Zed can also overlay the server's **semantic tokens** on top of the tree-sitter
 highlighting for richer, meaning-aware colors — see Configuration.
 
+> **Not available in Zed:** the **Open in Rodin** feature other editors get as
+> a CodeLens on MACHINE/CONTEXT declarations. Zed does not render LSP CodeLens,
+> so the lens (and with it the one-click Rodin launch) has no surface here. The
+> `rossi.rodin.*` settings below are still forwarded to the server, so the
+> feature lights up without reconfiguration once Zed gains CodeLens support.
+
 ## Prerequisites
 
 The extension expects the language server (`eventb-language-server`) on your
@@ -73,7 +79,8 @@ Add to your Zed `settings.json` (per-language keys live under
         "rossi": {
           "format": { "useUnicode": true, "indentation": "    " },
           "diagnostics": { "enabled": true },
-          "completion": { "enabled": true }
+          "completion": { "enabled": true },
+          "rodin": { "path": "", "workspace": "" }
         }
       }
     }
@@ -97,7 +104,7 @@ What each per-language key buys you (all default to `"off"` in Zed):
   `binary.arguments`).
 - **Server options.** Everything under `lsp."eventb-language-server".settings`
   is forwarded to the server. Nest options under `rossi` as shown above; the
-  available options (`format`, `diagnostics`, `completion`, `trace`)
+  available options (`format`, `diagnostics`, `completion`, `rodin`, `trace`)
   and their defaults match the Neovim integration
   (`editors/neovim/lua/lspconfig/eventb.lua`).
 

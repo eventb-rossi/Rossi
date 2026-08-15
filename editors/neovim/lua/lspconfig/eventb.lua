@@ -12,7 +12,25 @@ local util = require('lspconfig.util')
 -- nvim-lspconfig merges a user-supplied on_attach *after* default_config's, so
 -- both run and nothing here is lost.
 local function default_on_attach(client, bufnr)
+  -- Keep CodeLens ("Open in Rodin" on MACHINE/CONTEXT declarations) fresh.
+  -- Guarded so we never poke a server build that lacks the capability.
+  if client.server_capabilities.codeLensProvider then
+    local group = vim.api.nvim_create_augroup('RossiCodeLens', { clear = false })
+    vim.api.nvim_create_autocmd({ 'BufEnter', 'CursorHold', 'InsertLeave' }, {
+      group = group,
+      buffer = bufnr,
+      callback = function()
+        vim.lsp.codelens.refresh({ bufnr = bufnr })
+      end,
+    })
+    -- Populate lenses immediately on attach rather than waiting for the first event.
+    vim.lsp.codelens.refresh({ bufnr = bufnr })
+  end
+
   local opts = { noremap = true, silent = true, buffer = bufnr }
+
+  -- Run the CodeLens under the cursor (e.g. open the model in Rodin).
+  vim.keymap.set('n', '<leader>cl', vim.lsp.codelens.run, opts)
 
   -- Expand the LSP selection range (textDocument/selectionRange, smart
   -- expand/shrink). Use the built-in when this Neovim ships it, otherwise fall
@@ -51,8 +69,9 @@ return {
     -- File types that this server handles
     filetypes = { 'eventb' },
 
-    -- Pinned defaults: selection-range expand + Rossi keymaps. A user
-    -- `on_attach` passed to setup{} composes with (runs after) this one.
+    -- Pinned defaults: CodeLens refresh autocmd + selection-range expand +
+    -- Rossi keymaps. A user `on_attach` passed to setup{} composes with
+    -- (runs after) this one.
     on_attach = default_on_attach,
 
     -- Root directory detection
@@ -90,6 +109,14 @@ return {
           -- Enable/disable completion
           enabled = true,
         },
+
+        -- Rodin integration ("Open in Rodin" code lens)
+        rodin = {
+          -- Rodin executable, macOS .app bundle, or app name; "" = platform default
+          path = "",
+          -- Shared Rodin workspace directory; "" = <root>/.rossi/rodin
+          workspace = "",
+        },
       },
     },
   },
@@ -114,10 +141,15 @@ Rossi Language Server provides language support for Event-B formal modeling:
 - Folding ranges
 - Selection range (smart expand/shrink, `<leader>v`)
 - Semantic tokens
+- "Open in Rodin" code lens (builds into a persistent `.rossi/rodin` Rodin
+  workspace and launches the Rodin IDE; proofs made there survive rebuilds)
 
 **Pinned defaults (default_config.on_attach):**
 
 When this config is set up, every Event-B buffer automatically gets:
+- A CodeLens refresh autocmd (BufEnter/CursorHold/InsertLeave), guarded on the
+  server advertising codeLensProvider, plus `<leader>cl` to run the lens under
+  the cursor (e.g. open the model in Rodin).
 - `<leader>v` to expand the LSP selection range (textDocument/selectionRange).
 - The :Rossi* user commands (from lua/eventb/commands.lua) and `<leader>ru` /
   `<leader>ra` / `<leader>rv` for convert-to-unicode / convert-to-ascii /
