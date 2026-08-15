@@ -73,7 +73,10 @@ fn mac_rodin_app(rodin_path: &str, platform: Platform) -> Option<MacRodinApp> {
         return Some(MacRodinApp::Bundle(rodin_path.to_string()));
     }
     if !has_path_separator(rodin_path)
-        && rodin_path.chars().next().is_some_and(|c| c.is_ascii_uppercase())
+        && rodin_path
+            .chars()
+            .next()
+            .is_some_and(|c| c.is_ascii_uppercase())
     {
         return Some(MacRodinApp::Name(rodin_path.to_string()));
     }
@@ -122,8 +125,12 @@ fn mac_app_executable(app_path: &Path) -> Result<PathBuf, String> {
     if preferred.is_file() {
         return Ok(preferred);
     }
-    let entries = std::fs::read_dir(&executable_dir)
-        .map_err(|e| format!("cannot find Rodin executable inside {}: {e}", app_path.display()))?;
+    let entries = std::fs::read_dir(&executable_dir).map_err(|e| {
+        format!(
+            "cannot find Rodin executable inside {}: {e}",
+            app_path.display()
+        )
+    })?;
     let mut files: Vec<PathBuf> = entries
         .flatten()
         .map(|entry| entry.path())
@@ -153,10 +160,15 @@ pub fn launch_command(
         ),
         Some(MacRodinApp::Name(name)) => (
             "open".to_string(),
-            ["-n".to_string(), "-a".to_string(), name, "--args".to_string()]
-                .into_iter()
-                .chain(data_args)
-                .collect(),
+            [
+                "-n".to_string(),
+                "-a".to_string(),
+                name,
+                "--args".to_string(),
+            ]
+            .into_iter()
+            .chain(data_args)
+            .collect(),
         ),
         None => (rodin_path.to_string(), data_args.to_vec()),
     }
@@ -246,8 +258,12 @@ pub async fn register_project(
     project_dir: &Path,
 ) -> Result<(), String> {
     let importer_dir = workspace_dir.join(IMPORTER_DIR_NAME);
-    let build_file = write_importer_files(&importer_dir)
-        .map_err(|e| format!("cannot write importer files into {}: {e}", importer_dir.display()))?;
+    let build_file = write_importer_files(&importer_dir).map_err(|e| {
+        format!(
+            "cannot write importer files into {}: {e}",
+            importer_dir.display()
+        )
+    })?;
 
     let result = tokio::process::Command::new(ant_runner)
         .arg("-nosplash")

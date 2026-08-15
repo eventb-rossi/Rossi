@@ -11,7 +11,9 @@
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 
-use rossi::{NamedComponent, component_filename, parse_components, to_zip, write_project_directory};
+use rossi::{
+    NamedComponent, component_filename, parse_components, to_zip, write_project_directory,
+};
 use rossi_build::pog::reconcile::reconcile_build_files;
 use rossi_build::project::discover_projects;
 use rossi_build::{Severity, build};
@@ -84,10 +86,13 @@ pub fn build_rodin_project(
     project_dir: &Path,
     project_name: &str,
 ) -> Result<BuildOutcome, String> {
-    let sources =
-        collect_source_files(source_dir).map_err(|e| format!("cannot scan {}: {e}", source_dir.display()))?;
+    let sources = collect_source_files(source_dir)
+        .map_err(|e| format!("cannot scan {}: {e}", source_dir.display()))?;
     if sources.is_empty() {
-        return Err(format!("no Event-B files found in {}", source_dir.display()));
+        return Err(format!(
+            "no Event-B files found in {}",
+            source_dir.display()
+        ));
     }
 
     let mut components: Vec<NamedComponent> = Vec::new();
@@ -95,8 +100,8 @@ pub fn build_rodin_project(
     for path in &sources {
         let text = read_with_overlay(path, overlay)
             .map_err(|e| format!("cannot read {}: {e}", path.display()))?;
-        let parsed =
-            parse_components(&text).map_err(|e| format!("failed to parse {}: {e}", path.display()))?;
+        let parsed = parse_components(&text)
+            .map_err(|e| format!("failed to parse {}: {e}", path.display()))?;
         let named: Vec<NamedComponent> = parsed
             .into_iter()
             .map(|component| NamedComponent {
@@ -105,10 +110,7 @@ pub fn build_rodin_project(
             })
             .collect();
         source_records.push(super::model_sync::SourceFileRecord {
-            relative: path
-                .strip_prefix(source_dir)
-                .unwrap_or(path)
-                .to_path_buf(),
+            relative: path.strip_prefix(source_dir).unwrap_or(path).to_path_buf(),
             text,
             component_files: named.iter().map(|nc| nc.filename.clone()).collect(),
         });
@@ -129,8 +131,8 @@ pub fn build_rodin_project(
     }
 
     let bytes = to_zip(&components).map_err(|e| format!("cannot serialize project: {e}"))?;
-    let projects =
-        discover_projects(&bytes, project_name).map_err(|e| format!("cannot assemble project: {e}"))?;
+    let projects = discover_projects(&bytes, project_name)
+        .map_err(|e| format!("cannot assemble project: {e}"))?;
     let Some(discovered) = projects.into_iter().next() else {
         return Err("no Event-B project could be assembled from the sources".to_string());
     };
