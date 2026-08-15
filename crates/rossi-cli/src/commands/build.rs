@@ -14,10 +14,11 @@ use std::process::ExitCode;
 
 use clap::Args;
 
+use rossi_build::pog::reconcile::reconcile_build_files;
 use rossi_build::project::discover_projects;
 use rossi_build::repack::repackage_zip_bytes_multi;
 use rossi_build::rodin_ids::RodinIds;
-use rossi_build::{BuildResult, Project, ProjectComponent, Severity, build};
+use rossi_build::{BuildResult, Project, ProjectComponent, ScFile, Severity, build};
 
 use rossi::{NamedComponent, to_zip};
 
@@ -29,9 +30,10 @@ pub struct BuildArgs {
     /// folder of `.eventb`/`.txt`), or an Event-B text / `.buc` / `.bum` file.
     pub input: PathBuf,
     /// Output path. If it ends in `.zip`, writes a repackaged archive
-    /// (sources + our generated `.bcc`/`.bcm` and `.bpo`/`.bps`; the
-    /// input's proof artifacts are dropped). Otherwise, treated as a
-    /// directory and loose files are written in.
+    /// (sources and `.bpr` proofs plus our generated `.bcc`/`.bcm` and
+    /// `.bpo`/`.bps`, reconciled with the input's so unchanged
+    /// obligations keep their stamps and statuses). Otherwise, treated
+    /// as a directory and loose files are written in.
     /// Defaults to `<input-stem>.regen.zip` next to the input.
     #[arg(short, long)]
     pub output: Option<PathBuf>,
@@ -352,7 +354,7 @@ fn write_dir(out_dir: &Path, outcome: &BuildOutcome) -> Result<(), Box<dyn std::
                     format!("duplicate loose output destination {}", relative.display()).into(),
                 );
             }
-            pending.push((relative, f.contents.as_str()));
+            pending.push((relative, f.contents.clone()));
         }
     }
 
@@ -379,10 +381,45 @@ fn write_dir(out_dir: &Path, outcome: &BuildOutcome) -> Result<(), Box<dyn std::
     visit_resolved_output_paths(out_dir, &canonical_root, &parents, &pending, |path| {
         destinations.push(path)
     })?;
+    reconcile_pending(&mut pending, &destinations);
     for ((_, contents), destination) in pending.iter().zip(destinations) {
         std::fs::write(destination, contents)?;
     }
     Ok(())
+}
+
+/// Reconcile each pending `.bpo` / `.bps` pair against the destination
+/// files it is about to overwrite, so proof stamps and statuses carry
+/// across rebuilds. Previous state comes from the destination — the
+/// files actually being replaced — which for loose output may differ
+/// from the input; `.bpr` files on disk are never touched. Unreadable
+/// or missing destinations count as absent.
+fn reconcile_pending(pending: &mut [(PathBuf, String)], destinations: &[PathBuf]) {
+    // Wrap each pending entry as an `ScFile` keyed by its relative path
+    // (path-prefixed, so sibling projects stay separate) and let
+    // `reconcile_build_files` do the `.bpo` / `.bps` pairing — one
+    // implementation of that rule, shared with the archive paths.
+    let destination_of: std::collections::HashMap<String, &PathBuf> = pending
+        .iter()
+        .zip(destinations)
+        .map(|((relative, _), destination)| (relative.to_string_lossy().into_owned(), destination))
+        .collect();
+    let mut files: Vec<ScFile> = pending
+        .iter_mut()
+        .map(|(relative, contents)| ScFile {
+            filename: relative.to_string_lossy().into_owned(),
+            contents: std::mem::take(contents),
+            accurate: true,
+        })
+        .collect();
+    reconcile_build_files(&mut files, |name| {
+        destination_of
+            .get(name)
+            .and_then(|destination| std::fs::read_to_string(destination).ok())
+    });
+    for ((_, contents), file) in pending.iter_mut().zip(files) {
+        *contents = file.contents;
+    }
 }
 
 /// Convert an archive prefix to the one directory component allowed for loose
@@ -417,7 +454,7 @@ fn visit_resolved_output_paths(
     out_dir: &Path,
     canonical_root: &Path,
     parents: &std::collections::BTreeSet<PathBuf>,
-    pending: &[(PathBuf, &str)],
+    pending: &[(PathBuf, String)],
     mut visit: impl FnMut(PathBuf),
 ) -> Result<(), Box<dyn std::error::Error>> {
     let mut resolved_parents = std::collections::BTreeMap::new();
@@ -501,11 +538,16 @@ fn resolve_output_parent(
     }
 }
 
-/// Emit a flat zip from `BuildResult` alone (no source archive to merge with).
+/// Emit a flat zip from `BuildResult` alone (no source archive to merge
+/// with). A project-directory input contributes its previous proof
+/// state: generated `.bpo` / `.bps` pairs are reconciled against the
+/// directory's files and its top-level `.bpr` proofs are copied in
+/// byte-exact.
 fn synthesize_flat_zip(
     input: &Path,
     result: &BuildResult,
 ) -> Result<Vec<u8>, Box<dyn std::error::Error>> {
+    use std::io::Write;
     use zip::write::{SimpleFileOptions, ZipWriter};
 
     let prefix = input
@@ -514,13 +556,38 @@ fn synthesize_flat_zip(
         .map(|s| format!("{s}/"))
         .unwrap_or_default();
 
+    // A directory input contributes its previous proof state: the
+    // generated pairs reconcile against its files, and its top-level
+    // `.bpr` proofs ride along byte-exact after the generated entries.
+    let mut files = result.files.clone();
+    let mut proofs: Vec<PathBuf> = Vec::new();
+    if input.is_dir() {
+        reconcile_build_files(&mut files, |name| {
+            std::fs::read_to_string(input.join(name)).ok()
+        });
+        proofs = std::fs::read_dir(input)?
+            .flatten()
+            .map(|entry| entry.path())
+            .filter(|path| {
+                path.extension().and_then(|s| s.to_str()) == Some("bpr") && path.is_file()
+            })
+            .collect();
+        proofs.sort();
+    }
+
     let mut cursor = std::io::Cursor::new(Vec::<u8>::new());
     let mut w = ZipWriter::new(&mut cursor);
     let opts = SimpleFileOptions::default().compression_method(zip::CompressionMethod::Deflated);
-    for f in &result.files {
+    for f in &files {
         w.start_file(format!("{prefix}{}", f.filename), opts)?;
-        use std::io::Write;
         w.write_all(f.contents.as_bytes())?;
+    }
+    for path in proofs {
+        let Some(filename) = path.file_name().and_then(|s| s.to_str()) else {
+            continue;
+        };
+        w.start_file(format!("{prefix}{filename}"), opts)?;
+        w.write_all(&std::fs::read(&path)?)?;
     }
     w.finish()?;
     Ok(cursor.into_inner())
