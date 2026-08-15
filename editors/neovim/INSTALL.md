@@ -377,6 +377,8 @@ The language server pins sensible defaults for the newer LSP features, so no
 extra setup is required to get them:
 
 - **Semantic tokens** — applied automatically once the client attaches.
+- **Code lens** — "Open in Rodin" on MACHINE/CONTEXT declarations; kept fresh
+  by the pinned refresh autocmd, run with `<leader>cl`.
 - **Selection range** — smart expand/shrink; bind `vim.lsp.buf.selection_range`.
 
 ---

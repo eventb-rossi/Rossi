@@ -41,6 +41,8 @@ This directory contains Neovim configuration for Event-B formal modeling, provid
 - **Signature Help**: Parameter hints for quantifiers and lambda
 - **Code Actions**: Quick fixes and refactorings
 - **Folding Ranges**: Collapse/expand code sections
+- **Open in Rodin**: Code lens on MACHINE/CONTEXT declarations that builds the
+  model into a persistent Rodin workspace and launches the Rodin IDE
 
 ## Quick Start
 
@@ -297,6 +299,21 @@ Highlighting is refined by the language server as you edit:
 Grow and shrink the selection along the syntax tree:
 - Expands from the symbol under the cursor outward (term → clause → section)
 - Drives `vim.lsp.buf.selection_range` and treesitter-style incremental selection
+
+### Open in Rodin
+
+Hand the model to the Rodin IDE without leaving Neovim:
+- A code lens appears on MACHINE/CONTEXT declarations (kept fresh by the
+  pinned refresh autocmd); run the one under the cursor with `<leader>cl`
+  (or `vim.lsp.codelens.run()`)
+- The server builds the file's directory into a persistent Rodin workspace —
+  `.rossi/rodin` next to your sources (gitignore `.rossi/`) — and launches
+  Rodin on it
+- Proofs made in Rodin persist there and survive rebuilds: running the lens
+  again after editing reconciles the regenerated proof obligations with the
+  recorded proof state
+- Configure `rossi.rodin.path` / `rossi.rodin.workspace` in the `settings`
+  block if Rodin is not at the platform default location
 
 ## Symbol Input
 

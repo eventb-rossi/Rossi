@@ -57,7 +57,12 @@ settings pane add:
     "eventb-language-server": {
         "enabled": true,
         "command": ["eventb-language-server"],
-        "selector": "source.eventb"
+        "selector": "source.eventb",
+        "settings": {
+            "rossi": {
+                "rodin": { "path": "", "workspace": "" }
+            }
+        }
     }
 }
 ```
@@ -65,11 +70,20 @@ settings pane add:
 This assumes `eventb-language-server` is on your `PATH`. Once configured, all
 standard LSP features become available: diagnostics, completion, hover, go-to-
 definition, find references, rename, formatting, semantic highlighting, code
-actions, folding, smart selection, signature help, and document links.
+actions, code lenses, folding, smart selection, signature help, and document
+links.
 
 Code **folding** and **smart selection expand/shrink** are available via the
 Command Palette as `LSP: Expand Selection` and `LSP: Shrink Selection`; the
 editor's native fold UI also uses the server's folding ranges.
+
+An **Open in Rodin** code lens appears on MACHINE/CONTEXT declarations (set
+`"show_code_lens": "annotation"` in the LSP package settings if lenses don't
+render). Running it builds the file's directory into a persistent Rodin
+workspace — `.rossi/rodin` next to your sources by default — and launches the
+Rodin IDE on it; proofs made in Rodin survive rebuilds. Set
+`rossi.rodin.path` in the `settings` block above if Rodin is not at the
+platform default location (`/Applications/Rodin.app`, `rodin.exe`, `rodin`).
 
 ### Symbol input (eager mode and leader mode)
 

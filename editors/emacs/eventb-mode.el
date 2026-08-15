@@ -231,6 +231,20 @@ must stay nil so the exact-case math words (dom, card, POW, …) do not fold.")
   :type 'boolean
   :group 'eventb)
 
+(defcustom lsp-rossi-rodin-path ""
+  "Rodin IDE executable, macOS .app bundle, or app name for Open in Rodin.
+Empty selects the platform default (/Applications/Rodin.app, rodin.exe,
+or rodin)."
+  :type 'string
+  :group 'eventb)
+
+(defcustom lsp-rossi-rodin-workspace ""
+  "Directory used as the shared Rodin workspace by Open in Rodin.
+Proofs made in Rodin persist there and survive rebuilds.  Empty selects
+.rossi/rodin inside the workspace root."
+  :type 'string
+  :group 'eventb)
+
 (with-eval-after-load 'lsp-mode
   (lsp-register-client
    (make-lsp-client
@@ -248,7 +262,9 @@ must stay nil so the exact-case math words (dom, card, POW, …) do not fold.")
                           :indentation ,lsp-rossi-format-indentation)
                  :diagnostics (:enabled ,lsp-rossi-diagnostics-enabled
                                :debounceMs ,lsp-rossi-diagnostics-debounce-ms)
-                 :completion (:enabled ,lsp-rossi-completion-enabled)))))))
+                 :completion (:enabled ,lsp-rossi-completion-enabled)
+                 :rodin (:path ,lsp-rossi-rodin-path
+                         :workspace ,lsp-rossi-rodin-workspace)))))))
 
 ;;; Unicode input method
 

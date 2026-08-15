@@ -29,6 +29,8 @@ This directory contains Emacs configuration for Event-B formal modeling, providi
 - **Code Actions**: Quick fixes and refactorings
 - **Folding Ranges**: Collapse/expand code sections
 - **Selection Range**: Smart expand/shrink of the active region
+- **Open in Rodin**: Code lens on MACHINE/CONTEXT declarations that builds the
+  model into a persistent Rodin workspace and launches the Rodin IDE
 
 ### ✏️ Snippets (yasnippet)
 - Ready-made templates for the common Event-B constructs
@@ -168,6 +170,10 @@ All settings can be customized via Emacs customization interface (`M-x customize
 
 ;; Completion options
 (setq lsp-rossi-completion-enabled t)        ; Enable/disable completion
+
+;; Rodin integration ("Open in Rodin" code lens)
+(setq lsp-rossi-rodin-path "")               ; "" = platform default Rodin install
+(setq lsp-rossi-rodin-workspace "")          ; "" = <root>/.rossi/rodin
 ```
 
 ### Pinned LSP Client Defaults
@@ -177,9 +183,15 @@ capabilities the server already provides:
 
 ```elisp
 (setq lsp-semantic-tokens-enable t)  ; Server-driven semantic highlighting
+(setq lsp-lens-enable t)             ; Show the "Open in Rodin" code lens
 (setq lsp-extend-selection t)        ; Enable smart expand/shrink selection
 ```
 
+With `lsp-lens-enable` on (eventb-mode already sets it buffer-locally), an
+**Open in Rodin** lens appears on MACHINE/CONTEXT declarations; trigger it with
+`M-x lsp-avy-lens`. The server builds the file's directory into a persistent
+Rodin workspace (`.rossi/rodin` next to your sources — gitignore `.rossi/`)
+and launches the Rodin IDE on it; proofs made in Rodin survive rebuilds.
 With `lsp-extend-selection`, `M-x lsp-extend-selection` grows the active region
 to the next syntactic scope (and `lsp-shrink-selection` reverses it).
 
