@@ -157,7 +157,10 @@ pub async fn open_in_rodin(client: Client, request: OpenRequest) {
     };
     let outcome = match outcome {
         Ok(Ok(outcome)) => {
-            request.written.lock().extend(outcome.written.iter().cloned());
+            request
+                .written
+                .lock()
+                .extend(outcome.written.iter().cloned());
             outcome
         }
         Ok(Err(message)) => {

@@ -551,7 +551,11 @@ fn build_ignores_dot_directories_when_classifying_input() {
     let hidden = tmp.join(".rossi").join("rodin").join("proj");
     std::fs::create_dir_all(&hidden).unwrap();
     std::fs::write(hidden.join("Bogus.bum"), "not xml").unwrap();
-    std::fs::write(hidden.join("hidden_ctx.eventb"), "CONTEXT hidden_ctx\nEND\n").unwrap();
+    std::fs::write(
+        hidden.join("hidden_ctx.eventb"),
+        "CONTEXT hidden_ctx\nEND\n",
+    )
+    .unwrap();
     let out_zip = tmp.join("out.zip");
     build_zip(&tmp, &out_zip);
 

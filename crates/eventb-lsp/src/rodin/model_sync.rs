@@ -176,8 +176,12 @@ pub fn sync_source_file(
         .get(relative)
         .ok_or_else(|| format!("{} is not in the build manifest", relative.display()))?;
 
-    let base_components = rossi::parse_components(&base)
-        .map_err(|e| format!("base snapshot of {} does not parse: {e}", relative.display()))?;
+    let base_components = rossi::parse_components(&base).map_err(|e| {
+        format!(
+            "base snapshot of {} does not parse: {e}",
+            relative.display()
+        )
+    })?;
 
     // Gather the semantically-changed components: name → replacement text.
     let mut replaced: Vec<(&rossi::Component, String)> = Vec::new();
@@ -308,12 +312,7 @@ mod tests {
         (ws, project_dir, manifest)
     }
 
-    fn run(
-        ws: &Path,
-        project_dir: &Path,
-        manifest: &BaseManifest,
-        ours: &str,
-    ) -> MergeOutcome {
+    fn run(ws: &Path, project_dir: &Path, manifest: &BaseManifest, ours: &str) -> MergeOutcome {
         sync_source_file(
             manifest,
             ws,

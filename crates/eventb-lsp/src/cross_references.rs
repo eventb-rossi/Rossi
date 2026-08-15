@@ -782,10 +782,18 @@ END
     #[test]
     fn scan_workspace_skips_dot_directories() {
         let root = TempWorkspace::new("eventb-lsp-dot-dir-scan-test");
-        std::fs::write(root.join("visible_ctx.eventb"), "CONTEXT visible_ctx\nEND\n").unwrap();
+        std::fs::write(
+            root.join("visible_ctx.eventb"),
+            "CONTEXT visible_ctx\nEND\n",
+        )
+        .unwrap();
         let hidden = root.join(".rossi").join("rodin").join("proj");
         std::fs::create_dir_all(&hidden).unwrap();
-        std::fs::write(hidden.join("hidden_ctx.eventb"), "CONTEXT hidden_ctx\nEND\n").unwrap();
+        std::fs::write(
+            hidden.join("hidden_ctx.eventb"),
+            "CONTEXT hidden_ctx\nEND\n",
+        )
+        .unwrap();
 
         let manager = CrossReferenceManager::new();
         let count = manager.scan_workspace(&root).unwrap();

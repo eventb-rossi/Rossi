@@ -527,8 +527,12 @@ impl RossiLanguageServer {
         let handle = tokio::runtime::Handle::current();
         let dir = workspace_dir.to_path_buf();
         std::thread::spawn(move || {
-            let started =
-                crate::rodin::sync::RodinSyncManager::start(&handle, dir.clone(), written, analyzer);
+            let started = crate::rodin::sync::RodinSyncManager::start(
+                &handle,
+                dir.clone(),
+                written,
+                analyzer,
+            );
             let mut state = slot.lock();
             // Only install if nothing superseded this start (shutdown reset
             // the state, or a config change targeted another directory).
@@ -1372,7 +1376,10 @@ impl LanguageServer for RossiLanguageServer {
                 ))
             })?;
         let path = uri.to_file_path().map_err(|()| {
-            Error::invalid_params(format!("{} needs a file:// URI", crate::rodin::COMMAND_OPEN))
+            Error::invalid_params(format!(
+                "{} needs a file:// URI",
+                crate::rodin::COMMAND_OPEN
+            ))
         })?;
         let source_dir = path
             .parent()

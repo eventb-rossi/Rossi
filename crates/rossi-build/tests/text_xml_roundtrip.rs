@@ -38,13 +38,17 @@ fn examples_reach_a_to_xml_fixed_point() {
             let filename = component_filename(&component);
             let exported = to_xml(&component);
 
-            let imported = ProjectComponent::from_xml(filename.clone(), &exported)
-                .unwrap_or_else(|e| panic!("{}: {filename}: re-import failed: {e}", path.display()));
+            let imported =
+                ProjectComponent::from_xml(filename.clone(), &exported).unwrap_or_else(|e| {
+                    panic!("{}: {filename}: re-import failed: {e}", path.display())
+                });
             // The normalized form (after the one allowed hop): from here on,
             // XML → import → XML must be a fixed point.
             let xml = to_xml(&imported.component);
-            let reimported = ProjectComponent::from_xml(filename.clone(), &xml)
-                .unwrap_or_else(|e| panic!("{}: {filename}: re-import failed: {e}", path.display()));
+            let reimported =
+                ProjectComponent::from_xml(filename.clone(), &xml).unwrap_or_else(|e| {
+                    panic!("{}: {filename}: re-import failed: {e}", path.display())
+                });
             assert_eq!(
                 to_xml(&reimported.component),
                 xml,
@@ -69,5 +73,8 @@ fn examples_reach_a_to_xml_fixed_point() {
             checked += 1;
         }
     }
-    assert!(checked >= 5, "expected several example components, got {checked}");
+    assert!(
+        checked >= 5,
+        "expected several example components, got {checked}"
+    );
 }
