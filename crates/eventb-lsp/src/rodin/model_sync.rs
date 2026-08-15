@@ -38,11 +38,24 @@ pub struct BaseManifest {
     pub project_name: String,
     /// Absolute path of the source directory the project was built from.
     pub source_root: PathBuf,
-    /// Component XML filename (e.g. `m.bum`) → source file, relative to
-    /// `source_root`.
-    pub components: BTreeMap<String, PathBuf>,
     /// Source file (relative) → its component XML filenames, in file order.
+    /// The single source of truth for the file↔component relation; the
+    /// inverse direction is answered by [`Self::source_for`].
     pub files: BTreeMap<PathBuf, Vec<String>>,
+}
+
+impl BaseManifest {
+    /// The source file (relative to `source_root`) that produced a component
+    /// XML file (e.g. `m.bum`), if this build knows it. Linear over a
+    /// handful of entries.
+    pub fn source_for(&self, xml_name: &str) -> Option<&Path> {
+        self.files.iter().find_map(|(relative, xml_names)| {
+            xml_names
+                .iter()
+                .any(|name| name == xml_name)
+                .then_some(relative.as_path())
+        })
+    }
 }
 
 /// One source file as it went into a build.
@@ -66,14 +79,6 @@ pub fn write_base(
     let manifest = BaseManifest {
         project_name: project_name.to_string(),
         source_root: source_root.to_path_buf(),
-        components: sources
-            .iter()
-            .flat_map(|s| {
-                s.component_files
-                    .iter()
-                    .map(|c| (c.clone(), s.relative.clone()))
-            })
-            .collect(),
         files: sources
             .iter()
             .map(|s| (s.relative.clone(), s.component_files.clone()))
@@ -139,9 +144,10 @@ pub enum MergeOutcome {
 }
 
 impl MergeOutcome {
-    /// The text to apply and record as the new base, if any. For conflicts
-    /// the marker-laden text is applied; the base still advances (Rodin's
-    /// side has been incorporated, markers and all).
+    /// The text to apply, if any. For conflicts the marker-laden text is
+    /// applied so the user can resolve it, but the base must *not* advance
+    /// to it — marker text does not parse, and an unparseable base would
+    /// permanently disable sync for the file.
     pub fn text(&self) -> Option<&str> {
         match self {
             MergeOutcome::Unchanged => None,
@@ -156,11 +162,15 @@ impl MergeOutcome {
 ///
 /// `ours` is the file's current text (editor buffer or disk); the base
 /// snapshot and the project dir's component XML provide the other two sides.
+/// `changed` is the set of component XML filenames the watcher saw change —
+/// only those are re-imported and compared; the file's other components are
+/// unchanged by construction (their own edits arrive in their own batches).
 pub fn sync_source_file(
     manifest: &BaseManifest,
     workspace_dir: &Path,
     project_dir: &Path,
     relative: &Path,
+    changed: &std::collections::BTreeSet<String>,
     ours: &str,
     printer: &PrettyPrinter,
 ) -> Result<MergeOutcome, String> {
@@ -186,7 +196,10 @@ pub fn sync_source_file(
     // Gather the semantically-changed components: name → replacement text.
     let mut replaced: Vec<(&rossi::Component, String)> = Vec::new();
     let mut added: Vec<String> = Vec::new();
-    for xml_name in component_files {
+    for xml_name in component_files
+        .iter()
+        .filter(|name| changed.contains(*name))
+    {
         let xml_path = project_dir.join(xml_name);
         let xml = match std::fs::read_to_string(&xml_path) {
             Ok(xml) => xml,
@@ -269,27 +282,15 @@ fn normalized_xml(xml_name: &str, component: &rossi::Component) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    fn temp_dir(prefix: &str) -> PathBuf {
-        let dir = std::env::temp_dir().join(format!(
-            "{prefix}-{}-{}",
-            std::process::id(),
-            std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .unwrap()
-                .as_nanos()
-        ));
-        std::fs::create_dir_all(&dir).unwrap();
-        dir
-    }
+    use crate::test_util::TempDir;
 
     const BASE: &str = "CONTEXT base_ctx\nCONSTANTS\n    lo\nAXIOMS\n    @axm1 lo ∈ ℤ\nEND\n";
 
     /// A workspace with a recorded build of one source file (`model.eventb`
     /// holding `base_ctx`) and the matching project-dir XML.
-    fn fixture(prefix: &str) -> (PathBuf, PathBuf, BaseManifest) {
-        let ws = temp_dir(prefix);
-        let project_dir = ws.join("proj");
+    fn fixture(prefix: &str) -> (TempDir, PathBuf, BaseManifest) {
+        let ws = TempDir::new(prefix);
+        let project_dir = ws.path().join("proj");
         std::fs::create_dir_all(&project_dir).unwrap();
         let components = rossi::parse_components(BASE).unwrap();
         std::fs::write(
@@ -298,7 +299,7 @@ mod tests {
         )
         .unwrap();
         write_base(
-            &ws,
+            ws.path(),
             "proj",
             Path::new("/src"),
             &[SourceFileRecord {
@@ -308,16 +309,19 @@ mod tests {
             }],
         )
         .unwrap();
-        let manifest = load_manifest(&ws, "proj").unwrap();
+        let manifest = load_manifest(ws.path(), "proj").unwrap();
         (ws, project_dir, manifest)
     }
 
     fn run(ws: &Path, project_dir: &Path, manifest: &BaseManifest, ours: &str) -> MergeOutcome {
+        // The watcher batch in these scenarios is the one edited component.
+        let changed = std::collections::BTreeSet::from(["base_ctx.buc".to_string()]);
         sync_source_file(
             manifest,
             ws,
             project_dir,
             Path::new("model.eventb"),
+            &changed,
             ours,
             &PrettyPrinter::default(),
         )
@@ -326,18 +330,18 @@ mod tests {
 
     #[test]
     fn manifest_round_trips() {
-        let (ws, _project_dir, manifest) = fixture("rossi-model-sync-manifest");
+        let (_ws, _project_dir, manifest) = fixture("rossi-model-sync-manifest");
         assert_eq!(manifest.project_name, "proj");
         assert_eq!(manifest.source_root, Path::new("/src"));
         assert_eq!(
-            manifest.components.get("base_ctx.buc"),
-            Some(&PathBuf::from("model.eventb"))
+            manifest.source_for("base_ctx.buc"),
+            Some(Path::new("model.eventb"))
         );
+        assert_eq!(manifest.source_for("other.bum"), None);
         assert_eq!(
             manifest.files.get(Path::new("model.eventb")).unwrap(),
             &["base_ctx.buc"]
         );
-        std::fs::remove_dir_all(&ws).ok();
     }
 
     #[test]
@@ -352,10 +356,9 @@ mod tests {
         .unwrap();
 
         assert_eq!(
-            run(&ws, &project_dir, &manifest, BASE),
+            run(ws.path(), &project_dir, &manifest, BASE),
             MergeOutcome::Unchanged
         );
-        std::fs::remove_dir_all(&ws).ok();
     }
 
     /// The project XML after Rodin renames `lo` to `hi`.
@@ -374,14 +377,13 @@ mod tests {
         let (ws, project_dir, manifest) = fixture("rossi-model-sync-ff");
         rodin_edit(&project_dir);
 
-        match run(&ws, &project_dir, &manifest, BASE) {
+        match run(ws.path(), &project_dir, &manifest, BASE) {
             MergeOutcome::FastForward(text) => {
                 assert!(text.contains("hi ∈ ℤ"), "{text}");
                 assert!(!text.contains("lo"), "{text}");
             }
             other => panic!("expected fast-forward, got {other:?}"),
         }
-        std::fs::remove_dir_all(&ws).ok();
     }
 
     #[test]
@@ -391,14 +393,13 @@ mod tests {
         // Local edit on a different line: a comment above the context.
         let ours = format!("// local note\n{BASE}");
 
-        match run(&ws, &project_dir, &manifest, &ours) {
+        match run(ws.path(), &project_dir, &manifest, &ours) {
             MergeOutcome::Merged(text) => {
                 assert!(text.contains("// local note"), "{text}");
                 assert!(text.contains("hi ∈ ℤ"), "{text}");
             }
             other => panic!("expected clean merge, got {other:?}"),
         }
-        std::fs::remove_dir_all(&ws).ok();
     }
 
     #[test]
@@ -408,7 +409,7 @@ mod tests {
         // Local edit renames the same constant differently.
         let ours = BASE.replace("lo", "local_name");
 
-        match run(&ws, &project_dir, &manifest, &ours) {
+        match run(ws.path(), &project_dir, &manifest, &ours) {
             MergeOutcome::Conflict(text) => {
                 assert!(text.contains("<<<<<<<"), "{text}");
                 assert!(text.contains("local_name"), "{text}");
@@ -416,13 +417,12 @@ mod tests {
             }
             other => panic!("expected conflict, got {other:?}"),
         }
-        std::fs::remove_dir_all(&ws).ok();
     }
 
     #[test]
     fn splice_preserves_text_outside_the_component() {
-        let ws = temp_dir("rossi-model-sync-splice");
-        let project_dir = ws.join("proj");
+        let ws = TempDir::new("rossi-model-sync-splice");
+        let project_dir = ws.path().join("proj");
         std::fs::create_dir_all(&project_dir).unwrap();
         // Two components in one file, hand-separated by a comment.
         let two = format!("{BASE}\n// separator comment\n\nMACHINE m\nSEES base_ctx\nEND\n");
@@ -434,7 +434,7 @@ mod tests {
         .unwrap();
         std::fs::write(project_dir.join("m.bum"), rossi::to_xml(&components[1])).unwrap();
         write_base(
-            &ws,
+            ws.path(),
             "proj",
             Path::new("/src"),
             &[SourceFileRecord {
@@ -444,10 +444,10 @@ mod tests {
             }],
         )
         .unwrap();
-        let manifest = load_manifest(&ws, "proj").unwrap();
+        let manifest = load_manifest(ws.path(), "proj").unwrap();
         rodin_edit(&project_dir);
 
-        match run(&ws, &project_dir, &manifest, &two) {
+        match run(ws.path(), &project_dir, &manifest, &two) {
             MergeOutcome::FastForward(text) => {
                 assert!(text.contains("// separator comment"), "{text}");
                 assert!(text.contains("hi ∈ ℤ"), "{text}");
@@ -455,6 +455,5 @@ mod tests {
             }
             other => panic!("expected fast-forward, got {other:?}"),
         }
-        std::fs::remove_dir_all(&ws).ok();
     }
 }

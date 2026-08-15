@@ -286,6 +286,18 @@ impl DocumentManager {
         Some(version)
     }
 
+    /// An open document's version and text, read under one lock so the pair
+    /// is a consistent snapshot (callers compare the version against an
+    /// earlier one to detect edits made in between).
+    pub fn open_text_and_version(&self, uri: &Url) -> Option<(i32, String)> {
+        let document = self.document(uri)?;
+        let doc = document.read();
+        if !doc.open {
+            return None;
+        }
+        Some((doc.version, doc.text.to_string()))
+    }
+
     /// Get document text as string
     pub fn get_text(&self, uri: &Url) -> Option<String> {
         let document = self.document(uri)?;
@@ -317,8 +329,10 @@ impl DocumentManager {
     }
 
     /// The open document whose canonicalized filesystem path is `path`,
-    /// as `(uri, current text)`. `path` must already be canonicalized.
-    pub fn open_document_by_path(&self, path: &std::path::Path) -> Option<(Url, String)> {
+    /// as `(uri, version, current text)`. `path` must already be
+    /// canonicalized. The version lets callers that mutate the document
+    /// later detect (and reject) edits computed against a stale snapshot.
+    pub fn open_document_by_path(&self, path: &std::path::Path) -> Option<(Url, i32, String)> {
         self.documents.iter().find_map(|entry| {
             let doc = entry.value().read();
             if !doc.open {
@@ -326,7 +340,7 @@ impl DocumentManager {
             }
             let doc_path = entry.key().to_file_path().ok()?;
             let doc_path = std::fs::canonicalize(&doc_path).unwrap_or(doc_path);
-            (doc_path == path).then(|| (entry.key().clone(), doc.text.to_string()))
+            (doc_path == path).then(|| (entry.key().clone(), doc.version, doc.text.to_string()))
         })
     }
 

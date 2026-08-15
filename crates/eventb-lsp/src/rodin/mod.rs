@@ -52,6 +52,58 @@ pub fn sanitize_project_name(input: &str) -> String {
     }
 }
 
+/// A stable, collision-free project name for a source directory.
+///
+/// The name is the directory's path *relative to the workspace root*,
+/// sanitized and joined with underscores (`models/lift/src` →
+/// `models_lift_src`), so two directories that merely share a basename
+/// (`a/model` and `b/model`) never collapse onto — and destroy — one
+/// project inside the shared workspace. The root itself keeps its basename;
+/// a directory outside any known root falls back to its basename plus a
+/// stable hash of its absolute path.
+pub fn project_name_for(source_dir: &Path, workspace_root: Option<&Path>) -> String {
+    if let Some(root) = workspace_root
+        && let Ok(relative) = source_dir.strip_prefix(root)
+    {
+        let joined = relative
+            .components()
+            .filter_map(|c| match c {
+                std::path::Component::Normal(part) => part.to_str(),
+                _ => None,
+            })
+            .collect::<Vec<_>>()
+            .join("_");
+        if joined.is_empty() {
+            // The workspace root itself.
+            return sanitize_project_name(
+                root.file_name()
+                    .and_then(|s| s.to_str())
+                    .unwrap_or_default(),
+            );
+        }
+        return sanitize_project_name(&joined);
+    }
+    let base = sanitize_project_name(
+        source_dir
+            .file_name()
+            .and_then(|s| s.to_str())
+            .unwrap_or_default(),
+    );
+    format!("{base}-{:08x}", stable_path_hash(source_dir))
+}
+
+/// FNV-1a over the path bytes. Deliberately not `DefaultHasher`, whose
+/// output may change across toolchains — the name must stay stable so the
+/// project (and the proofs Rodin stored in it) survives server upgrades.
+fn stable_path_hash(path: &Path) -> u32 {
+    let mut hash: u32 = 0x811c_9dc5;
+    for byte in path.as_os_str().as_encoded_bytes() {
+        hash ^= u32::from(*byte);
+        hash = hash.wrapping_mul(0x0100_0193);
+    }
+    hash
+}
+
 /// The "Open in Rodin" lenses for a document: one per component, anchored on
 /// the component's name. When the parse yields no components (mid-edit
 /// breakage), fall back to scanning for `MACHINE`/`CONTEXT` header lines so
@@ -115,8 +167,12 @@ fn header_line_scan(text: &str, uri: &Url) -> Vec<CodeLens> {
 pub struct OpenRequest {
     /// Directory whose Event-B text sources form the project.
     pub source_dir: PathBuf,
-    /// In-memory text of open documents, keyed by canonicalized path.
-    pub overlay: build::Overlay,
+    /// The project's name in the shared workspace — computed by the caller
+    /// via [`project_name_for`] so every path (lens, rebuild-on-save) agrees.
+    pub project_name: String,
+    /// Open documents, snapshotted lazily inside the build's blocking task
+    /// so their text overlays the on-disk sources.
+    pub documents: std::sync::Arc<crate::document::DocumentManager>,
     /// The shared Rodin workspace directory (holds `.metadata` + projects).
     pub workspace_dir: PathBuf,
     /// The raw `rossi.rodin.path` setting ("" → platform default).
@@ -126,6 +182,57 @@ pub struct OpenRequest {
     /// Shared record of files the server wrote into the workspace, so the
     /// sync watcher can tell the server's own writes from Rodin's.
     pub written: sync::WrittenFiles,
+    /// Analysis handles, for refreshing the proof-status overlay after the
+    /// build (the watcher rightly ignores our own writes).
+    pub(crate) analyzer: crate::server::Analyzer,
+}
+
+/// Build a source directory into the shared workspace under the write-guard
+/// protocol every build must follow: the [`sync::begin_build`] guard is held
+/// across the build so the watcher defers classifying events, the written
+/// hashes are recorded before the guard drops, and the proof-status overlay
+/// is refreshed afterwards (scoped to this project, spawned off the caller's
+/// latency path — the watcher rightly classifies these writes as our own and
+/// stays quiet). The one implementation of that ordering; both the lens flow
+/// and rebuild-on-save go through here.
+pub(crate) async fn build_into_workspace(
+    source_dir: PathBuf,
+    documents: std::sync::Arc<crate::document::DocumentManager>,
+    workspace_dir: PathBuf,
+    project_name: String,
+    written: &sync::WrittenFiles,
+    analyzer: &crate::server::Analyzer,
+) -> Result<build::BuildOutcome, String> {
+    let project_dir = workspace_dir.join(&project_name);
+    let build_guard = sync::begin_build(written);
+    let outcome = {
+        let project_dir = project_dir.clone();
+        tokio::task::spawn_blocking(move || {
+            // The overlay is snapshotted here, off the async workers: it
+            // canonicalizes and materializes every open buffer.
+            let overlay = documents.open_file_texts();
+            build::build_rodin_project(&source_dir, &overlay, &project_dir, &project_name)
+        })
+        .await
+    };
+    let outcome = match outcome {
+        Ok(Ok(outcome)) => outcome,
+        Ok(Err(message)) => return Err(message),
+        Err(join_error) => return Err(format!("the build task failed: {join_error}")),
+    };
+    written.record(outcome.written.iter().cloned());
+    drop(build_guard);
+
+    let analyzer = analyzer.clone();
+    tokio::spawn(async move {
+        sync::refresh(
+            &workspace_dir,
+            &analyzer,
+            Some(std::collections::BTreeSet::from([project_dir])),
+        )
+        .await;
+    });
+    Ok(outcome)
 }
 
 /// Run the full flow: build into the shared project, register it in the
@@ -133,52 +240,27 @@ pub struct OpenRequest {
 /// All outcomes are reported through the client; the caller only spawns.
 pub async fn open_in_rodin(client: Client, request: OpenRequest) {
     let platform = launch::Platform::current();
-    let project_name = sanitize_project_name(
-        request
-            .source_dir
-            .file_name()
-            .and_then(|s| s.to_str())
-            .unwrap_or_default(),
-    );
+    let project_name = request.project_name.clone();
     let project_dir = request.workspace_dir.join(&project_name);
 
     let progress = Progress::begin(&client, request.progress_supported, "Open in Rodin").await;
     progress.report("building the Rodin project").await;
 
-    let outcome = {
-        let source_dir = request.source_dir.clone();
-        let overlay = request.overlay;
-        let project_dir = project_dir.clone();
-        let project_name = project_name.clone();
-        tokio::task::spawn_blocking(move || {
-            build::build_rodin_project(&source_dir, &overlay, &project_dir, &project_name)
-        })
-        .await
-    };
+    let outcome = build_into_workspace(
+        request.source_dir.clone(),
+        request.documents,
+        request.workspace_dir.clone(),
+        project_name.clone(),
+        &request.written,
+        &request.analyzer,
+    )
+    .await;
     let outcome = match outcome {
-        Ok(Ok(outcome)) => {
-            request
-                .written
-                .lock()
-                .extend(outcome.written.iter().cloned());
-            outcome
-        }
-        Ok(Err(message)) => {
-            progress.end().await;
-            client
-                .show_message(MessageType::ERROR, format!("Open in Rodin: {message}"))
+        Ok(outcome) => outcome,
+        Err(message) => {
+            return progress
+                .finish(MessageType::ERROR, format!("Open in Rodin: {message}"))
                 .await;
-            return;
-        }
-        Err(join_error) => {
-            progress.end().await;
-            client
-                .show_message(
-                    MessageType::ERROR,
-                    format!("Open in Rodin failed internally: {join_error}"),
-                )
-                .await;
-            return;
         }
     };
     if !outcome.error_diagnostics.is_empty() {
@@ -198,36 +280,54 @@ pub async fn open_in_rodin(client: Client, request: OpenRequest) {
     }
 
     if lock::workspace_lock_state(&request.workspace_dir) == lock::LockState::Held {
-        progress.end().await;
-        client
-            .show_message(
+        // A project that was never registered cannot be, while Rodin holds
+        // the workspace: the headless registration needs the same Eclipse
+        // workspace. Say so instead of promising an automatic pickup that
+        // will never happen.
+        let message = if launch::project_registered(&request.workspace_dir, &project_name) {
+            (
                 MessageType::INFO,
                 format!(
                     "Rodin is already running on this workspace — project '{project_name}' \
-                     was rebuilt; Rodin picks the files up automatically (or refresh the \
-                     project with F5)."
+                     was rebuilt; Rodin picks the files up within a few seconds. Editors \
+                     already open on a component show the new content after reopening it \
+                     (or F5 inside the editor — the Explorer's F5 does not reload files)."
                 ),
             )
-            .await;
-        return;
+        } else {
+            (
+                MessageType::WARNING,
+                format!(
+                    "Rodin is already running on this workspace — project '{project_name}' \
+                     was built at {} but cannot be registered while Rodin holds the \
+                     workspace. In Rodin, use File > Import > Existing Projects to add \
+                     it, or close Rodin and run Open in Rodin again.",
+                    project_dir.display()
+                ),
+            )
+        };
+        return progress.finish(message.0, message.1).await;
     }
 
     let rodin_path = launch::effective_rodin_path(&request.configured_rodin_path, platform);
-    // A concrete path that does not exist gets an actionable error before any
-    // spawn attempt; bare command names go straight to the spawn (PATH decides).
-    if (rodin_path.contains('/') || rodin_path.contains('\\')) && !Path::new(&rodin_path).exists() {
-        progress.end().await;
-        client
-            .show_message(
+    // A setting that denotes a concrete path (rather than a name resolved
+    // via PATH or macOS app activation) gets an actionable error before any
+    // spawn attempt — the classification lives in `launch`, next to the
+    // launch commands it must agree with.
+    if let Some(concrete) = launch::concrete_path(&rodin_path, platform)
+        && !concrete.exists()
+    {
+        return progress
+            .finish(
                 MessageType::ERROR,
                 format!(
-                    "Rodin was not found at {rodin_path}. Install Rodin or point the \
+                    "Rodin was not found at {}. Install Rodin or point the \
                      rossi.rodin.path setting at it. (The project was still built at {}.)",
+                    concrete.display(),
                     project_dir.display()
                 ),
             )
             .await;
-        return;
     }
 
     if !launch::project_registered(&request.workspace_dir, &project_name) {
@@ -241,14 +341,12 @@ pub async fn open_in_rodin(client: Client, request: OpenRequest) {
             Err(message) => Err(message),
         };
         if let Err(message) = registration {
-            progress.end().await;
-            client
-                .show_message(
+            return progress
+                .finish(
                     MessageType::ERROR,
                     format!("Open in Rodin: {message} (check the rossi.rodin.path setting)"),
                 )
                 .await;
-            return;
         }
     }
     launch::seed_workspace_prefs(&request.workspace_dir);
@@ -256,18 +354,15 @@ pub async fn open_in_rodin(client: Client, request: OpenRequest) {
     progress.report("launching Rodin").await;
     let (command, args) = launch::launch_command(&rodin_path, &request.workspace_dir, platform);
     if let Err(message) = launch::launch_gui(&command, &args) {
-        progress.end().await;
-        client
-            .show_message(
+        return progress
+            .finish(
                 MessageType::ERROR,
                 format!("Open in Rodin: {message} (check the rossi.rodin.path setting)"),
             )
             .await;
-        return;
     }
-    progress.end().await;
-    client
-        .show_message(
+    progress
+        .finish(
             MessageType::INFO,
             format!("Opened {project_name} in Rodin."),
         )
@@ -354,6 +449,14 @@ impl Progress {
                 .await;
         }
     }
+
+    /// End the progress and show the flow's outcome — the tail every exit
+    /// path of [`open_in_rodin`] shares, so no path can forget to close the
+    /// progress before messaging.
+    async fn finish(self, kind: MessageType, message: String) {
+        self.end().await;
+        self.client.show_message(kind, message).await;
+    }
 }
 
 #[cfg(test)]
@@ -366,6 +469,31 @@ mod tests {
         assert_eq!(sanitize_project_name("..--weird"), "weird");
         assert_eq!(sanitize_project_name("...."), "rossi_project");
         assert_eq!(sanitize_project_name("ok-1.2_x"), "ok-1.2_x");
+    }
+
+    #[test]
+    fn project_names_are_scoped_to_the_workspace_root() {
+        let root = Path::new("/proj");
+        assert_eq!(
+            project_name_for(Path::new("/proj/models/lift/src"), Some(root)),
+            "models_lift_src"
+        );
+        // Directories sharing a basename never collide.
+        assert_ne!(
+            project_name_for(Path::new("/proj/a/model"), Some(root)),
+            project_name_for(Path::new("/proj/b/model"), Some(root))
+        );
+        // The root itself keeps its basename.
+        assert_eq!(project_name_for(root, Some(root)), "proj");
+        // Outside any root: basename plus a stable path hash.
+        let outside = project_name_for(Path::new("/elsewhere/model"), Some(root));
+        assert!(outside.starts_with("model-"), "{outside}");
+        assert_eq!(
+            outside,
+            project_name_for(Path::new("/elsewhere/model"), Some(root)),
+            "the fallback name must be stable"
+        );
+        assert_ne!(outside, project_name_for(Path::new("/other/model"), None));
     }
 
     #[test]

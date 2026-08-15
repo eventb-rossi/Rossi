@@ -53,6 +53,31 @@ pub(crate) fn document_diagnostics(doc: &ParsedDocument) -> Vec<Diagnostic> {
     diagnostics
 }
 
+/// One informational line per component header with undischarged or broken
+/// proofs, from the shared Rodin workspace's proof-status overlay (kept
+/// fresh by the rodin sync watcher). Derived from disk state, not the AST,
+/// so callers emit it regardless of parse health — the recovered components
+/// still carry their name spans, just like the Open in Rodin lens.
+pub(crate) fn proof_status_diagnostics(
+    doc: &ParsedDocument,
+    path: Option<&std::path::Path>,
+    status: &crate::rodin::sync::ProofStatusOverlay,
+) -> Vec<Diagnostic> {
+    doc.components()
+        .iter()
+        .filter_map(|component| {
+            let message = status.message_for(path, component.name())?;
+            let span = component.name_span()?;
+            Some(lsp_diagnostic(
+                crate::position::span_to_range(&span, doc.text()),
+                DiagnosticSeverity::INFORMATION,
+                None,
+                message.clone(),
+            ))
+        })
+        .collect()
+}
+
 /// End byte offset of the token at byte offset `start`, for sizing a diagnostic
 /// range when pest reports only a point: the end of the contiguous non-whitespace
 /// run starting at `start`, bounded by the line. Zero-width at EOL/EOF, one char
@@ -399,6 +424,7 @@ mod tests {
     use super::{
         cross_reference_diagnostics, cycle_diagnostics, document_diagnostics,
         duplicate_component_diagnostics, lint_diagnostics, parse_error_to_diagnostic,
+        proof_status_diagnostics,
     };
     use crate::document::ParsedDocument;
     use crate::lsp_types::{Diagnostic, DiagnosticSeverity, NumberOrString, Position};
@@ -585,6 +611,38 @@ mod tests {
             Some(NumberOrString::String(s)) => Some(s),
             _ => None,
         }
+    }
+
+    #[test]
+    fn proof_status_diagnostics_anchor_on_component_headers() {
+        use crate::rodin::sync::{ProjectProofStatus, ProofStatusOverlay, ProofStatusUpdate};
+
+        let mut status = ProjectProofStatus::default();
+        status.by_name.insert(
+            "M0".to_string(),
+            "Rodin: 1 undischarged proof obligation(s)".to_string(),
+        );
+        let mut overlay = ProofStatusOverlay::default();
+        overlay.apply(ProofStatusUpdate::Projects(vec![(
+            std::path::PathBuf::from("/ws/proj"),
+            status,
+        )]));
+
+        let doc = doc_of("MACHINE M0\nEND\n");
+        let diags = proof_status_diagnostics(&doc, None, &overlay);
+        assert_eq!(diags.len(), 1, "{diags:?}");
+        assert_eq!(diags[0].severity, Some(DiagnosticSeverity::INFORMATION));
+        assert!(diags[0].message.contains("undischarged"), "{diags:?}");
+        assert_eq!(diags[0].range.start.line, 0);
+
+        // A mid-edit document (parse errors, recovered AST) keeps the line:
+        // the overlay is disk-derived and must not vanish while typing.
+        let broken = doc_of("MACHINE M0\nVARIABLES\n    ∧∧\nEND\n");
+        assert!(
+            !broken.parse().errors.is_empty(),
+            "fixture must carry a parse error"
+        );
+        assert_eq!(proof_status_diagnostics(&broken, None, &overlay).len(), 1);
     }
 
     #[test]

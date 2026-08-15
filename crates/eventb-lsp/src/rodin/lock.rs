@@ -22,6 +22,15 @@ pub enum LockState {
     Unknown,
 }
 
+/// Whether a `rossi.rodin.sync` rebuild-on-save should proceed, given the
+/// workspace lock state. Only a running Rodin consumes these rebuilds (via
+/// its polling auto-refresh), so `Free` skips them — the next lens click
+/// rebuilds anyway. `Unknown` (Windows, probe failures) builds: a wasted
+/// build is harmless, a missed pickup is not.
+pub fn rebuild_on_save_wanted(state: LockState) -> bool {
+    state != LockState::Free
+}
+
 /// Probe the lock of the Eclipse workspace rooted at `workspace_dir`.
 pub fn workspace_lock_state(workspace_dir: &Path) -> LockState {
     let lock_path = workspace_dir.join(".metadata").join(".lock");
@@ -62,6 +71,13 @@ fn lock_state_of(_path: &Path) -> LockState {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn rebuild_on_save_skips_only_a_free_workspace() {
+        assert!(!rebuild_on_save_wanted(LockState::Free));
+        assert!(rebuild_on_save_wanted(LockState::Held));
+        assert!(rebuild_on_save_wanted(LockState::Unknown));
+    }
 
     #[test]
     fn missing_workspace_is_free() {
