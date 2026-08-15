@@ -312,6 +312,12 @@ Hand the model to the Rodin IDE without leaving Neovim:
 - Proofs made in Rodin persist there and survive rebuilds: running the lens
   again after editing reconciles the regenerated proof obligations with the
   recorded proof state
+- While Rodin is open the sync is live (`sync`, on by default): saving a
+  buffer rebuilds the project in the background and Rodin picks it up
+  within a few seconds (reopen a Rodin editor, or F5 inside it, to see the
+  new content there); edits saved in Rodin flow back into the `.eventb`
+  sources automatically via a three-way merge, with git-style conflict
+  markers if both sides changed the same lines
 - Configure `rossi.rodin.path` / `rossi.rodin.workspace` in the `settings`
   block if Rodin is not at the platform default location
 

@@ -128,7 +128,7 @@ fn default_completion_enabled() -> bool {
 }
 
 /// Rodin integration configuration ("Open in Rodin" code lens)
-#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct RodinConfig {
     /// Rodin executable path, macOS `.app` bundle path, or macOS application
@@ -141,6 +141,30 @@ pub struct RodinConfig {
     /// `<workspace-root>/.rossi/rodin`.
     #[serde(default)]
     pub workspace: String,
+
+    /// Mutual live synchronization with a running Rodin. While Rodin is
+    /// open on the shared workspace, saving a source file rebuilds its
+    /// project (Rodin's seeded auto-refresh then picks the edit up within a
+    /// few seconds), and edits saved in Rodin flow back into the `.eventb`
+    /// sources via the workspace watcher (three-way model merge, proof
+    /// status refresh). On by default; turning it off also stops the
+    /// watcher.
+    #[serde(default = "default_sync")]
+    pub sync: bool,
+}
+
+impl Default for RodinConfig {
+    fn default() -> Self {
+        Self {
+            path: String::new(),
+            workspace: String::new(),
+            sync: default_sync(),
+        }
+    }
+}
+
+fn default_sync() -> bool {
+    true
 }
 
 /// Configuration manager that holds the current configuration
@@ -310,17 +334,25 @@ mod tests {
         let config = RossiConfig::default();
         assert_eq!(config.rodin.path, "");
         assert_eq!(config.rodin.workspace, "");
+        assert!(config.rodin.sync);
 
         let settings = serde_json::json!({
             "rossi": {
                 "rodin": {
                     "path": "/Applications/Rodin.app",
-                    "workspace": "/tmp/rodin-ws"
+                    "workspace": "/tmp/rodin-ws",
+                    "sync": false
                 }
             }
         });
         let config = RossiConfig::from_client_settings(&settings).unwrap();
         assert_eq!(config.rodin.path, "/Applications/Rodin.app");
         assert_eq!(config.rodin.workspace, "/tmp/rodin-ws");
+        assert!(!config.rodin.sync);
+
+        // An absent key keeps sync on.
+        let settings = serde_json::json!({ "rossi": { "rodin": {} } });
+        let config = RossiConfig::from_client_settings(&settings).unwrap();
+        assert!(config.rodin.sync);
     }
 }

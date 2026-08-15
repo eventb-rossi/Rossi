@@ -139,6 +139,7 @@ This extension contributes the following settings:
 - `rossi.tool.path`: Path to the Rossi CLI executable used for import, export, build, validation, and conversion commands (default: `rossi`)
 - `rossi.rodin.path`: Path to the Rodin IDE executable, macOS `.app` bundle, or app name used by the `Open in Rodin` code lens (defaults: `/Applications/Rodin.app` on macOS, `rodin.exe` on Windows, `rodin` on Linux)
 - `rossi.rodin.workspace`: Directory used as the shared Rodin workspace by the `Open in Rodin` code lens; proofs made in Rodin persist there (default: `.rossi/rodin` inside the workspace folder)
+- `rossi.rodin.sync`: Mutual live synchronization with a running Rodin — saves rebuild the project while Rodin is open, and edits saved in Rodin flow back into the sources (default: `true`)
 - `rossi.format.useUnicode`: Use Unicode operators (∧, ∨, ⇒, ∈) instead of ASCII (/\, \/, =>, :) when formatting (default: `true`)
 - `rossi.format.indentation`: Indentation string (spaces or tabs) to use when formatting (default: `"    "` - 4 spaces)
 - `rossi.diagnostics.enabled`: Enable real-time diagnostics for syntax errors (default: `true`)
@@ -266,6 +267,17 @@ next to your sources by default (add `.rossi/` to `.gitignore`); override with
 live alongside the generated proof obligations and survive rebuilds: clicking
 the lens again after editing the model reconciles the regenerated obligations
 with the recorded proof state, so unchanged obligations keep their proofs.
+
+While Rodin stays open, the two tools keep each other current
+(`rossi.rodin.sync`, on by default). Saving an `.eventb` file rebuilds the
+Rodin project in the background, and Rodin picks the files up within a few
+seconds — its builder, proof obligations, and Explorer all update, but Rodin
+editors already open on a component keep showing the old content until you
+reopen them (or press F5 inside the editor). In the other direction, saving
+a machine or context in Rodin updates the corresponding `.eventb` file — or
+your open buffer — automatically via a three-way merge; when both sides
+changed the same lines, the conflict lands in the source with git-style
+markers and a warning.
 
 ## Contributing
 

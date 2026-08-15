@@ -260,6 +260,11 @@
           "default": "",
           "description": "Directory used as the shared Rodin workspace by the Open in Rodin code lens. Proofs made in Rodin persist there and survive rebuilds. Leave empty to use .rossi/rodin inside the workspace folder."
         },
+        "rossi.rodin.sync": {
+          "type": "boolean",
+          "default": true,
+          "description": "Mutual live synchronization with a running Rodin: saving a source file rebuilds its Rodin project while Rodin is open (it picks the edit up within a few seconds), and edits saved in Rodin flow back into the .eventb sources automatically. Turning it off also stops the workspace watcher."
+        },
         "rossi.format.useUnicode": {
           "type": "boolean",
           "default": true,
