@@ -11,19 +11,14 @@
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 
-use rossi::{
-    NamedComponent, component_filename, parse_components, to_zip, write_project_directory,
-};
+use rossi::{NamedComponent, parse_named_components, write_project_directory};
 use rossi_build::pog::reconcile::reconcile_build_files;
-use rossi_build::project::discover_projects;
-use rossi_build::{Severity, build};
+use rossi_build::project::{duplicate_component_name, project_from_text_components};
+use rossi_build::{Severity, build, is_normal_path_component};
 
 /// What a project build left behind, for user-facing reporting.
 #[derive(Debug)]
 pub struct BuildOutcome {
-    /// Generated files written into the project directory (`.bcc`/`.bcm`/
-    /// `.bpo`/`.bps`; sources and `.project` are written besides these).
-    pub files_written: usize,
     /// Rendered error diagnostics. Non-empty means the checked output was
     /// still written, with erroneous elements dropped (Rodin semantics).
     pub error_diagnostics: Vec<String>,
@@ -39,26 +34,16 @@ pub type Overlay = HashMap<PathBuf, String>;
 /// dot-directories such as the `.rossi` workspace itself), sorted.
 pub fn collect_source_files(dir: &Path) -> std::io::Result<Vec<PathBuf>> {
     let mut files = Vec::new();
-    for entry in walkdir::WalkDir::new(dir)
-        .follow_links(true)
-        .max_depth(64)
-        .into_iter()
-        .filter_entry(|entry| {
-            entry.depth() == 0
-                || !(entry.file_type().is_dir()
-                    && entry
-                        .file_name()
-                        .to_str()
-                        .is_some_and(|name| name.starts_with('.')))
-        })
-    {
+    for entry in crate::walk::source_walk(dir) {
         let entry = entry.map_err(std::io::Error::other)?;
-        if entry.file_type().is_file()
-            && matches!(
-                entry.path().extension().and_then(|e| e.to_str()),
-                Some("eventb") | Some("txt")
-            )
-        {
+        let is_source = entry
+            .path()
+            .extension()
+            .and_then(|e| e.to_str())
+            .is_some_and(|ext| {
+                ext.eq_ignore_ascii_case("eventb") || ext.eq_ignore_ascii_case("txt")
+            });
+        if entry.file_type().is_file() && is_source {
             files.push(entry.path().to_path_buf());
         }
     }
@@ -69,6 +54,9 @@ pub fn collect_source_files(dir: &Path) -> std::io::Result<Vec<PathBuf>> {
 /// Read a source file, preferring the editor's in-memory text when the file
 /// is open (matched via canonicalized paths).
 fn read_with_overlay(path: &Path, overlay: &Overlay) -> std::io::Result<String> {
+    if overlay.is_empty() {
+        return std::fs::read_to_string(path);
+    }
     let canonical = std::fs::canonicalize(path).unwrap_or_else(|_| path.to_path_buf());
     if let Some(text) = overlay.get(&canonical) {
         return Ok(text.clone());
@@ -100,15 +88,8 @@ pub fn build_rodin_project(
     for path in &sources {
         let text = read_with_overlay(path, overlay)
             .map_err(|e| format!("cannot read {}: {e}", path.display()))?;
-        let parsed = parse_components(&text)
+        let named = parse_named_components(&text)
             .map_err(|e| format!("failed to parse {}: {e}", path.display()))?;
-        let named: Vec<NamedComponent> = parsed
-            .into_iter()
-            .map(|component| NamedComponent {
-                filename: component_filename(&component),
-                component,
-            })
-            .collect();
         source_records.push(super::model_sync::SourceFileRecord {
             relative: path.strip_prefix(source_dir).unwrap_or(path).to_path_buf(),
             text,
@@ -120,23 +101,15 @@ pub fn build_rodin_project(
     // A duplicate component name cannot be serialized (its name is its
     // filename) and the project is invalid regardless; fail before touching
     // the destination.
-    let mut seen = std::collections::BTreeSet::new();
-    for nc in &components {
-        if !seen.insert(nc.component.name().to_string()) {
-            return Err(format!(
-                "duplicate component name '{}' across the source files",
-                nc.component.name()
-            ));
-        }
+    if let Some(name) = duplicate_component_name(&components) {
+        return Err(format!(
+            "duplicate component name '{name}' across the source files"
+        ));
     }
 
-    let bytes = to_zip(&components).map_err(|e| format!("cannot serialize project: {e}"))?;
-    let projects = discover_projects(&bytes, project_name)
+    let (_bytes, project) = project_from_text_components(project_name, &components)
         .map_err(|e| format!("cannot assemble project: {e}"))?;
-    let Some(discovered) = projects.into_iter().next() else {
-        return Err("no Event-B project could be assembled from the sources".to_string());
-    };
-    let result = build(&discovered.into_project());
+    let result = build(&project);
     if result.failed_outright() {
         let rendered: Vec<String> = result.diagnostics.iter().map(|d| d.to_string()).collect();
         return Err(format!(
@@ -161,12 +134,25 @@ pub fn build_rodin_project(
     reconcile_build_files(&mut files, |name| {
         std::fs::read_to_string(project_dir.join(name)).ok()
     });
+    // Hash generated files from the in-memory contents as they are written;
+    // only the exporter-written files (whose bytes the exporter kept to
+    // itself) are read back below.
+    let mut written: Vec<(PathBuf, u64)> = Vec::with_capacity(files.len() + components.len() + 1);
     for f in &files {
-        std::fs::write(project_dir.join(&f.filename), &f.contents)
+        let path = project_dir.join(&f.filename);
+        std::fs::write(&path, &f.contents)
             .map_err(|e| format!("cannot write {}: {e}", f.filename))?;
+        written.push((path, super::sync::content_hash(f.contents.as_bytes())));
     }
 
-    prune_stale_generated_files(project_dir, &components, &files);
+    // The previous build's manifest (read before `write_base` replaces it)
+    // is the record of which files *we* derived from sources — the only
+    // files pruning may touch. Anything else in the project directory is
+    // Rodin's (e.g. a machine created in the Rodin UI) and must survive.
+    let previous_manifest = project_dir
+        .parent()
+        .and_then(|workspace_dir| super::model_sync::load_manifest(workspace_dir, project_name));
+    prune_stale_generated_files(project_dir, &components, &files, previous_manifest.as_ref());
 
     // Record base snapshots for the Rodin→source model-edit sync. Best
     // effort: without a base, edits made in Rodin simply stay in Rodin.
@@ -183,20 +169,19 @@ pub fn build_rodin_project(
         }
     }
 
-    // Hash everything this build wrote (sources, descriptor, generated
-    // files) so the sync watcher can drop the echoes of our own writes.
-    let written = std::iter::once(".project".to_string())
-        .chain(components.iter().map(|nc| nc.filename.clone()))
-        .chain(files.iter().map(|f| f.filename.clone()))
-        .filter_map(|name| {
-            let path = project_dir.join(&name);
-            let bytes = std::fs::read(&path).ok()?;
-            Some((path, super::sync::content_hash(&bytes)))
-        })
-        .collect();
+    // Hash the exporter-written files (sources, descriptor) too, so the sync
+    // watcher can drop the echoes of every one of our own writes.
+    written.extend(
+        std::iter::once(".project".to_string())
+            .chain(components.iter().map(|nc| nc.filename.clone()))
+            .filter_map(|name| {
+                let path = project_dir.join(&name);
+                let bytes = std::fs::read(&path).ok()?;
+                Some((path, super::sync::content_hash(&bytes)))
+            }),
+    );
 
     Ok(BuildOutcome {
-        files_written: files.len(),
         error_diagnostics: result
             .diagnostics
             .iter()
@@ -208,14 +193,28 @@ pub fn build_rodin_project(
 }
 
 /// Remove generated/source files a previous build wrote for components that
-/// no longer exist (renamed or deleted). Only rossi's own file kinds are
-/// candidates — `.bpr` proofs and anything else Rodin keeps in the project
-/// are never touched. Best effort.
+/// no longer exist (renamed or deleted). Only files whose component the
+/// *previous manifest* attributes to our own sources are candidates — a
+/// component the user created inside Rodin (never in any manifest) is
+/// Rodin's data and must never be deleted, and `.bpr` proofs are never
+/// touched regardless. Without a previous manifest nothing is pruned.
+/// Best effort.
 fn prune_stale_generated_files(
     project_dir: &Path,
     components: &[NamedComponent],
     generated: &[rossi_build::ScFile],
+    previous_manifest: Option<&super::model_sync::BaseManifest>,
 ) {
+    let Some(previous) = previous_manifest else {
+        return;
+    };
+    // Component names (XML stems) earlier builds derived from the sources.
+    let own_stems: std::collections::BTreeSet<&str> = previous
+        .files
+        .values()
+        .flatten()
+        .filter_map(|xml_name| Path::new(xml_name).file_stem().and_then(|s| s.to_str()))
+        .collect();
     let expected: std::collections::BTreeSet<&str> = components
         .iter()
         .map(|nc| nc.filename.as_str())
@@ -229,55 +228,38 @@ fn prune_stale_generated_files(
         if !path.is_file() {
             continue;
         }
-        let stale = matches!(
-            path.extension().and_then(|e| e.to_str()),
-            Some("buc" | "bum" | "bcc" | "bcm" | "bpo" | "bps")
-        ) && path
-            .file_name()
-            .and_then(|n| n.to_str())
-            .is_some_and(|name| !expected.contains(name));
+        let ours = path
+            .file_stem()
+            .and_then(|s| s.to_str())
+            .is_some_and(|stem| own_stems.contains(stem));
+        let stale =
+            ours && matches!(
+                path.extension().and_then(|e| e.to_str()),
+                Some("buc" | "bum" | "bcc" | "bcm" | "bpo" | "bps")
+            ) && path
+                .file_name()
+                .and_then(|n| n.to_str())
+                .is_some_and(|name| !expected.contains(name));
         if stale && let Err(e) = std::fs::remove_file(&path) {
             tracing::info!("could not prune stale {}: {e}", path.display());
         }
     }
 }
 
-fn is_normal_path_component(value: &str) -> bool {
-    if value.contains('\0') {
-        return false;
-    }
-    let path = Path::new(value);
-    let mut parts = path.components();
-    matches!(parts.next(), Some(std::path::Component::Normal(part)) if path.as_os_str() == part)
-        && parts.next().is_none()
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    fn temp_dir(prefix: &str) -> PathBuf {
-        let dir = std::env::temp_dir().join(format!(
-            "{prefix}-{}-{}",
-            std::process::id(),
-            std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .unwrap()
-                .as_nanos()
-        ));
-        std::fs::create_dir_all(&dir).unwrap();
-        dir
-    }
+    use crate::test_util::TempDir;
 
     const CTX: &str = "CONTEXT base_ctx\nCONSTANTS\n    lo\nAXIOMS\n    @axm1 lo ∈ ℤ\nEND\n";
 
     #[test]
     fn builds_a_full_rodin_project_from_text() {
-        let root = temp_dir("rossi-rodin-build-test");
-        let src = root.join("src");
+        let root = TempDir::new("rossi-rodin-build-test");
+        let src = root.path().join("src");
         std::fs::create_dir_all(&src).unwrap();
         std::fs::write(src.join("base_ctx.eventb"), CTX).unwrap();
-        let project = root.join("ws").join("src");
+        let project = root.path().join("ws").join("src");
 
         let outcome =
             build_rodin_project(&src, &Overlay::new(), &project, "src").expect("build succeeds");
@@ -288,17 +270,16 @@ mod tests {
         assert!(project.join("base_ctx.bcc").is_file());
         assert!(project.join("base_ctx.bpo").is_file());
         assert!(project.join("base_ctx.bps").is_file());
-        std::fs::remove_dir_all(&root).ok();
     }
 
     #[test]
     fn overlay_text_wins_over_disk() {
-        let root = temp_dir("rossi-rodin-overlay-test");
-        let src = root.join("src");
+        let root = TempDir::new("rossi-rodin-overlay-test");
+        let src = root.path().join("src");
         std::fs::create_dir_all(&src).unwrap();
         let file = src.join("base_ctx.eventb");
         std::fs::write(&file, CTX).unwrap();
-        let project = root.join("ws").join("src");
+        let project = root.path().join("ws").join("src");
 
         let mut overlay = Overlay::new();
         overlay.insert(
@@ -309,17 +290,49 @@ mod tests {
 
         assert!(project.join("buffer_ctx.buc").is_file());
         assert!(!project.join("base_ctx.buc").exists());
-        std::fs::remove_dir_all(&root).ok();
+    }
+
+    #[test]
+    fn every_written_file_is_hashed_for_the_echo_guard() {
+        let root = TempDir::new("rossi-rodin-hash-test");
+        let src = root.path().join("src");
+        std::fs::create_dir_all(&src).unwrap();
+        std::fs::write(src.join("base_ctx.eventb"), CTX).unwrap();
+        let project = root.path().join("ws").join("src");
+
+        let outcome = build_rodin_project(&src, &Overlay::new(), &project, "src").unwrap();
+
+        for (path, hash) in &outcome.written {
+            let bytes = std::fs::read(path)
+                .unwrap_or_else(|e| panic!("{} was reported written: {e}", path.display()));
+            assert_eq!(
+                super::super::sync::content_hash(&bytes),
+                *hash,
+                "{} hash must match the bytes on disk",
+                path.display()
+            );
+        }
+        let names: Vec<&str> = outcome
+            .written
+            .iter()
+            .filter_map(|(p, _)| p.file_name().and_then(|n| n.to_str()))
+            .collect();
+        for expected in [".project", "base_ctx.buc", "base_ctx.bpo", "base_ctx.bps"] {
+            assert!(
+                names.contains(&expected),
+                "{expected} missing from {names:?}"
+            );
+        }
     }
 
     #[test]
     fn rebuild_prunes_stale_components_but_never_proofs() {
-        let root = temp_dir("rossi-rodin-prune-test");
-        let src = root.join("src");
+        let root = TempDir::new("rossi-rodin-prune-test");
+        let src = root.path().join("src");
         std::fs::create_dir_all(&src).unwrap();
         let file = src.join("model.eventb");
         std::fs::write(&file, CTX).unwrap();
-        let project = root.join("ws").join("src");
+        let project = root.path().join("ws").join("src");
 
         build_rodin_project(&src, &Overlay::new(), &project, "src").unwrap();
         std::fs::write(project.join("base_ctx.bpr"), "PROOFS").unwrap();
@@ -336,13 +349,35 @@ mod tests {
             std::fs::read_to_string(project.join("base_ctx.bpr")).unwrap(),
             "PROOFS"
         );
-        std::fs::remove_dir_all(&root).ok();
+    }
+
+    #[test]
+    fn rebuild_never_prunes_components_created_inside_rodin() {
+        let root = TempDir::new("rossi-rodin-foreign-test");
+        let src = root.path().join("src");
+        std::fs::create_dir_all(&src).unwrap();
+        std::fs::write(src.join("model.eventb"), CTX).unwrap();
+        let project = root.path().join("ws").join("src");
+
+        build_rodin_project(&src, &Overlay::new(), &project, "src").unwrap();
+        // The user creates a machine inside Rodin: it exists only in the
+        // project directory, never in any manifest or text source.
+        std::fs::write(project.join("rodin_made.bum"), "<machineFile/>").unwrap();
+        std::fs::write(project.join("rodin_made.bpo"), "<poFile/>").unwrap();
+
+        build_rodin_project(&src, &Overlay::new(), &project, "src").unwrap();
+
+        assert!(
+            project.join("rodin_made.bum").is_file(),
+            "a Rodin-authored component must survive rebuilds"
+        );
+        assert!(project.join("rodin_made.bpo").is_file());
     }
 
     #[test]
     fn rebuild_preserves_reconciled_statuses() {
-        let root = temp_dir("rossi-rodin-reconcile-test");
-        let src = root.join("src");
+        let root = TempDir::new("rossi-rodin-reconcile-test");
+        let src = root.path().join("src");
         std::fs::create_dir_all(&src).unwrap();
         // A machine with an invariant yields at least one obligation row.
         std::fs::write(
@@ -350,7 +385,7 @@ mod tests {
             "MACHINE m\nVARIABLES\n    x\nINVARIANTS\n    @inv1 x ∈ ℕ\nEVENTS\n    EVENT INITIALISATION\n    THEN\n        x ≔ 0\n    END\nEND\n",
         )
         .unwrap();
-        let project = root.join("ws").join("src");
+        let project = root.path().join("ws").join("src");
 
         build_rodin_project(&src, &Overlay::new(), &project, "src").unwrap();
         let bps = project.join("m.bps");
@@ -366,21 +401,19 @@ mod tests {
             doctored,
             "an unchanged model must carry its proof statuses across rebuilds"
         );
-        std::fs::remove_dir_all(&root).ok();
     }
 
     #[test]
     fn duplicate_component_names_fail_before_writing() {
-        let root = temp_dir("rossi-rodin-dup-test");
-        let src = root.join("src");
+        let root = TempDir::new("rossi-rodin-dup-test");
+        let src = root.path().join("src");
         std::fs::create_dir_all(&src).unwrap();
         std::fs::write(src.join("a.eventb"), "MACHINE M\nEND\n").unwrap();
         std::fs::write(src.join("b.eventb"), "MACHINE M\nEND\n").unwrap();
-        let project = root.join("ws").join("src");
+        let project = root.path().join("ws").join("src");
 
         let err = build_rodin_project(&src, &Overlay::new(), &project, "src").unwrap_err();
         assert!(err.contains("duplicate component name"), "{err}");
         assert!(!project.exists(), "nothing may be written on failure");
-        std::fs::remove_dir_all(&root).ok();
     }
 }
