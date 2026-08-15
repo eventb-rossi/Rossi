@@ -1,0 +1,231 @@
+//! Reconciling regenerated `.bpo` / `.bps` pairs with previous output:
+//! stamp carry-forward, status-row preservation, and byte-stable
+//! rebuilds of unchanged models.
+
+use rossi_build::po_view::PoView;
+use rossi_build::pog::reconcile::reconcile_pair;
+use rossi_build::{Project, ProjectComponent, build_with_model};
+
+/// Build a one-machine project and return its `(bpo, bps)` contents.
+fn generate(machine: &str) -> (String, String) {
+    let components = vec![ProjectComponent::from_xml("M0.bum", machine).unwrap()];
+    let project = Project::new("prj", components);
+    let (build, _) = build_with_model(&project);
+    assert!(build.is_ok(), "build diagnostics: {:?}", build.diagnostics);
+    (
+        build.file("M0.bpo").expect("M0.bpo").contents.clone(),
+        build.file("M0.bps").expect("M0.bps").contents.clone(),
+    )
+}
+
+/// One variable, one invariant, INITIALISATION, and `extra` further
+/// events. The guard of `evt` is a parameter so a single-event change
+/// can be isolated.
+fn machine(guard: &str, extra_events: &str) -> String {
+    format!(
+        r#"<?xml version="1.0"?>
+<org.eventb.core.machineFile version="5" org.eventb.core.configuration="org.eventb.core.fwd">
+<org.eventb.core.variable name="_a" org.eventb.core.identifier="a"/>
+<org.eventb.core.invariant name="_i1" org.eventb.core.label="inv1" org.eventb.core.predicate="a ≥ 0"/>
+<org.eventb.core.event name="_init" org.eventb.core.convergence="0" org.eventb.core.extended="false" org.eventb.core.label="INITIALISATION">
+<org.eventb.core.action name="_ia" org.eventb.core.assignment="a ≔ 0" org.eventb.core.label="act1"/>
+</org.eventb.core.event>
+<org.eventb.core.event name="_evt" org.eventb.core.convergence="0" org.eventb.core.extended="false" org.eventb.core.label="evt">
+<org.eventb.core.guard name="_g1" org.eventb.core.label="grd1" org.eventb.core.predicate="{guard}"/>
+<org.eventb.core.action name="_ea" org.eventb.core.assignment="a ≔ a + 1" org.eventb.core.label="act1"/>
+</org.eventb.core.event>
+{extra_events}
+</org.eventb.core.machineFile>"#
+    )
+}
+
+const EVT2: &str = r#"<org.eventb.core.event name="_evt2" org.eventb.core.convergence="0" org.eventb.core.extended="false" org.eventb.core.label="evt2">
+<org.eventb.core.guard name="_g1" org.eventb.core.label="grd1" org.eventb.core.predicate="a &gt; 5"/>
+<org.eventb.core.action name="_ea" org.eventb.core.assignment="a ≔ a − 1" org.eventb.core.label="act1"/>
+</org.eventb.core.event>"#;
+
+fn base() -> (String, String) {
+    generate(&machine("a &lt; 10", ""))
+}
+
+#[test]
+fn no_previous_state_leaves_output_untouched() {
+    let (bpo, bps) = base();
+    let (bpo_out, bps_out) = reconcile_pair(None, None, &bpo, &bps);
+    assert_eq!(bpo_out, bpo);
+    assert_eq!(bps_out, bps);
+}
+
+#[test]
+fn unchanged_model_passes_previous_bytes_through() {
+    let (bpo, bps) = base();
+    // The previous files differ cosmetically: non-zero stamps, spaced
+    // predicate spelling, and a discharged status row.
+    let old_bpo = bpo
+        .replacen(r#"poStamp="0""#, r#"poStamp="5""#, 1)
+        .replace("a≥0", "a ≥ 0");
+    assert_ne!(old_bpo, bpo, "the cosmetic edit must apply");
+    let old_bps = bps.replacen(
+        r#"org.eventb.core.confidence="-99""#,
+        r#"org.eventb.core.confidence="1000""#,
+        1,
+    );
+
+    let (bpo_out, bps_out) = reconcile_pair(Some(&old_bpo), Some(&old_bps), &bpo, &bps);
+    assert_eq!(bpo_out, old_bpo, "unchanged obligations keep the old bytes");
+    assert_eq!(bps_out, old_bps, "unchanged statuses keep the old bytes");
+}
+
+#[test]
+fn changed_guard_bumps_only_the_affected_sequent() {
+    let (old_bpo, old_bps) = base();
+    let (new_bpo, new_bps) = generate(&machine("a &lt; 9", ""));
+    // Doctor the previous statuses: both rows carry proof results, one
+    // of them manual, plus an attribute the generator never writes.
+    let old_bps = old_bps
+        .replace(
+            r#"org.eventb.core.confidence="-99" org.eventb.core.poStamp="0" org.eventb.core.psManual="false""#,
+            r#"org.eventb.core.confidence="1000" org.eventb.core.poStamp="0" org.eventb.core.psManual="true" org.eventb.core.psBroken="false""#,
+        );
+
+    let (bpo_out, bps_out) = reconcile_pair(Some(&old_bpo), Some(&old_bps), &new_bpo, &new_bps);
+    let view = PoView::from_xml(&bpo_out).unwrap();
+
+    // The file stamp and the changed sequent move to 1; the untouched
+    // sequent keeps its old stamp.
+    assert_eq!(view.stamp.as_deref(), Some("1"));
+    assert_eq!(view.sequents["evt/inv1/INV"].stamp.as_deref(), Some("1"));
+    assert_eq!(
+        view.sequents["INITIALISATION/inv1/INV"].stamp.as_deref(),
+        Some("0")
+    );
+
+    // The guard lives in the event's hypothesis sets: those bump, the
+    // machine-level sets don't.
+    for name in ["CTXHYP", "ABSHYP", "ALLHYP"] {
+        assert_eq!(view.sets[name].stamp.as_deref(), Some("0"), "{name}");
+    }
+    let bumped: Vec<&str> = view
+        .sets
+        .iter()
+        .filter(|(_, set)| set.stamp.as_deref() == Some("1"))
+        .map(|(name, _)| name.as_str())
+        .collect();
+    assert!(
+        !bumped.is_empty() && bumped.iter().all(|name| name.starts_with("EVT")),
+        "changed sets: {bumped:?}"
+    );
+
+    // Both status rows carry over byte-verbatim — the changed
+    // sequent's row keeps its old stamp, now differing from the
+    // sequent's, which is the stale marker downstream provers use.
+    assert!(bps_out.contains(
+        r#"<org.eventb.core.psStatus name="evt/inv1/INV" org.eventb.core.confidence="1000" org.eventb.core.poStamp="0" org.eventb.core.psManual="true" org.eventb.core.psBroken="false"/>"#
+    ));
+    assert!(bps_out.contains(
+        r#"<org.eventb.core.psStatus name="INITIALISATION/inv1/INV" org.eventb.core.confidence="1000" org.eventb.core.poStamp="0" org.eventb.core.psManual="true" org.eventb.core.psBroken="false"/>"#
+    ));
+}
+
+#[test]
+fn added_obligation_gets_a_fresh_unattempted_row() {
+    let (old_bpo, old_bps) = base();
+    let old_bps = old_bps.replace(
+        r#"org.eventb.core.confidence="-99""#,
+        r#"org.eventb.core.confidence="1000""#,
+    );
+    let (new_bpo, new_bps) = generate(&machine("a &lt; 10", EVT2));
+
+    let (bpo_out, bps_out) = reconcile_pair(Some(&old_bpo), Some(&old_bps), &new_bpo, &new_bps);
+    let view = PoView::from_xml(&bpo_out).unwrap();
+
+    // Existing sequents are untouched by the added event.
+    assert_eq!(view.sequents["evt/inv1/INV"].stamp.as_deref(), Some("0"));
+    assert_eq!(
+        view.sequents["INITIALISATION/inv1/INV"].stamp.as_deref(),
+        Some("0")
+    );
+    // The new sequent and the file get the fresh stamp; its status row
+    // is fresh and unattempted with the same stamp.
+    assert_eq!(view.sequents["evt2/inv1/INV"].stamp.as_deref(), Some("1"));
+    assert_eq!(view.stamp.as_deref(), Some("1"));
+    assert!(bps_out.contains(
+        r#"<org.eventb.core.psStatus name="evt2/inv1/INV" org.eventb.core.confidence="-99" org.eventb.core.poStamp="1" org.eventb.core.psManual="false"/>"#
+    ));
+    // The carried rows keep their doctored confidence.
+    assert!(bps_out.contains(r#"name="evt/inv1/INV" org.eventb.core.confidence="1000""#));
+}
+
+#[test]
+fn removed_obligation_drops_its_row() {
+    let (old_bpo, old_bps) = generate(&machine("a &lt; 10", EVT2));
+    let old_bps = old_bps.replace(
+        r#"org.eventb.core.confidence="-99""#,
+        r#"org.eventb.core.confidence="1000""#,
+    );
+    let (new_bpo, new_bps) = base();
+
+    let (bpo_out, bps_out) = reconcile_pair(Some(&old_bpo), Some(&old_bps), &new_bpo, &new_bps);
+    let view = PoView::from_xml(&bpo_out).unwrap();
+
+    assert!(!view.sequents.contains_key("evt2/inv1/INV"));
+    assert!(!bps_out.contains("evt2/inv1/INV"), "vanished row must drop");
+    // The surviving rows carry over with their results.
+    assert!(bps_out.contains(r#"name="evt/inv1/INV" org.eventb.core.confidence="1000""#));
+    assert!(
+        bps_out.contains(r#"name="INITIALISATION/inv1/INV" org.eventb.core.confidence="1000""#)
+    );
+}
+
+#[test]
+fn unparseable_previous_file_is_ignored() {
+    let (bpo, bps) = base();
+    // A predicate that no longer parses: the old file contributes no
+    // stamps, but statuses still carry by name.
+    let old_bpo = bpo.replace("a≥0", "a≥0∧(");
+    let old_bps = bps.replace(
+        r#"org.eventb.core.confidence="-99""#,
+        r#"org.eventb.core.confidence="1000""#,
+    );
+
+    let (bpo_out, bps_out) = reconcile_pair(Some(&old_bpo), Some(&old_bps), &bpo, &bps);
+    assert_eq!(bpo_out, bpo, "no stamp carry from an unreadable file");
+    assert!(bps_out.contains(r#"org.eventb.core.confidence="1000""#));
+}
+
+#[test]
+fn stub_output_passes_previous_files_through() {
+    let (old_bpo, old_bps) = base();
+    let stub_bpo = "<?xml version=\"1.0\" encoding=\"UTF-8\" standalone=\"no\"?>\n<org.eventb.core.poFile org.eventb.core.poStamp=\"0\"/>\n";
+    let stub_bps =
+        "<?xml version=\"1.0\" encoding=\"UTF-8\" standalone=\"no\"?>\n<org.eventb.core.psFile/>\n";
+
+    let (bpo_out, bps_out) = reconcile_pair(Some(&old_bpo), Some(&old_bps), stub_bpo, stub_bps);
+    assert_eq!(bpo_out, old_bpo);
+    assert_eq!(bps_out, old_bps);
+
+    // Without previous files the stub emits as-is.
+    let (bpo_out, bps_out) = reconcile_pair(None, None, stub_bpo, stub_bps);
+    assert_eq!(bpo_out, stub_bpo);
+    assert_eq!(bps_out, stub_bps);
+}
+
+#[test]
+fn fresh_stamp_exceeds_every_previous_stamp() {
+    let (old_bpo, _) = base();
+    // A previous file whose element stamp runs ahead of its file
+    // stamp: the fresh stamp must clear both, or a carried stamp could
+    // collide with a fresh one and revalidate a stale proof.
+    let old_bpo = old_bpo
+        .replacen(r#"poStamp="0""#, r#"poStamp="2""#, 1)
+        .replace(
+            r#"name="evt/inv1/INV" org.eventb.core.accurate="true" org.eventb.core.poDesc="Invariant  preservation" org.eventb.core.poStamp="0""#,
+            r#"name="evt/inv1/INV" org.eventb.core.accurate="true" org.eventb.core.poDesc="Invariant  preservation" org.eventb.core.poStamp="7""#,
+        );
+    let (new_bpo, new_bps) = generate(&machine("a &lt; 9", ""));
+
+    let (bpo_out, _) = reconcile_pair(Some(&old_bpo), None, &new_bpo, &new_bps);
+    let view = PoView::from_xml(&bpo_out).unwrap();
+    assert_eq!(view.stamp.as_deref(), Some("8"));
+    assert_eq!(view.sequents["evt/inv1/INV"].stamp.as_deref(), Some("8"));
+}

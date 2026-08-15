@@ -12,6 +12,7 @@ mod hyp;
 mod machine;
 mod model;
 mod natures;
+pub mod reconcile;
 mod tables;
 
 use rossi::Component;
