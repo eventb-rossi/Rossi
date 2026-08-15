@@ -262,6 +262,11 @@ pub struct RossiLanguageServer {
     /// Shared handles for the post-edit analysis, reused by the inline and
     /// debounced paths.
     analyzer: Analyzer,
+    /// Single-flight guard for the Open in Rodin flow: a second invocation
+    /// while one runs (builds, registers, launches) is refused, not queued.
+    rodin_open_in_flight: Arc<std::sync::atomic::AtomicBool>,
+    /// Whether the client advertised `window.workDoneProgress` support.
+    supports_work_done_progress: std::sync::atomic::AtomicBool,
 }
 
 impl RossiLanguageServer {
@@ -338,6 +343,8 @@ impl RossiLanguageServer {
             selection_range_provider: Arc::new(SelectionRangeProvider::new()),
             signature_help_provider: Arc::new(SignatureHelpProvider::new()),
             analyzer,
+            rodin_open_in_flight: Arc::new(std::sync::atomic::AtomicBool::new(false)),
+            supports_work_done_progress: std::sync::atomic::AtomicBool::new(false),
         }
     }
 }
@@ -371,6 +378,16 @@ impl LanguageServer for RossiLanguageServer {
             info!("Workspace root: {:?}", root);
             self.cross_reference_manager.set_workspace_root(root);
         }
+
+        self.supports_work_done_progress.store(
+            params
+                .capabilities
+                .window
+                .as_ref()
+                .and_then(|window| window.work_done_progress)
+                .unwrap_or(false),
+            std::sync::atomic::Ordering::Relaxed,
+        );
 
         if let Some(settings) = params.initialization_options.as_ref() {
             match RossiConfig::from_client_settings(settings) {
@@ -454,6 +471,13 @@ impl LanguageServer for RossiLanguageServer {
                         resolve_provider: Some(false),
                     },
                 )),
+                code_lens_provider: Some(CodeLensOptions {
+                    resolve_provider: Some(false),
+                }),
+                execute_command_provider: Some(ExecuteCommandOptions {
+                    commands: vec![crate::rodin::COMMAND_OPEN.to_string()],
+                    work_done_progress_options: WorkDoneProgressOptions::default(),
+                }),
                 folding_range_provider: Some(FoldingRangeProviderCapability::Simple(true)),
                 selection_range_provider: Some(SelectionRangeProviderCapability::Simple(true)),
                 signature_help_provider: Some(SignatureHelpOptions {
@@ -1027,6 +1051,94 @@ impl LanguageServer for RossiLanguageServer {
         );
 
         Ok(response)
+    }
+
+    async fn code_lens(&self, params: CodeLensParams) -> Result<Option<Vec<CodeLens>>> {
+        let uri = params.text_document.uri;
+        debug!("Code lens request for: {}", uri);
+
+        let Some(doc) = self.document_manager.parse_result(&uri) else {
+            return Ok(None);
+        };
+        Ok(Some(crate::rodin::code_lenses(
+            doc.components(),
+            doc.text(),
+            &uri,
+        )))
+    }
+
+    async fn execute_command(
+        &self,
+        params: ExecuteCommandParams,
+    ) -> Result<Option<serde_json::Value>> {
+        use std::sync::atomic::Ordering;
+
+        if params.command != crate::rodin::COMMAND_OPEN {
+            return Err(Error::invalid_params(format!(
+                "unknown command: {}",
+                params.command
+            )));
+        }
+        let uri = params
+            .arguments
+            .first()
+            .and_then(|value| value.as_str())
+            .and_then(|value| Url::parse(value).ok())
+            .ok_or_else(|| {
+                Error::invalid_params(format!(
+                    "{} expects a document URI argument",
+                    crate::rodin::COMMAND_OPEN
+                ))
+            })?;
+        let path = uri.to_file_path().map_err(|()| {
+            Error::invalid_params(format!("{} needs a file:// URI", crate::rodin::COMMAND_OPEN))
+        })?;
+        let source_dir = path
+            .parent()
+            .map(std::path::Path::to_path_buf)
+            .filter(|dir| !dir.as_os_str().is_empty())
+            .ok_or_else(|| Error::invalid_params("the document has no parent directory"))?;
+
+        if self.rodin_open_in_flight.swap(true, Ordering::SeqCst) {
+            self.client
+                .show_message(MessageType::INFO, "Open in Rodin is already running.")
+                .await;
+            return Ok(None);
+        }
+
+        let config = self.config_manager.get();
+        let workspace_dir = if config.rodin.workspace.trim().is_empty() {
+            let root = self
+                .cross_reference_manager
+                .workspace_root()
+                .unwrap_or_else(|| source_dir.clone());
+            crate::rodin::default_workspace_dir(&root)
+        } else {
+            PathBuf::from(config.rodin.workspace.trim())
+        };
+        let request = crate::rodin::OpenRequest {
+            source_dir,
+            overlay: self.document_manager.open_file_texts(),
+            workspace_dir,
+            configured_rodin_path: config.rodin.path.clone(),
+            progress_supported: self.supports_work_done_progress.load(Ordering::Relaxed),
+        };
+
+        // Reset the guard when the task future is dropped — completion and
+        // panic alike — so one failure can't wedge the command forever.
+        struct InFlightReset(Arc<std::sync::atomic::AtomicBool>);
+        impl Drop for InFlightReset {
+            fn drop(&mut self) {
+                self.0.store(false, Ordering::SeqCst);
+            }
+        }
+        let reset = InFlightReset(Arc::clone(&self.rodin_open_in_flight));
+        let client = self.client.clone();
+        tokio::spawn(async move {
+            let _reset = reset;
+            crate::rodin::open_in_rodin(client, request).await;
+        });
+        Ok(None)
     }
 
     async fn folding_range(&self, params: FoldingRangeParams) -> Result<Option<Vec<FoldingRange>>> {
