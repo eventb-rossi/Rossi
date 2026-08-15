@@ -23,6 +23,10 @@ interface RossiConfiguration {
     completion: {
         enabled: boolean;
     };
+    rodin: {
+        path: string;
+        workspace: string;
+    };
 }
 
 function getRossiConfiguration(): RossiConfiguration {
@@ -38,6 +42,10 @@ function getRossiConfiguration(): RossiConfiguration {
         },
         completion: {
             enabled: config.get<boolean>('completion.enabled', true),
+        },
+        rodin: {
+            path: config.get<string>('rodin.path', ''),
+            workspace: config.get<string>('rodin.workspace', ''),
         },
     };
 }

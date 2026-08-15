@@ -36,7 +36,6 @@
     "onCommand:rossi.exportCurrentFileToRodinZip",
     "onCommand:rossi.exportWorkspaceToRodinZip",
     "onCommand:rossi.buildCheckedRodinZip",
-    "onCommand:rossi.openInRodin",
     "onCommand:rossi.validateCurrentFile",
     "onCommand:rossi.validateWorkspace",
     "onCommand:rossi.convertCurrentFileToUnicode",
@@ -95,11 +94,6 @@
       {
         "command": "rossi.buildCheckedRodinZip",
         "title": "Build Checked Rodin ZIP",
-        "category": "Rossi"
-      },
-      {
-        "command": "rossi.openInRodin",
-        "title": "Open in Rodin",
         "category": "Rossi"
       },
       {
@@ -166,16 +160,6 @@
           "group": "rossi@5"
         },
         {
-          "command": "rossi.openInRodin",
-          "when": "resourceExtname == .eventb",
-          "group": "rossi@6"
-        },
-        {
-          "command": "rossi.openInRodin",
-          "when": "explorerResourceIsFolder",
-          "group": "rossi@6"
-        },
-        {
           "command": "rossi.importRodinProject",
           "when": "resourceExtname == .zip || resourceExtname == .buc || resourceExtname == .bum",
           "group": "rossi@7"
@@ -211,11 +195,6 @@
           "command": "rossi.exportCurrentFileToRodinZip",
           "when": "editorLangId == eventb",
           "group": "rossi@4"
-        },
-        {
-          "command": "rossi.openInRodin",
-          "when": "editorLangId == eventb",
-          "group": "rossi@5"
         }
       ],
       "commandPalette": [
@@ -274,7 +253,12 @@
         "rossi.rodin.path": {
           "type": "string",
           "default": "",
-          "description": "Path to the Rodin IDE executable, macOS .app bundle, or app name used by the Open in Rodin command. Leave empty to use the platform default."
+          "description": "Path to the Rodin IDE executable, macOS .app bundle, or app name used by the Open in Rodin code lens (handled by the language server). Leave empty to use the platform default."
+        },
+        "rossi.rodin.workspace": {
+          "type": "string",
+          "default": "",
+          "description": "Directory used as the shared Rodin workspace by the Open in Rodin code lens. Proofs made in Rodin persist there and survive rebuilds. Leave empty to use .rossi/rodin inside the workspace folder."
         },
         "rossi.format.useUnicode": {
           "type": "boolean",
@@ -377,13 +361,12 @@
           {
             "id": "rossi.getStarted.exportRodin",
             "title": "Export to Rodin",
-            "description": "Hand the model to the Rodin platform.\n[Open in Rodin](command:rossi.openInRodin)",
+            "description": "Hand the model to the Rodin platform: click the Open in Rodin code lens on a MACHINE or CONTEXT line, or export a Rodin ZIP.",
             "media": {
               "markdown": "walkthroughs/export-rodin.md"
             },
             "completionEvents": [
-              "onCommand:rossi.exportCurrentFileToRodinZip",
-              "onCommand:rossi.openInRodin"
+              "onCommand:rossi.exportCurrentFileToRodinZip"
             ]
           }
         ]

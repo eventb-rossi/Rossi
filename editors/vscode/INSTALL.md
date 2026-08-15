@@ -110,7 +110,7 @@ command if the version differs.
 ### Basic Setup
 
 No configuration needed if `eventb-language-server` and `rossi` are in your PATH.
-`Open in Rodin` additionally works without configuration when Rodin is available at the platform default:
+The `Open in Rodin` code lens additionally works without configuration when Rodin is available at the platform default:
 
 - macOS: `/Applications/Rodin.app`
 - Windows: `rodin.exe` in `PATH`
@@ -136,7 +136,7 @@ Or edit `settings.json` directly:
 }
 ```
 
-Configure `rossi.rodin.path` only if `Open in Rodin` cannot use the platform default. Examples:
+Configure `rossi.rodin.path` only if the `Open in Rodin` code lens cannot use the platform default (the lens builds into a persistent `.rossi/rodin` workspace next to your sources — relocatable via `rossi.rodin.workspace` — so proofs made in Rodin survive rebuilds; consider gitignoring `.rossi/`). Examples:
 
 ```json
 {
