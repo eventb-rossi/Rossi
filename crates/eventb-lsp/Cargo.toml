@@ -52,9 +52,10 @@ rossi-build.workspace = true
 # File system operations
 walkdir.workspace = true
 
-# Rodin workspace watcher: feeds proofs (and later model edits) Rodin wrote
-# back into the editor session.
+# Rodin workspace watcher: feeds proofs and model edits Rodin wrote back
+# into the editor session; diffy provides the 3-way merge for model edits.
 notify.workspace = true
+diffy.workspace = true
 
 # Workspace-lock probe for the Open in Rodin flow: Eclipse holds a POSIX
 # fcntl lock on `.metadata/.lock` while running, and only fcntl(F_GETLK)

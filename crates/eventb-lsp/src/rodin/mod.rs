@@ -13,6 +13,7 @@
 pub mod build;
 pub mod launch;
 pub mod lock;
+pub mod model_sync;
 pub mod sync;
 
 use std::path::{Path, PathBuf};

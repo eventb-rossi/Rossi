@@ -91,15 +91,28 @@ pub fn build_rodin_project(
     }
 
     let mut components: Vec<NamedComponent> = Vec::new();
+    let mut source_records: Vec<super::model_sync::SourceFileRecord> = Vec::new();
     for path in &sources {
         let text = read_with_overlay(path, overlay)
             .map_err(|e| format!("cannot read {}: {e}", path.display()))?;
         let parsed =
             parse_components(&text).map_err(|e| format!("failed to parse {}: {e}", path.display()))?;
-        components.extend(parsed.into_iter().map(|component| NamedComponent {
-            filename: component_filename(&component),
-            component,
-        }));
+        let named: Vec<NamedComponent> = parsed
+            .into_iter()
+            .map(|component| NamedComponent {
+                filename: component_filename(&component),
+                component,
+            })
+            .collect();
+        source_records.push(super::model_sync::SourceFileRecord {
+            relative: path
+                .strip_prefix(source_dir)
+                .unwrap_or(path)
+                .to_path_buf(),
+            text,
+            component_files: named.iter().map(|nc| nc.filename.clone()).collect(),
+        });
+        components.extend(named);
     }
 
     // A duplicate component name cannot be serialized (its name is its
@@ -152,6 +165,21 @@ pub fn build_rodin_project(
     }
 
     prune_stale_generated_files(project_dir, &components, &files);
+
+    // Record base snapshots for the Rodin→source model-edit sync. Best
+    // effort: without a base, edits made in Rodin simply stay in Rodin.
+    if let Some(workspace_dir) = project_dir.parent() {
+        let source_root =
+            std::fs::canonicalize(source_dir).unwrap_or_else(|_| source_dir.to_path_buf());
+        if let Err(e) = super::model_sync::write_base(
+            workspace_dir,
+            project_name,
+            &source_root,
+            &source_records,
+        ) {
+            tracing::info!("could not record base snapshots: {e}");
+        }
+    }
 
     // Hash everything this build wrote (sources, descriptor, generated
     // files) so the sync watcher can drop the echoes of our own writes.

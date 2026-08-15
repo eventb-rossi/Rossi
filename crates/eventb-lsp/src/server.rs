@@ -247,6 +247,76 @@ impl Analyzer {
         diags
     }
 
+    /// The pretty-printer matching the user's formatting configuration, for
+    /// rendering components imported back from Rodin.
+    pub(crate) fn printer(&self) -> rossi::PrettyPrinter {
+        let format = &self.config_manager.get().format;
+        rossi::PrettyPrinter {
+            use_unicode: format.use_unicode,
+            indent: format.indentation.clone(),
+            ..rossi::PrettyPrinter::default()
+        }
+    }
+
+    /// A source file's current text: the open editor buffer when there is
+    /// one (with its URI), else the file on disk. `path` must be
+    /// canonicalized.
+    pub(crate) fn source_text(&self, path: &std::path::Path) -> Option<(Option<Url>, String)> {
+        if let Some((uri, text)) = self.document_manager.open_document_by_path(path) {
+            return Some((Some(uri), text));
+        }
+        std::fs::read_to_string(path).ok().map(|text| (None, text))
+    }
+
+    /// Replace a source file's content: via `workspace/applyEdit` for open
+    /// documents (the editor shows the change, undo works), by writing the
+    /// file for closed ones.
+    pub(crate) async fn apply_source_text(
+        &self,
+        path: &std::path::Path,
+        uri: Option<Url>,
+        new_text: &str,
+    ) -> std::result::Result<(), String> {
+        let Some(uri) = uri else {
+            return std::fs::write(path, new_text)
+                .map_err(|e| format!("cannot write {}: {e}", path.display()));
+        };
+        // Full-document replacement against the *current* buffer text.
+        let Some((_, current)) = self.document_manager.open_document_by_path(path) else {
+            // Closed since we looked: fall back to disk.
+            return std::fs::write(path, new_text)
+                .map_err(|e| format!("cannot write {}: {e}", path.display()));
+        };
+        let full_range = Range {
+            start: Position::new(0, 0),
+            end: crate::position::offset_to_position(&current, current.len()),
+        };
+        let edit = WorkspaceEdit {
+            changes: Some(
+                [(uri, vec![TextEdit::new(full_range, new_text.to_string())])]
+                    .into_iter()
+                    .collect(),
+            ),
+            ..WorkspaceEdit::default()
+        };
+        match self.client.apply_edit(edit).await {
+            Ok(response) if response.applied => Ok(()),
+            Ok(response) => Err(format!(
+                "the editor rejected the edit{}",
+                response
+                    .failure_reason
+                    .map(|r| format!(": {r}"))
+                    .unwrap_or_default()
+            )),
+            Err(e) => Err(format!("applyEdit failed: {e}")),
+        }
+    }
+
+    /// Show a message to the user (used by the rodin sync watcher).
+    pub(crate) async fn notify_user(&self, typ: MessageType, message: String) {
+        self.client.show_message(typ, message).await;
+    }
+
     /// Replace the proof-status overlay and republish diagnostics for every
     /// open document. Called by the rodin sync watcher after Rodin (or a
     /// rebuild) changed proof state on disk.
