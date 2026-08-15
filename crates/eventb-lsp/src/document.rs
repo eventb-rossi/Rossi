@@ -297,6 +297,25 @@ impl DocumentManager {
         Some(text)
     }
 
+    /// Snapshot the text of every open `file://` document, keyed by its
+    /// canonicalized filesystem path (falling back to the raw path for files
+    /// not on disk yet). This is the overlay the Rodin build reads instead of
+    /// stale on-disk contents.
+    pub fn open_file_texts(&self) -> std::collections::HashMap<std::path::PathBuf, String> {
+        self.documents
+            .iter()
+            .filter_map(|entry| {
+                let doc = entry.value().read();
+                if !doc.open {
+                    return None;
+                }
+                let path = entry.key().to_file_path().ok()?;
+                let path = std::fs::canonicalize(&path).unwrap_or(path);
+                Some((path, doc.text.to_string()))
+            })
+            .collect()
+    }
+
     /// URIs of every currently open document.
     pub(crate) fn all_uris(&self) -> Vec<Url> {
         self.documents

@@ -456,6 +456,7 @@ dependencies = [
  "clap",
  "dashmap 6.2.1",
  "futures",
+ "libc",
  "parking_lot",
  "ropey",
  "rossi",

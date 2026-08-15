@@ -25,6 +25,10 @@ pub struct RossiConfig {
     /// Completion configuration
     #[serde(default)]
     pub completion: CompletionConfig,
+
+    /// Rodin integration configuration
+    #[serde(default)]
+    pub rodin: RodinConfig,
 }
 
 impl RossiConfig {
@@ -121,6 +125,22 @@ impl Default for CompletionConfig {
 
 fn default_completion_enabled() -> bool {
     true
+}
+
+/// Rodin integration configuration ("Open in Rodin" code lens)
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RodinConfig {
+    /// Rodin executable path, macOS `.app` bundle path, or macOS application
+    /// name. Empty selects the platform default (`/Applications/Rodin.app`,
+    /// `rodin.exe`, or `rodin`).
+    #[serde(default)]
+    pub path: String,
+
+    /// Directory used as the shared Rodin workspace. Empty selects
+    /// `<workspace-root>/.rossi/rodin`.
+    #[serde(default)]
+    pub workspace: String,
 }
 
 /// Configuration manager that holds the current configuration
@@ -283,5 +303,24 @@ mod tests {
         let config = RossiConfig::from_client_settings(&settings).unwrap();
         assert!(!config.format.use_unicode);
         assert_eq!(config.diagnostics.debounce_ms, 250);
+    }
+
+    #[test]
+    fn test_rodin_config_defaults_and_nested_parse() {
+        let config = RossiConfig::default();
+        assert_eq!(config.rodin.path, "");
+        assert_eq!(config.rodin.workspace, "");
+
+        let settings = serde_json::json!({
+            "rossi": {
+                "rodin": {
+                    "path": "/Applications/Rodin.app",
+                    "workspace": "/tmp/rodin-ws"
+                }
+            }
+        });
+        let config = RossiConfig::from_client_settings(&settings).unwrap();
+        assert_eq!(config.rodin.path, "/Applications/Rodin.app");
+        assert_eq!(config.rodin.workspace, "/tmp/rodin-ws");
     }
 }

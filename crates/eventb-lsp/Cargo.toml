@@ -52,6 +52,12 @@ rossi-build.workspace = true
 # File system operations
 walkdir.workspace = true
 
+# Workspace-lock probe for the Open in Rodin flow: Eclipse holds a POSIX
+# fcntl lock on `.metadata/.lock` while running, and only fcntl(F_GETLK)
+# can observe it without taking it.
+[target.'cfg(unix)'.dependencies]
+libc = "0.2"
+
 [dev-dependencies]
 # `ServiceExt::ready` for driving the LspService in the rossi/operatorTable
 # wire-level test. Pinned to the 0.4 line tower-lsp uses internally.
