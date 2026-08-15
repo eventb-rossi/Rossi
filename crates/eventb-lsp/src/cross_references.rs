@@ -316,14 +316,11 @@ impl CrossReferenceManager {
         self.scanned.store(false, Ordering::Release);
         let mut sources = Vec::new();
 
-        // Recursively find all Event-B source files. Symlinks are followed
-        // (Rodin workspaces commonly link shared model directories), so cap
-        // the depth to keep linked runaway trees bounded; walkdir's loop
-        // detection handles cycles.
-        for entry in walkdir::WalkDir::new(root_path)
-            .follow_links(true)
-            .max_depth(64)
-        {
+        // Recursively find all Event-B source files, via the crate's one
+        // source-tree walk (symlinks followed, depth-capped, dot-directories
+        // skipped) so this index and the Rodin build can never disagree
+        // about what a source tree contains.
+        for entry in crate::walk::source_walk(root_path) {
             let entry = entry?;
             let path = entry.path();
             if entry.file_type().is_file()
@@ -780,6 +777,22 @@ END
         assert!(result.is_err());
         assert!(!manager.is_scanned());
         assert!(manager.find_component_uri("good").is_none());
+    }
+
+    #[test]
+    fn scan_workspace_skips_dot_directories() {
+        let root = TempWorkspace::new("eventb-lsp-dot-dir-scan-test");
+        std::fs::write(root.join("visible_ctx.eventb"), "CONTEXT visible_ctx\nEND\n").unwrap();
+        let hidden = root.join(".rossi").join("rodin").join("proj");
+        std::fs::create_dir_all(&hidden).unwrap();
+        std::fs::write(hidden.join("hidden_ctx.eventb"), "CONTEXT hidden_ctx\nEND\n").unwrap();
+
+        let manager = CrossReferenceManager::new();
+        let count = manager.scan_workspace(&root).unwrap();
+
+        assert_eq!(count, 1);
+        assert!(manager.find_component_uri("visible_ctx").is_some());
+        assert!(manager.find_component_uri("hidden_ctx").is_none());
     }
 
     /// Regression test: a single pathological file used to overflow the

@@ -37,6 +37,7 @@ pub mod semantic_tokens;
 pub mod signature_help;
 pub mod symbols;
 pub mod text_utils;
+pub mod walk;
 pub mod workspace;
 
 #[cfg(test)]
