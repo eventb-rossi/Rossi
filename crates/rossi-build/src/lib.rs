@@ -126,6 +126,21 @@ pub struct ScFile {
     pub accurate: bool,
 }
 
+/// Whether `value` is exactly one normal path component — no separators, no
+/// `..`, no NUL, not absolute — so writing it under a chosen output directory
+/// can never escape that directory. The guard every consumer of
+/// [`ScFile::filename`] applies before touching the filesystem.
+#[must_use]
+pub fn is_normal_path_component(value: &str) -> bool {
+    if value.contains('\0') {
+        return false;
+    }
+    let path = std::path::Path::new(value);
+    let mut parts = path.components();
+    matches!(parts.next(), Some(std::path::Component::Normal(part)) if path.as_os_str() == part)
+        && parts.next().is_none()
+}
+
 /// A single diagnostic — a type error, a missing reference, a cycle, etc.
 #[derive(Debug, Clone)]
 pub struct Diagnostic {

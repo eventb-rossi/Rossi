@@ -1315,6 +1315,21 @@ pub fn component_filename(component: &Component) -> String {
     }
 }
 
+/// Parses Event-B text into components paired with their canonical Rodin
+/// filenames ([`component_filename`]) — the shape the archive/directory
+/// writers and the build pipeline consume.
+pub fn parse_named_components(
+    source: &str,
+) -> std::result::Result<Vec<NamedComponent>, crate::ParseError> {
+    Ok(crate::parse_components(source)?
+        .into_iter()
+        .map(|component| NamedComponent {
+            filename: component_filename(&component),
+            component,
+        })
+        .collect())
+}
+
 /// Creates a zip archive in memory from a slice of named components.
 ///
 /// Each component is serialized to its Rodin XML format via [`to_xml`] and

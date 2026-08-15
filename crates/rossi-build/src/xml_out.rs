@@ -191,7 +191,10 @@ impl Element {
     }
 }
 
-fn escape_attr(s: &str, out: &mut String) {
+/// Append `s` to `out` with XML attribute-value escaping (`&`, `<`, `>`,
+/// `"`, plus newline/tab as character references so they survive attribute
+/// normalization). The one escaper for every attribute this workspace emits.
+pub fn escape_attr(s: &str, out: &mut String) {
     for c in s.chars() {
         match c {
             '&' => out.push_str("&amp;"),

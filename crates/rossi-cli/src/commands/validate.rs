@@ -1063,7 +1063,7 @@ fn rule_for_build_error(err: &rossi_build::Error) -> Option<RuleId> {
                 Some(RuleId::XmlParseError)
             }
             ProjectError::ReparseFormula { .. } => Some(RuleId::FormulaParseError),
-            ProjectError::NotADirectory(_) => None,
+            ProjectError::NotADirectory(_) | ProjectError::NoComponents => None,
         },
         rossi_build::Error::Io(_) | rossi_build::Error::Zip(_) => None,
     }
