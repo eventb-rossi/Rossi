@@ -57,6 +57,23 @@ pub struct FormatConfig {
     pub indentation: String,
 }
 
+impl FormatConfig {
+    /// The pretty-printer this configuration denotes — the single mapping
+    /// used everywhere the server renders Event-B text into a user's file
+    /// (`textDocument/formatting` and the Rodin model-edit sync), so the two
+    /// can never format the same file differently. Every field is pinned
+    /// deliberately; editor output stays portable (no private-use glyphs).
+    pub fn printer(&self) -> rossi::PrettyPrinter {
+        rossi::PrettyPrinter {
+            use_unicode: self.use_unicode,
+            indent: self.indentation.clone(),
+            private_use_glyphs: false,
+            formula_spacing: rossi::FormulaSpacing::Readable,
+            typed_decls: false,
+        }
+    }
+}
+
 impl Default for FormatConfig {
     fn default() -> Self {
         Self {

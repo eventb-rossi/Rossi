@@ -7,19 +7,11 @@ use crate::lsp_types::{Position, Range, TextEdit};
 
 /// Format a document using the supplied server configuration.
 pub fn format(text: &str, config: &FormatConfig) -> Result<Vec<TextEdit>, String> {
-    use rossi::{FormulaSpacing, PrettyPrinter, format_str};
-
     // Delegate to the shared formatting core so editor and `rossi fmt`
-    // formatting never diverge.
-    let printer = PrettyPrinter {
-        use_unicode: config.use_unicode,
-        indent: config.indentation.clone(),
-        // Editor output stays portable: never emit the private-use glyphs.
-        private_use_glyphs: false,
-        formula_spacing: FormulaSpacing::Readable,
-        typed_decls: false,
-    };
-    let formatted = format_str(text, &printer).map_err(|e| format!("Parse error: {}", e))?;
+    // formatting never diverge; the printer comes from the one config
+    // mapping ([`FormatConfig::printer`]) shared with the Rodin model sync.
+    let printer = config.printer();
+    let formatted = rossi::format_str(text, &printer).map_err(|e| format!("Parse error: {}", e))?;
 
     // Create a text edit that replaces the entire document
     // Use a large end position to ensure we replace everything
