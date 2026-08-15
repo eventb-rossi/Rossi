@@ -25,6 +25,9 @@ pub struct BuildOutcome {
     /// Rendered error diagnostics. Non-empty means the checked output was
     /// still written, with erroneous elements dropped (Rodin semantics).
     pub error_diagnostics: Vec<String>,
+    /// Path and content hash of every file this build wrote, for the sync
+    /// watcher's echo guard (see [`super::sync`]).
+    pub written: Vec<(PathBuf, u64)>,
 }
 
 /// Text buffers overlaying the filesystem, keyed by canonicalized path.
@@ -150,6 +153,18 @@ pub fn build_rodin_project(
 
     prune_stale_generated_files(project_dir, &components, &files);
 
+    // Hash everything this build wrote (sources, descriptor, generated
+    // files) so the sync watcher can drop the echoes of our own writes.
+    let written = std::iter::once(".project".to_string())
+        .chain(components.iter().map(|nc| nc.filename.clone()))
+        .chain(files.iter().map(|f| f.filename.clone()))
+        .filter_map(|name| {
+            let path = project_dir.join(&name);
+            let bytes = std::fs::read(&path).ok()?;
+            Some((path, super::sync::content_hash(&bytes)))
+        })
+        .collect();
+
     Ok(BuildOutcome {
         files_written: files.len(),
         error_diagnostics: result
@@ -158,6 +173,7 @@ pub fn build_rodin_project(
             .filter(|d| d.severity == Severity::Error)
             .map(|d| d.to_string())
             .collect(),
+        written,
     })
 }
 

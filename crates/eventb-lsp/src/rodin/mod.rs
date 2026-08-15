@@ -13,6 +13,7 @@
 pub mod build;
 pub mod launch;
 pub mod lock;
+pub mod sync;
 
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -121,6 +122,9 @@ pub struct OpenRequest {
     pub configured_rodin_path: String,
     /// Whether the client advertised `window.workDoneProgress`.
     pub progress_supported: bool,
+    /// Shared record of files the server wrote into the workspace, so the
+    /// sync watcher can tell the server's own writes from Rodin's.
+    pub written: sync::WrittenFiles,
 }
 
 /// Run the full flow: build into the shared project, register it in the
@@ -151,7 +155,10 @@ pub async fn open_in_rodin(client: Client, request: OpenRequest) {
         .await
     };
     let outcome = match outcome {
-        Ok(Ok(outcome)) => outcome,
+        Ok(Ok(outcome)) => {
+            request.written.lock().extend(outcome.written.iter().cloned());
+            outcome
+        }
         Ok(Err(message)) => {
             progress.end().await;
             client
