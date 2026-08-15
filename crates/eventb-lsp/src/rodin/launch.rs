@@ -217,23 +217,16 @@ pub fn seed_workspace_prefs(workspace_dir: &Path) {
 
 /// The `build.xml` driving the importer task; `projectDir` arrives via `-D`.
 fn importer_build_xml(importer_dir: &Path) -> String {
+    let mut classpath = String::new();
+    rossi_build::xml_out::escape_attr(&importer_dir.display().to_string(), &mut classpath);
     format!(
         "<project name=\"rossi-rodin-import\" default=\"import\">\n  \
          <taskdef name=\"rossiImportProject\" \
-         classname=\"org.rossi.vscode.RodinProjectImportTask\" classpath=\"{}\"/>\n  \
+         classname=\"org.rossi.vscode.RodinProjectImportTask\" classpath=\"{classpath}\"/>\n  \
          <target name=\"import\">\n    \
          <rossiImportProject projectDir=\"${{projectDir}}\"/>\n  \
-         </target>\n</project>\n",
-        escape_xml_attribute(&importer_dir.display().to_string())
+         </target>\n</project>\n"
     )
-}
-
-fn escape_xml_attribute(value: &str) -> String {
-    value
-        .replace('&', "&amp;")
-        .replace('"', "&quot;")
-        .replace('<', "&lt;")
-        .replace('>', "&gt;")
 }
 
 /// Write the importer classpath (compiled task class) and `build.xml` into

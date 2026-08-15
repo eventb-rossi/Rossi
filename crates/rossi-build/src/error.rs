@@ -42,6 +42,9 @@ pub enum ProjectError {
     #[error("not a directory: {0}")]
     NotADirectory(std::path::PathBuf),
 
+    #[error("no Event-B components to assemble into a project")]
+    NoComponents,
+
     #[error("invalid XML: {0}")]
     Xml(#[from] quick_xml::Error),
 

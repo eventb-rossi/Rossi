@@ -14,7 +14,7 @@
 
 use std::path::{Path, PathBuf};
 
-use rossi::{Component, parse_components, parse_xml};
+use rossi::{Component, NamedComponent, parse_components, parse_xml};
 
 use crate::error::{ProjectError, Result};
 use crate::rodin_ids::RodinIds;
@@ -255,6 +255,40 @@ impl DiscoveredProject {
     pub fn into_project(self) -> Project {
         Project::new(self.name, self.components)
     }
+}
+
+/// The first component name that occurs more than once, if any. A duplicate
+/// name cannot be serialized into a Rodin source archive (a component's name
+/// is its entry filename), so callers check before
+/// [`project_from_text_components`].
+pub fn duplicate_component_name(components: &[NamedComponent]) -> Option<&str> {
+    let mut seen = std::collections::BTreeSet::new();
+    components
+        .iter()
+        .map(|nc| nc.component.name())
+        .find(|name| !seen.insert(name.to_string()))
+}
+
+/// Assemble a buildable [`Project`] from parsed text components by
+/// serializing them to a Rodin source archive and re-discovering the project
+/// from it. The round-trip looks redundant, but it is what keeps handle URIs
+/// byte-exact with the `.zip` pipeline (see [`discover_projects`]'s name
+/// resolution) — both the CLI and the LSP build through here so their
+/// projects can never drift apart for the same sources. Returns the archive
+/// bytes alongside the project for callers that repack them.
+///
+/// Components with duplicate names cannot be serialized; check with
+/// [`duplicate_component_name`] first.
+pub fn project_from_text_components(
+    name: &str,
+    components: &[NamedComponent],
+) -> Result<(Vec<u8>, Project)> {
+    let bytes = rossi::to_zip(components)?;
+    let discovered = discover_projects(&bytes, name)?
+        .into_iter()
+        .next()
+        .ok_or(ProjectError::NoComponents)?;
+    Ok((bytes, discovered.into_project()))
 }
 
 enum ProjectDiscoveryEntry {

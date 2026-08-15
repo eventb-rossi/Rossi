@@ -9,18 +9,22 @@
 //! checker, the filtered output is still written first: erroneous elements are
 //! dropped and their files marked inaccurate.
 
-use std::path::{Component, Path, PathBuf};
+use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 
 use clap::Args;
 
 use rossi_build::pog::reconcile::reconcile_build_files;
-use rossi_build::project::discover_projects;
+use rossi_build::project::{
+    discover_projects, duplicate_component_name, project_from_text_components,
+};
 use rossi_build::repack::repackage_zip_bytes_multi;
 use rossi_build::rodin_ids::RodinIds;
-use rossi_build::{BuildResult, Project, ProjectComponent, ScFile, Severity, build};
+use rossi_build::{
+    BuildResult, Project, ProjectComponent, ScFile, Severity, build, is_normal_path_component,
+};
 
-use rossi::{NamedComponent, to_zip};
+use rossi::NamedComponent;
 
 use super::eventb_io::{self, InputKind};
 
@@ -194,13 +198,7 @@ fn build_from_components(
     // archive (a component's name is its entry filename), and the project
     // is invalid regardless. Assemble the project directly so the failure
     // surfaces as the SC's EB019 diagnostic instead of a zip-writer error.
-    let has_duplicate = {
-        let mut seen = std::collections::BTreeSet::new();
-        components
-            .iter()
-            .any(|nc| !seen.insert(nc.component.name()))
-    };
-    if has_duplicate {
+    if duplicate_component_name(&components).is_some() {
         let project = Project::new(
             name,
             components
@@ -218,8 +216,11 @@ fn build_from_components(
             archive_bytes: None,
         });
     }
-    let bytes = to_zip(&components)?;
-    build_zip_bytes(name, bytes)
+    let (bytes, project) = project_from_text_components(name, &components)?;
+    Ok(BuildOutcome {
+        results: vec![(String::new(), build(&project))],
+        archive_bytes: Some(bytes),
+    })
 }
 
 /// Build a project from a Rodin `.zip` archive on disk.
@@ -436,16 +437,6 @@ fn loose_project_dir(prefix: &str) -> Result<Option<PathBuf>, Box<dyn std::error
         .into());
     }
     Ok(Some(PathBuf::from(segment)))
-}
-
-fn is_normal_path_component(value: &str) -> bool {
-    if value.contains('\0') {
-        return false;
-    }
-    let path = Path::new(value);
-    let mut components = path.components();
-    matches!(components.next(), Some(Component::Normal(part)) if path.as_os_str() == part)
-        && components.next().is_none()
 }
 
 /// Resolve every pending destination against the canonical output root.
