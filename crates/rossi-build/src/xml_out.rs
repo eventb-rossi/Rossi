@@ -109,6 +109,10 @@ pub(crate) fn read_attr<E>(
     Ok(None)
 }
 
+/// The declaration line every emitted Rodin document starts with.
+pub(crate) const DOC_HEADER: &str =
+    "<?xml version=\"1.0\" encoding=\"UTF-8\" standalone=\"no\"?>\n";
+
 /// One emitted XML element.
 #[derive(Debug, Clone)]
 pub struct Element {
@@ -154,8 +158,7 @@ impl Element {
 
     /// Render to a full XML document.
     pub fn to_document(&self) -> String {
-        let mut out = String::new();
-        out.push_str("<?xml version=\"1.0\" encoding=\"UTF-8\" standalone=\"no\"?>\n");
+        let mut out = String::from(DOC_HEADER);
         self.write_to(&mut out, 0);
         out
     }
