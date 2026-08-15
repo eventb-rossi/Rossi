@@ -4,10 +4,42 @@
 //! `rossi/operatorTable` custom request.
 
 use serde_json::Value;
+use std::path::{Path, PathBuf};
 use tower_lsp::jsonrpc::Request;
 
 fn notification(method: &'static str, params: Value) -> Request {
     Request::build(method).params(params).finish()
+}
+
+/// A uniquely-named workspace directory under the test target tmpdir,
+/// removed again on drop.
+struct TempWorkspace(PathBuf);
+
+impl TempWorkspace {
+    fn new(prefix: &str) -> Self {
+        let path = PathBuf::from(env!("CARGO_TARGET_TMPDIR")).join(format!(
+            "{prefix}-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        std::fs::create_dir_all(&path).unwrap();
+        Self(path)
+    }
+}
+
+impl AsRef<Path> for TempWorkspace {
+    fn as_ref(&self) -> &Path {
+        &self.0
+    }
+}
+
+impl Drop for TempWorkspace {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_dir_all(&self.0);
+    }
 }
 
 mod debounce {
@@ -277,48 +309,18 @@ mod debounce {
 mod workspace_symbols {
     //! Wire-level regressions for the disk-backed workspace symbol index.
 
-    use super::notification;
+    use super::{TempWorkspace, notification};
     use eventb_lsp::lsp_types::Url;
     use eventb_lsp::server::RossiLanguageServer;
     use futures::StreamExt;
     use serde_json::json;
-    use std::path::{Path, PathBuf};
     use tower::{Service, ServiceExt};
     use tower_lsp::LspService;
     use tower_lsp::jsonrpc::Request;
 
-    struct TempWorkspace(PathBuf);
-
-    impl TempWorkspace {
-        fn new() -> Self {
-            let path = PathBuf::from(env!("CARGO_TARGET_TMPDIR")).join(format!(
-                "workspace-symbols-test-{}-{}",
-                std::process::id(),
-                std::time::SystemTime::now()
-                    .duration_since(std::time::UNIX_EPOCH)
-                    .unwrap()
-                    .as_nanos()
-            ));
-            std::fs::create_dir_all(&path).unwrap();
-            Self(path)
-        }
-    }
-
-    impl AsRef<Path> for TempWorkspace {
-        fn as_ref(&self) -> &Path {
-            &self.0
-        }
-    }
-
-    impl Drop for TempWorkspace {
-        fn drop(&mut self) {
-            let _ = std::fs::remove_dir_all(&self.0);
-        }
-    }
-
     #[tokio::test(flavor = "current_thread")]
     async fn disk_symbols_are_overlaid_while_open_and_restored_on_close() {
-        let workspace = TempWorkspace::new();
+        let workspace = TempWorkspace::new("workspace-symbols-test");
         let path = workspace.as_ref().join("model.eventb");
         std::fs::write(
             &path,
@@ -453,6 +455,214 @@ mod workspace_symbols {
 
         assert_eq!(symbol_names!(8, "saved_value"), ["saved_value"]);
         assert!(symbol_names!(9, "disk_value").is_empty());
+    }
+}
+
+mod rodin_lens {
+    //! Wire-level tests for the "Open in Rodin" CodeLens + executeCommand
+    //! surface: capability advertisement, lens shape, and the executeCommand
+    //! path building the project on disk even when no Rodin install exists
+    //! (the error must point at the `rossi.rodin.path` setting).
+
+    use super::{TempWorkspace, notification};
+    use eventb_lsp::lsp_types::Url;
+    use eventb_lsp::server::RossiLanguageServer;
+    use futures::StreamExt;
+    use serde_json::{Value, json};
+    use std::time::Duration;
+    use tower::{Service, ServiceExt};
+    use tower_lsp::LspService;
+    use tower_lsp::jsonrpc::Request;
+
+    const SOURCE: &str = "CONTEXT wire_ctx\nCONSTANTS\n    lo\nAXIOMS\n    @axm1 lo ∈ ℤ\nEND\n\nMACHINE wire_m\nSEES wire_ctx\nEND\n";
+
+    /// Read server-to-client messages until the next `window/showMessage`.
+    async fn next_show_message(
+        messages: &mut (impl StreamExt<Item = Request> + Unpin),
+        timeout: Duration,
+    ) -> Option<Value> {
+        while let Ok(Some(req)) = tokio::time::timeout(timeout, messages.next()).await {
+            if req.method() == "window/showMessage" {
+                return req.params().cloned();
+            }
+        }
+        None
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn advertises_capabilities_and_serves_lenses() {
+        let (mut service, mut socket) = LspService::build(RossiLanguageServer::new).finish();
+        tokio::spawn(async move { while socket.next().await.is_some() {} });
+
+        let init = Request::build("initialize")
+            .id(1)
+            .params(json!({ "capabilities": {} }))
+            .finish();
+        let response = service
+            .ready()
+            .await
+            .unwrap()
+            .call(init)
+            .await
+            .unwrap()
+            .expect("initialize responds");
+        let (_id, result) = response.into_parts();
+        let capabilities = &result.expect("initialize succeeds")["capabilities"];
+        assert_eq!(capabilities["codeLensProvider"]["resolveProvider"], false);
+        assert_eq!(
+            capabilities["executeCommandProvider"]["commands"],
+            json!(["rossi.rodin.open"])
+        );
+
+        let uri = "file:///wire.eventb";
+        let open = notification(
+            "textDocument/didOpen",
+            json!({
+                "textDocument": {
+                    "uri": uri,
+                    "languageId": "eventb",
+                    "version": 1,
+                    "text": SOURCE
+                }
+            }),
+        );
+        service.ready().await.unwrap().call(open).await.unwrap();
+
+        let lens_request = Request::build("textDocument/codeLens")
+            .id(2)
+            .params(json!({ "textDocument": { "uri": uri } }))
+            .finish();
+        let response = service
+            .ready()
+            .await
+            .unwrap()
+            .call(lens_request)
+            .await
+            .unwrap()
+            .expect("codeLens responds");
+        let (_id, result) = response.into_parts();
+        let lenses = result.expect("codeLens succeeds");
+        let lenses = lenses.as_array().expect("codeLens result is an array");
+        assert_eq!(lenses.len(), 2, "one lens per component: {lenses:?}");
+        for lens in lenses {
+            assert_eq!(lens["command"]["title"], "Open in Rodin");
+            assert_eq!(lens["command"]["command"], "rossi.rodin.open");
+            assert_eq!(lens["command"]["arguments"], json!([uri]));
+        }
+        // The context header is on line 0, the machine header on line 7.
+        assert_eq!(lenses[0]["range"]["start"]["line"], 0);
+        assert_eq!(lenses[1]["range"]["start"]["line"], 7);
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn execute_command_builds_project_and_reports_missing_rodin() {
+        let workspace = TempWorkspace::new("rodin-lens-test");
+        let source_path = workspace.as_ref().join("model.eventb");
+        std::fs::write(&source_path, SOURCE).unwrap();
+        let rodin_workspace = workspace.as_ref().join("rodin-ws");
+        let root_uri = Url::from_file_path(workspace.as_ref()).unwrap();
+        let file_uri = Url::from_file_path(&source_path).unwrap();
+
+        let (mut service, mut messages) = LspService::build(RossiLanguageServer::new).finish();
+        let init = Request::build("initialize")
+            .id(1)
+            .params(json!({
+                "capabilities": {},
+                "workspaceFolders": [{ "uri": root_uri, "name": "test" }],
+                "initializationOptions": {
+                    "rodin": {
+                        "path": "/nonexistent/rodin-install",
+                        "workspace": rodin_workspace.to_str().unwrap()
+                    }
+                }
+            }))
+            .finish();
+        service.ready().await.unwrap().call(init).await.unwrap();
+
+        // Open the file with an *edited* buffer: the overlay (not the disk
+        // file) must be what the build reads.
+        let open = notification(
+            "textDocument/didOpen",
+            json!({
+                "textDocument": {
+                    "uri": file_uri,
+                    "languageId": "eventb",
+                    "version": 1,
+                    "text": SOURCE.replace("wire_ctx", "buffer_ctx")
+                }
+            }),
+        );
+        service.ready().await.unwrap().call(open).await.unwrap();
+
+        let execute = Request::build("workspace/executeCommand")
+            .id(2)
+            .params(json!({
+                "command": "rossi.rodin.open",
+                "arguments": [file_uri.to_string()]
+            }))
+            .finish();
+        let response = service
+            .ready()
+            .await
+            .unwrap()
+            .call(execute)
+            .await
+            .unwrap()
+            .expect("executeCommand responds");
+        let (_id, result) = response.into_parts();
+        assert_eq!(result.expect("executeCommand succeeds"), Value::Null);
+
+        // The spawned flow builds the project, then fails on the bogus Rodin
+        // path with a message pointing at the setting.
+        let message = next_show_message(&mut messages, Duration::from_secs(10))
+            .await
+            .expect("the flow reports through window/showMessage");
+        let text = message["message"].as_str().unwrap();
+        assert!(
+            text.contains("was not found") && text.contains("rossi.rodin.path"),
+            "unexpected message: {text}"
+        );
+
+        let project_dir = rodin_workspace.join(
+            workspace
+                .as_ref()
+                .file_name()
+                .and_then(|s| s.to_str())
+                .unwrap(),
+        );
+        assert!(project_dir.join(".project").is_file());
+        assert!(
+            project_dir.join("buffer_ctx.buc").is_file(),
+            "the open buffer's text must win over the disk file"
+        );
+        assert!(project_dir.join("wire_m.bum").is_file());
+        assert!(project_dir.join("wire_m.bpo").is_file());
+        assert!(project_dir.join("wire_m.bps").is_file());
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn execute_command_rejects_unknown_commands() {
+        let (mut service, _socket) = LspService::build(RossiLanguageServer::new).finish();
+        let init = Request::build("initialize")
+            .id(1)
+            .params(json!({ "capabilities": {} }))
+            .finish();
+        service.ready().await.unwrap().call(init).await.unwrap();
+
+        let execute = Request::build("workspace/executeCommand")
+            .id(2)
+            .params(json!({ "command": "rossi.rodin.unknown", "arguments": [] }))
+            .finish();
+        let response = service
+            .ready()
+            .await
+            .unwrap()
+            .call(execute)
+            .await
+            .unwrap()
+            .expect("executeCommand responds");
+        let (_id, result) = response.into_parts();
+        assert!(result.is_err(), "unknown commands must be rejected");
     }
 }
 
