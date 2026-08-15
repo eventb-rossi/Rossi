@@ -531,36 +531,7 @@ mod tests {
     use super::*;
     use std::sync::Arc;
 
-    struct TempWorkspace(PathBuf);
-
-    impl TempWorkspace {
-        fn new(prefix: &str) -> Self {
-            let path = std::env::temp_dir().join(format!(
-                "{prefix}-{}-{}",
-                std::process::id(),
-                std::time::SystemTime::now()
-                    .duration_since(std::time::UNIX_EPOCH)
-                    .unwrap()
-                    .as_nanos()
-            ));
-            std::fs::create_dir_all(&path).unwrap();
-            Self(path)
-        }
-    }
-
-    impl std::ops::Deref for TempWorkspace {
-        type Target = Path;
-
-        fn deref(&self) -> &Self::Target {
-            &self.0
-        }
-    }
-
-    impl Drop for TempWorkspace {
-        fn drop(&mut self) {
-            let _ = std::fs::remove_dir_all(&self.0);
-        }
-    }
+    use crate::test_util::TempDir as TempWorkspace;
 
     #[test]
     fn test_cross_reference_manager_creation() {

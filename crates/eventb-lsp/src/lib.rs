@@ -37,6 +37,8 @@ pub mod selection_range;
 pub mod semantic_tokens;
 pub mod signature_help;
 pub mod symbols;
+#[cfg(test)]
+pub(crate) mod test_util;
 pub mod text_utils;
 pub mod walk;
 pub mod workspace;
