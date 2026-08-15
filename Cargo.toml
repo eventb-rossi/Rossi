@@ -51,6 +51,9 @@ tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 walkdir = "2"
 # Filesystem watcher for the Rodin workspace sync (eventb-lsp).
 notify = "8"
+# 3-way merge (git-style conflict markers) for syncing Rodin model edits
+# back into the Event-B text sources (eventb-lsp).
+diffy = "0.4"
 
 # Dev dependencies
 indoc = "2.0"

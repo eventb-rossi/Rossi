@@ -316,6 +316,20 @@ impl DocumentManager {
             .collect()
     }
 
+    /// The open document whose canonicalized filesystem path is `path`,
+    /// as `(uri, current text)`. `path` must already be canonicalized.
+    pub fn open_document_by_path(&self, path: &std::path::Path) -> Option<(Url, String)> {
+        self.documents.iter().find_map(|entry| {
+            let doc = entry.value().read();
+            if !doc.open {
+                return None;
+            }
+            let doc_path = entry.key().to_file_path().ok()?;
+            let doc_path = std::fs::canonicalize(&doc_path).unwrap_or(doc_path);
+            (doc_path == path).then(|| (entry.key().clone(), doc.text.to_string()))
+        })
+    }
+
     /// URIs of every currently open document.
     pub(crate) fn all_uris(&self) -> Vec<Url> {
         self.documents
