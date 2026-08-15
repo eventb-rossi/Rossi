@@ -52,6 +52,10 @@ rossi-build.workspace = true
 # File system operations
 walkdir.workspace = true
 
+# Rodin workspace watcher: feeds proofs (and later model edits) Rodin wrote
+# back into the editor session.
+notify.workspace = true
+
 # Workspace-lock probe for the Open in Rodin flow: Eclipse holds a POSIX
 # fcntl lock on `.metadata/.lock` while running, and only fcntl(F_GETLK)
 # can observe it without taking it.

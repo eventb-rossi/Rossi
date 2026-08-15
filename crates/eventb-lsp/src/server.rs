@@ -94,12 +94,16 @@ fn signature_retrigger_characters() -> Vec<String> {
 /// same code. `Clone` is a handful of `Arc`/`Client` clones, so the debounced
 /// task moves one of these into its future instead of a fistful of fields.
 #[derive(Clone)]
-struct Analyzer {
+pub(crate) struct Analyzer {
     document_manager: Arc<DocumentManager>,
     cross_reference_manager: Arc<CrossReferenceManager>,
     workspace_symbol_provider: Arc<WorkspaceSymbolProvider>,
     config_manager: Arc<ConfigManager>,
     diagnostic_locks: Arc<DashMap<Url, Arc<Mutex<()>>>>,
+    /// Per-component proof-status lines from the shared Rodin workspace
+    /// (component name → aggregated message), maintained by the rodin sync
+    /// watcher. Empty until a Rodin workspace exists.
+    proof_status: Arc<parking_lot::RwLock<std::collections::HashMap<String, String>>>,
     client: Client,
 }
 
@@ -109,7 +113,7 @@ impl Analyzer {
     /// truth once and fans it out to every eager index (none of which
     /// re-parses). Go-to-definition keeps no index — it resolves on demand
     /// against this same stored parse.
-    async fn analyze(&self, uri: Url) {
+    pub(crate) async fn analyze(&self, uri: Url) {
         let Some(doc) = self.document_manager.parse_result(&uri) else {
             return;
         };
@@ -219,7 +223,47 @@ impl Analyzer {
                 doc.text(),
             ));
         }
+        // Proof-status overlay from the shared Rodin workspace: one
+        // informational line on each component header with undischarged or
+        // broken proofs (kept fresh by the rodin sync watcher).
+        {
+            let proof_status = self.proof_status.read();
+            if !proof_status.is_empty() {
+                for component in doc.components() {
+                    if let Some(message) = proof_status.get(component.name())
+                        && let Some(span) = component.name_span()
+                    {
+                        diags.push(Diagnostic {
+                            range: crate::position::span_to_range(&span, doc.text()),
+                            severity: Some(DiagnosticSeverity::INFORMATION),
+                            source: Some("rossi".to_string()),
+                            message: message.clone(),
+                            ..Diagnostic::default()
+                        });
+                    }
+                }
+            }
+        }
         diags
+    }
+
+    /// Replace the proof-status overlay and republish diagnostics for every
+    /// open document. Called by the rodin sync watcher after Rodin (or a
+    /// rebuild) changed proof state on disk.
+    pub(crate) async fn refresh_proof_status(
+        &self,
+        status: std::collections::HashMap<String, String>,
+    ) {
+        {
+            let mut proof_status = self.proof_status.write();
+            if *proof_status == status {
+                return;
+            }
+            *proof_status = status;
+        }
+        for uri in self.document_manager.all_uris() {
+            self.analyze(uri).await;
+        }
     }
 }
 
@@ -267,6 +311,12 @@ pub struct RossiLanguageServer {
     rodin_open_in_flight: Arc<std::sync::atomic::AtomicBool>,
     /// Whether the client advertised `window.workDoneProgress` support.
     supports_work_done_progress: std::sync::atomic::AtomicBool,
+    /// Watcher over the shared Rodin workspace, started lazily once such a
+    /// workspace exists; dropped (stopped) on shutdown.
+    rodin_sync: parking_lot::Mutex<Option<crate::rodin::sync::RodinSyncManager>>,
+    /// Content hashes of files the server wrote into the Rodin workspace —
+    /// the sync watcher's echo guard, shared with the build flow.
+    rodin_written: crate::rodin::sync::WrittenFiles,
 }
 
 impl RossiLanguageServer {
@@ -321,6 +371,7 @@ impl RossiLanguageServer {
             workspace_symbol_provider: Arc::clone(&workspace_symbol_provider),
             config_manager: Arc::clone(&config_manager),
             diagnostic_locks: Arc::new(DashMap::new()),
+            proof_status: Arc::new(parking_lot::RwLock::new(std::collections::HashMap::new())),
             client: client.clone(),
         };
 
@@ -345,6 +396,42 @@ impl RossiLanguageServer {
             analyzer,
             rodin_open_in_flight: Arc::new(std::sync::atomic::AtomicBool::new(false)),
             supports_work_done_progress: std::sync::atomic::AtomicBool::new(false),
+            rodin_sync: parking_lot::Mutex::new(None),
+            rodin_written: Arc::new(parking_lot::Mutex::new(std::collections::HashMap::new())),
+        }
+    }
+
+    /// The shared Rodin workspace directory for the current configuration,
+    /// or `None` when no root is known and no override is set.
+    fn resolved_rodin_workspace(&self, fallback_root: Option<&std::path::Path>) -> Option<PathBuf> {
+        let configured = self.config_manager.get().rodin.workspace.trim().to_string();
+        if !configured.is_empty() {
+            return Some(PathBuf::from(configured));
+        }
+        self.cross_reference_manager
+            .workspace_root()
+            .or_else(|| fallback_root.map(std::path::Path::to_path_buf))
+            .map(|root| crate::rodin::default_workspace_dir(&root))
+    }
+
+    /// Start the Rodin workspace watcher if it isn't running yet (or watches
+    /// a different directory after a config change). Failures degrade to a
+    /// log line — proof state then refreshes on the next build instead.
+    fn ensure_rodin_sync(&self, workspace_dir: &std::path::Path) {
+        let mut sync = self.rodin_sync.lock();
+        if sync
+            .as_ref()
+            .is_some_and(|manager| manager.workspace_dir() == workspace_dir)
+        {
+            return;
+        }
+        match crate::rodin::sync::RodinSyncManager::start(
+            workspace_dir.to_path_buf(),
+            Arc::clone(&self.rodin_written),
+            self.analyzer.clone(),
+        ) {
+            Ok(manager) => *sync = Some(manager),
+            Err(e) => info!("could not watch Rodin workspace {workspace_dir:?}: {e}"),
         }
     }
 }
@@ -515,6 +602,15 @@ impl LanguageServer for RossiLanguageServer {
         }
         self.workspace_scan_state.complete();
 
+        // A Rodin workspace left by an earlier session carries proof state
+        // worth surfacing right away; watching only pre-existing directories
+        // keeps `.rossi/` from appearing in projects that never used Rodin.
+        if let Some(rodin_workspace) = self.resolved_rodin_workspace(None)
+            && rodin_workspace.is_dir()
+        {
+            self.ensure_rodin_sync(&rodin_workspace);
+        }
+
         self.client
             .log_message(MessageType::INFO, "Rossi Language Server initialized")
             .await;
@@ -546,6 +642,8 @@ impl LanguageServer for RossiLanguageServer {
 
     async fn shutdown(&self) -> Result<()> {
         info!("Received shutdown request");
+        // Stop the Rodin workspace watcher and its processing task.
+        self.rodin_sync.lock().take();
         Ok(())
     }
 
@@ -1107,21 +1205,21 @@ impl LanguageServer for RossiLanguageServer {
         }
 
         let config = self.config_manager.get();
-        let workspace_dir = if config.rodin.workspace.trim().is_empty() {
-            let root = self
-                .cross_reference_manager
-                .workspace_root()
-                .unwrap_or_else(|| source_dir.clone());
-            crate::rodin::default_workspace_dir(&root)
-        } else {
-            PathBuf::from(config.rodin.workspace.trim())
-        };
+        let workspace_dir = self
+            .resolved_rodin_workspace(Some(&source_dir))
+            .expect("a source dir fallback always yields a workspace dir");
+        // Start the sync watcher before the build so even the first build's
+        // results are watched; the directory must exist to be watchable.
+        if std::fs::create_dir_all(&workspace_dir).is_ok() {
+            self.ensure_rodin_sync(&workspace_dir);
+        }
         let request = crate::rodin::OpenRequest {
             source_dir,
             overlay: self.document_manager.open_file_texts(),
             workspace_dir,
             configured_rodin_path: config.rodin.path.clone(),
             progress_supported: self.supports_work_done_progress.load(Ordering::Relaxed),
+            written: Arc::clone(&self.rodin_written),
         };
 
         // Reset the guard when the task future is dropped — completion and

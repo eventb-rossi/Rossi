@@ -49,6 +49,8 @@ anyhow = "1.0"
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 walkdir = "2"
+# Filesystem watcher for the Rodin workspace sync (eventb-lsp).
+notify = "8"
 
 # Dev dependencies
 indoc = "2.0"
