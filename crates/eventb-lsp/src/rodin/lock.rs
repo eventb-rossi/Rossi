@@ -74,17 +74,9 @@ mod tests {
     #[cfg(unix)]
     #[test]
     fn unlocked_lock_file_is_free() {
-        let dir = std::env::temp_dir().join(format!(
-            "rossi-lock-test-{}-{}",
-            std::process::id(),
-            std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .unwrap()
-                .as_nanos()
-        ));
-        std::fs::create_dir_all(dir.join(".metadata")).unwrap();
-        std::fs::write(dir.join(".metadata").join(".lock"), b"").unwrap();
-        assert_eq!(workspace_lock_state(&dir), LockState::Free);
-        std::fs::remove_dir_all(&dir).ok();
+        let dir = crate::test_util::TempDir::new("rossi-lock-test");
+        std::fs::create_dir_all(dir.path().join(".metadata")).unwrap();
+        std::fs::write(dir.path().join(".metadata").join(".lock"), b"").unwrap();
+        assert_eq!(workspace_lock_state(dir.path()), LockState::Free);
     }
 }
