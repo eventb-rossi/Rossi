@@ -81,7 +81,12 @@ An **Open in Rodin** code lens appears on MACHINE/CONTEXT declarations (set
 `"show_code_lens": "annotation"` in the LSP package settings if lenses don't
 render). Running it builds the file's directory into a persistent Rodin
 workspace — `.rossi/rodin` next to your sources by default — and launches the
-Rodin IDE on it; proofs made in Rodin survive rebuilds. Set
+Rodin IDE on it; proofs made in Rodin survive rebuilds. While Rodin is open
+the sync is live (`rossi.rodin.sync`, on by default): saving a file rebuilds
+the project in the background and Rodin picks it up within a few seconds,
+while edits saved in Rodin flow back into the `.eventb` sources automatically
+(three-way merge, git-style conflict markers if both sides changed the same
+lines). Set
 `rossi.rodin.path` in the `settings` block above if Rodin is not at the
 platform default location (`/Applications/Rodin.app`, `rodin.exe`, `rodin`).
 

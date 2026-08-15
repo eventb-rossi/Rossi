@@ -398,6 +398,9 @@ pub struct RossiLanguageServer {
     /// Content hashes of files the server wrote into the Rodin workspace —
     /// the sync watcher's echo guard, shared with the build flow.
     rodin_written: crate::rodin::sync::WrittenFiles,
+    /// Per-project debounce generations for rebuild-on-save: a burst of
+    /// saves collapses to one rebuild of each affected project.
+    rodin_rebuild_generations: Arc<parking_lot::Mutex<std::collections::HashMap<PathBuf, u64>>>,
 }
 
 impl RossiLanguageServer {
@@ -479,6 +482,9 @@ impl RossiLanguageServer {
             supports_work_done_progress: std::sync::atomic::AtomicBool::new(false),
             rodin_sync: Arc::new(parking_lot::Mutex::new(RodinSyncState::Off)),
             rodin_written: Arc::new(parking_lot::Mutex::new(std::collections::HashMap::new())),
+            rodin_rebuild_generations: Arc::new(parking_lot::Mutex::new(
+                std::collections::HashMap::new(),
+            )),
         }
     }
 
@@ -536,6 +542,75 @@ impl RossiLanguageServer {
                     }
                     info!("could not watch Rodin workspace {dir:?}: {e}");
                 }
+            }
+        });
+    }
+
+    /// Debounced rebuild of the saved document's Rodin project, when
+    /// `rossi.rodin.sync` is on (the default) and the project already
+    /// exists in the shared workspace — a running Rodin, with auto-refresh
+    /// seeded, then sees the edit without another lens click. Errors only
+    /// log — the editor already shows this document's diagnostics.
+    fn schedule_rodin_rebuild(&self, uri: &Url) {
+        if !self.config_manager.get().rodin.sync {
+            return;
+        }
+        let Ok(path) = uri.to_file_path() else {
+            return;
+        };
+        let Some(source_dir) = path.parent().map(std::path::Path::to_path_buf) else {
+            return;
+        };
+        let Some(workspace_dir) = self.resolved_rodin_workspace(Some(&source_dir)) else {
+            return;
+        };
+        let project_name = crate::rodin::sanitize_project_name(
+            source_dir
+                .file_name()
+                .and_then(|n| n.to_str())
+                .unwrap_or_default(),
+        );
+        let project_dir = workspace_dir.join(&project_name);
+        if !project_dir.is_dir() {
+            return;
+        }
+
+        let generation = {
+            let mut generations = self.rodin_rebuild_generations.lock();
+            let entry = generations.entry(project_dir.clone()).or_insert(0);
+            *entry += 1;
+            *entry
+        };
+        let generations = Arc::clone(&self.rodin_rebuild_generations);
+        let document_manager = Arc::clone(&self.document_manager);
+        let written = Arc::clone(&self.rodin_written);
+        tokio::spawn(async move {
+            tokio::time::sleep(Duration::from_millis(500)).await;
+            {
+                let mut generations = generations.lock();
+                if generations.get(&project_dir) != Some(&generation) {
+                    return; // superseded by a newer save
+                }
+                generations.remove(&project_dir);
+            }
+            let overlay = document_manager.open_file_texts();
+            let build_dir = project_dir.clone();
+            let result = tokio::task::spawn_blocking(move || {
+                crate::rodin::build::build_rodin_project(
+                    &source_dir,
+                    &overlay,
+                    &build_dir,
+                    &project_name,
+                )
+            })
+            .await;
+            match result {
+                Ok(Ok(outcome)) => {
+                    written.lock().extend(outcome.written);
+                    debug!("rebuilt Rodin project {} on save", project_dir.display());
+                }
+                Ok(Err(message)) => info!("rebuild-on-save skipped: {message}"),
+                Err(join_error) => info!("rebuild-on-save failed: {join_error}"),
             }
         });
     }
@@ -854,6 +929,8 @@ impl LanguageServer for RossiLanguageServer {
                 Err(error) => info!("Failed to refresh saved symbols for {uri}: {error}"),
             }
         }
+
+        self.schedule_rodin_rebuild(&uri);
     }
 
     async fn document_symbol(

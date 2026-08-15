@@ -245,6 +245,15 @@ Proofs made in Rodin persist there and survive rebuilds.  Empty selects
   :type 'string
   :group 'eventb)
 
+(defcustom lsp-rossi-rodin-sync t
+  "Mutual live synchronization with a running Rodin.
+While Rodin is open on the shared workspace, saving a buffer rebuilds
+its project (Rodin picks the edit up within a few seconds), and edits
+saved in Rodin flow back into the .eventb sources automatically.
+Turning it off also stops the workspace watcher."
+  :type 'boolean
+  :group 'eventb)
+
 (with-eval-after-load 'lsp-mode
   (lsp-register-client
    (make-lsp-client
@@ -264,7 +273,8 @@ Proofs made in Rodin persist there and survive rebuilds.  Empty selects
                                :debounceMs ,lsp-rossi-diagnostics-debounce-ms)
                  :completion (:enabled ,lsp-rossi-completion-enabled)
                  :rodin (:path ,lsp-rossi-rodin-path
-                         :workspace ,lsp-rossi-rodin-workspace)))))))
+                         :workspace ,lsp-rossi-rodin-workspace
+                         :sync ,(if lsp-rossi-rodin-sync t :json-false))))))))
 
 ;;; Unicode input method
 

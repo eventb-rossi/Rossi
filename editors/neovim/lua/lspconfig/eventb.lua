@@ -116,6 +116,10 @@ return {
           path = "",
           -- Shared Rodin workspace directory; "" = <root>/.rossi/rodin
           workspace = "",
+          -- Mutual live sync with a running Rodin: saves rebuild the
+          -- project while Rodin is open, and edits saved in Rodin flow
+          -- back into the .eventb sources
+          sync = true,
         },
       },
     },

@@ -192,6 +192,11 @@ With `lsp-lens-enable` on (eventb-mode already sets it buffer-locally), an
 `M-x lsp-avy-lens`. The server builds the file's directory into a persistent
 Rodin workspace (`.rossi/rodin` next to your sources — gitignore `.rossi/`)
 and launches the Rodin IDE on it; proofs made in Rodin survive rebuilds.
+While Rodin is open the sync is live (`lsp-rossi-rodin-sync`, on by default):
+saving a buffer rebuilds the project in the background and Rodin picks it up
+within a few seconds, while edits saved in Rodin flow back into the `.eventb`
+sources automatically (three-way merge, git-style conflict markers if both
+sides changed the same lines).
 With `lsp-extend-selection`, `M-x lsp-extend-selection` grows the active region
 to the next syntactic scope (and `lsp-shrink-selection` reverses it).
 
