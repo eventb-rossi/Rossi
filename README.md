@@ -251,6 +251,11 @@ rossi import project.zip --output ./project --ascii --indent="  "
 rossi import project.zip --output project.eventb --merge=M0,C0
 ```
 
+The input's proof state (`.bpr`/`.bps`/`.bpo`) is copied byte-exact into the
+same directory as the generated text — exactly where a later bare
+`rossi export --proofs` looks, so import → edit → export round-trips proofs
+without extra flags. Pass `--no-proofs` to skip the copies.
+
 ### Export (Event-B text → Rodin project)
 
 ```bash
@@ -259,6 +264,13 @@ rossi export ./project --output project.zip
 
 # Or emit a loose Rodin project directory
 rossi export ./project --output ./rodin-project
+
+# Also static-check and generate proof obligations (.bcc/.bcm + .bpo/.bps)
+rossi export ./project --output project.zip --build
+
+# Attach local proof state too (implies --build)
+rossi export ./project --output project.zip --proofs
+rossi export ./project --output project.zip --proofs=./rodin-project
 ```
 
 `export` writes a complete Rodin project: a `.project` descriptor (named after
@@ -267,6 +279,23 @@ an importable archive, or a directory output path for loose project files. The
 archive always uses Unicode operators, which is what Rodin expects, so `export`
 has no operator-convention option — use `rossi fmt` to change the convention of
 text files.
+
+With `--build`, the export also runs the static checker and proof-obligation
+generator (the same pipeline and exit semantics as `rossi build`: error
+diagnostics still write the output, then fail the command). With
+`--proofs[=PATH]` — which implies `--build` — local proof state joins the
+output: `.bpr` proofs are carried byte-exact, and the generated `.bpo`/`.bps`
+are reconciled against the local ones, so unchanged obligations keep their
+stamps and recorded statuses while changed ones are re-stamped for Rodin to
+re-check. `PATH` is a Rodin project directory or `.zip` (for a multi-project
+export, sub-projects match `PATH/<name>/`). The bare form looks next to the
+text inputs first and then in the LSP's shared Rodin workspace
+(`<root>/.rossi/rodin/<project>`); a custom `rossi.rodin.workspace` setting
+lives in editor configuration and is not visible to the CLI, so those setups
+pass the location explicitly with `--proofs=PATH`. Proof sources are
+read-only. Note that a directory output is not itself a proof source: to
+carry stamps across repeated loose exports, point `--proofs=<outdir>` at the
+previous output.
 
 ### Format (`fmt`)
 

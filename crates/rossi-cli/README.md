@@ -53,8 +53,8 @@ sudo dnf install rossi
 | Subcommand | Purpose |
 |------------|---------|
 | `validate` | Validate `.eventb` files, Rodin `.zip` archives, or unzipped Rodin project directories. |
-| `import`   | Import a Rodin `.zip` / `.buc` / `.bum` / directory into `.eventb` text. |
-| `export`   | Export `.eventb` / `.txt` / directory into a Rodin `.zip` archive. |
+| `import`   | Import a Rodin `.zip` / `.buc` / `.bum` / directory into `.eventb` text, copying proof files next to it (`--no-proofs` to skip). |
+| `export`   | Export `.eventb` / `.txt` / directory into a Rodin `.zip` archive; `--build` adds checked XML and proof obligations, `--proofs[=PATH]` carries local proofs. |
 | `fmt`      | Reformat Event-B in place (operator convention, indentation). |
 | `build`    | Static-check a Rodin project and emit `.bcc` / `.bcm` checked XML. |
 | `lsp`      | Run the Rossi language server over stdio (equivalent to the `eventb-language-server` binary). |
