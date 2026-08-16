@@ -296,6 +296,12 @@ fn build_eventb_file_packs_sources_and_checked() {
         dir_has_ext(&extracted, &["bcc", "bcm"]),
         "expected the checked output (.bcc/.bcm) in the built zip"
     );
+    // The text door stamps a `.project` descriptor, so the built zip imports
+    // into Rodin (and back through `rossi import`) under its real name.
+    assert!(
+        extracted.join(".project").is_file(),
+        "expected the .project descriptor in the built zip"
+    );
 
     std::fs::remove_dir_all(&tmp).ok();
 }

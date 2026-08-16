@@ -277,13 +277,22 @@ pub fn duplicate_component_name(components: &[NamedComponent]) -> Option<&str> {
 /// projects can never drift apart for the same sources. Returns the archive
 /// bytes alongside the project for callers that repack them.
 ///
+/// The archive carries a root `.project` descriptor, so the discovered name
+/// is the descriptor's — `name` trimmed, or `rossi_project` when blank —
+/// rather than `name` verbatim.
+///
 /// Components with duplicate names cannot be serialized; check with
 /// [`duplicate_component_name`] first.
 pub fn project_from_text_components(
     name: &str,
     components: &[NamedComponent],
 ) -> Result<(Vec<u8>, Project)> {
-    let bytes = rossi::to_zip(components)?;
+    // Without components the descriptor alone would still form a discovery
+    // group; keep rejecting empty input instead of yielding an empty project.
+    if components.is_empty() {
+        return Err(ProjectError::NoComponents.into());
+    }
+    let bytes = rossi::to_project_zip(components, name)?;
     let discovered = discover_projects(&bytes, name)?
         .into_iter()
         .next()
@@ -773,5 +782,57 @@ mod tests {
         assert_eq!(projects[0].components.len(), 1);
         // Name falls through past the unreadable checked file to the dir segment.
         assert_eq!(projects[0].name, "dir");
+    }
+
+    // --- text doors --------------------------------------------------------
+
+    fn entry_names(bytes: &[u8]) -> Vec<String> {
+        let mut archive = zip::ZipArchive::new(std::io::Cursor::new(bytes)).unwrap();
+        (0..archive.len())
+            .map(|i| archive.by_index(i).unwrap().name().to_string())
+            .collect()
+    }
+
+    fn entry_string(bytes: &[u8], name: &str) -> String {
+        let mut archive = zip::ZipArchive::new(std::io::Cursor::new(bytes)).unwrap();
+        let mut body = String::new();
+        std::io::Read::read_to_string(&mut archive.by_name(name).unwrap(), &mut body).unwrap();
+        body
+    }
+
+    #[test]
+    fn flat_door_stamps_descriptor_and_resolves_name_from_it() {
+        let components = rossi::parse_named_components("CONTEXT C1\nEND\n").unwrap();
+        let (bytes, project) = project_from_text_components("MyName", &components).unwrap();
+        assert_eq!(project.name, "MyName");
+        assert_eq!(entry_names(&bytes), [".project", "C1.buc"]);
+        let descriptor = entry_string(&bytes, ".project");
+        assert!(
+            descriptor.contains("<name>MyName</name>"),
+            "descriptor: {descriptor}"
+        );
+    }
+
+    #[test]
+    fn flat_door_normalizes_blank_and_padded_names() {
+        // The descriptor writer trims the name and substitutes a default for a
+        // blank one; discovery then reads the descriptor, so the returned
+        // project follows suit instead of keeping the raw name verbatim.
+        let components = rossi::parse_named_components("CONTEXT C1\nEND\n").unwrap();
+        let (_, blank) = project_from_text_components("   ", &components).unwrap();
+        assert_eq!(blank.name, "rossi_project");
+        let (_, padded) = project_from_text_components(" X ", &components).unwrap();
+        assert_eq!(padded.name, "X");
+    }
+
+    #[test]
+    fn flat_door_rejects_empty_components() {
+        // The descriptor alone would form a discovery group, so the door must
+        // keep failing on empty input rather than yield an empty project.
+        let err = project_from_text_components("p", &[]).unwrap_err();
+        assert!(
+            err.to_string().contains("no Event-B components"),
+            "unexpected error: {err}"
+        );
     }
 }
