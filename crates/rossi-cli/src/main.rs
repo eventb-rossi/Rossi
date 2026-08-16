@@ -10,6 +10,7 @@ mod commands {
     pub mod export;
     pub mod fmt;
     pub mod import;
+    pub mod proofs;
     pub mod sarif;
     pub mod validate;
 }

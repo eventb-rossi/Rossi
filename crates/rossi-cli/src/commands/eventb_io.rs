@@ -209,6 +209,17 @@ pub(crate) fn ensure_parent_dir(path: &Path) -> CmdResult<()> {
     Ok(())
 }
 
+/// The directory a file path lives in — its parent, or the current directory
+/// for a bare filename. Shared by the flows that resolve a sibling location
+/// from a user-supplied file path (`import --merge` output, `export --proofs`
+/// input scanning).
+pub(crate) fn parent_or_cwd(path: &Path) -> std::path::PathBuf {
+    match path.parent() {
+        Some(parent) if !parent.as_os_str().is_empty() => parent.to_path_buf(),
+        _ => std::path::PathBuf::from("."),
+    }
+}
+
 /// Reduce an untrusted name (a Rodin project name from a `.project` descriptor,
 /// or an archive directory segment that may contain `..` or be absolute) to a
 /// single safe path component, so it can never escape the chosen output
