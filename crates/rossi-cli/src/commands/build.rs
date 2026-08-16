@@ -15,17 +15,15 @@ use std::process::ExitCode;
 use clap::Args;
 
 use rossi_build::pog::reconcile::reconcile_build_files;
-use rossi_build::project::{
-    discover_projects, duplicate_component_name, project_from_text_components,
-};
-use rossi_build::repack::repackage_zip_bytes_multi;
-use rossi_build::rodin_ids::RodinIds;
-use rossi_build::{
-    BuildResult, Project, ProjectComponent, ScFile, Severity, build, is_normal_path_component,
-};
+use rossi_build::project::{duplicate_component_name, project_from_text_components};
+use rossi_build::{BuildResult, Project, ScFile, build, is_normal_path_component};
 
 use rossi::NamedComponent;
 
+use super::build_common::{
+    build_archive_projects, eb019_result, error_diagnostic_count, gate_after_write,
+    gate_before_write, repack_results, report_diagnostics,
+};
 use super::eventb_io::{self, InputKind};
 
 #[derive(Args)]
@@ -56,23 +54,7 @@ pub fn run_build_command(args: BuildArgs) -> ExitCode {
 fn run_build(input: &Path, output: Option<&Path>) -> Result<(), Box<dyn std::error::Error>> {
     let outcome = build_one(input)?;
 
-    // A project that failed outright — duplicate component names (EB019)
-    // or a dependency cycle (EB007/EB008) — produced nothing to write.
-    // Healthy sibling projects in a multi-project archive still get their
-    // output written below. Any error diagnostic — with or without checked
-    // output — then makes the build exit nonzero (the gates after the
-    // write), so a broken project cannot slide through CI.
-    let failed: Vec<&str> = outcome
-        .results
-        .iter()
-        .filter(|(_, r)| r.failed_outright())
-        .map(|(prefix, _)| project_label(prefix))
-        .collect();
-    if outcome.results.len() == failed.len() && !failed.is_empty() {
-        // Nothing was checked at all: don't write a sources-only archive.
-        report_diagnostics(&outcome);
-        return Err("no project produced checked output; see the diagnostics above".into());
-    }
+    let failed = gate_before_write(&outcome.results)?;
 
     let default_out;
     let out_path = match output {
@@ -91,14 +73,9 @@ fn run_build(input: &Path, output: Option<&Path>) -> Result<(), Box<dyn std::err
     };
 
     write_output(input, out_path, &outcome)?;
-    report_diagnostics(&outcome);
+    report_diagnostics(&outcome.results);
 
-    let errors = outcome
-        .results
-        .iter()
-        .flat_map(|(_, r)| &r.diagnostics)
-        .filter(|d| d.severity == Severity::Error)
-        .count();
+    let errors = error_diagnostic_count(&outcome.results);
     let files: usize = outcome.results.iter().map(|(_, r)| r.files.len()).sum();
     eprintln!(
         "rossi build: wrote {} -> {} ({} file(s) across {} project(s), {} error diagnostic(s))",
@@ -108,21 +85,7 @@ fn run_build(input: &Path, output: Option<&Path>) -> Result<(), Box<dyn std::err
         outcome.results.len(),
         errors
     );
-    if !failed.is_empty() {
-        return Err(format!(
-            "project(s) {} produced no checked output; see the diagnostics above",
-            failed.join(", ")
-        )
-        .into());
-    }
-    if errors > 0 {
-        return Err(format!(
-            "{errors} error diagnostic(s); checked output was still written \
-             (erroneous elements are dropped and their files marked inaccurate)"
-        )
-        .into());
-    }
-    Ok(())
+    gate_after_write(&outcome.results, &failed, "checked output")
 }
 
 struct BuildOutcome {
@@ -199,20 +162,8 @@ fn build_from_components(
     // is invalid regardless. Assemble the project directly so the failure
     // surfaces as the SC's EB019 diagnostic instead of a zip-writer error.
     if duplicate_component_name(&components).is_some() {
-        let project = Project::new(
-            name,
-            components
-                .into_iter()
-                .map(|nc| ProjectComponent {
-                    filename: nc.filename,
-                    component: nc.component,
-                    rodin_ids: RodinIds::default(),
-                    source: None,
-                })
-                .collect(),
-        );
         return Ok(BuildOutcome {
-            results: vec![(String::new(), build(&project))],
+            results: vec![(String::new(), eb019_result(name, components))],
             archive_bytes: None,
         });
     }
@@ -238,20 +189,13 @@ fn build_zip_bytes(
     fallback_name: &str,
     bytes: Vec<u8>,
 ) -> Result<BuildOutcome, Box<dyn std::error::Error>> {
-    let projects = discover_projects(&bytes, fallback_name)?;
+    let results = build_archive_projects(&bytes, fallback_name)?;
     // No project (no `.buc`/`.bum`, no `.project`) would otherwise repackage to
     // a zip stripped of its checked/proof files with nothing regenerated — a
     // silently destructive "success". Fail loudly instead.
-    if projects.is_empty() {
+    if results.is_empty() {
         return Err("no Event-B projects found in archive".into());
     }
-    let results = projects
-        .into_iter()
-        .map(|dp| {
-            let prefix = dp.prefix.clone();
-            (prefix, build(&dp.into_project()))
-        })
-        .collect();
     Ok(BuildOutcome {
         results,
         archive_bytes: Some(bytes),
@@ -304,13 +248,7 @@ fn write_zip(
     }
     let bytes = match &outcome.archive_bytes {
         // Each project's checked files are dropped under its own prefix.
-        Some(b) => repackage_zip_bytes_multi(
-            b,
-            outcome
-                .results
-                .iter()
-                .map(|(prefix, result)| (prefix.as_str(), result)),
-        )?,
+        Some(b) => repack_results(b, &outcome.results)?,
         // Directory input → no source archive to repack, so just emit our
         // checked files into a fresh flat archive (always a single project).
         None => {
@@ -582,30 +520,4 @@ fn synthesize_flat_zip(
     }
     w.finish()?;
     Ok(cursor.into_inner())
-}
-
-/// Human-readable name for a project's archive prefix (the flat/root
-/// project has an empty prefix).
-fn project_label(prefix: &str) -> &str {
-    if prefix.is_empty() {
-        "(root)"
-    } else {
-        prefix.trim_end_matches('/')
-    }
-}
-
-fn report_diagnostics(outcome: &BuildOutcome) {
-    // A diagnostic's Display carries only the bare component name, so in a
-    // multi-project archive (where sibling projects can share component names)
-    // print a per-project header to disambiguate which project each came from.
-    let multi = outcome.results.len() > 1;
-    for (prefix, result) in &outcome.results {
-        if multi && !result.diagnostics.is_empty() {
-            let label = project_label(prefix);
-            eprintln!("--- {label} ---");
-        }
-        for d in &result.diagnostics {
-            eprintln!("{d}");
-        }
-    }
 }

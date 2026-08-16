@@ -4,6 +4,7 @@ use clap::{CommandFactory, Parser, Subcommand};
 
 mod commands {
     pub mod build;
+    pub mod build_common;
     pub mod completions;
     pub mod eventb_io;
     pub mod export;
