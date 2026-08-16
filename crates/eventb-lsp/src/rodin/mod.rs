@@ -105,6 +105,44 @@ fn stable_path_hash(path: &Path) -> u32 {
     hash
 }
 
+/// The Rodin project directory for a text source directory, if the shared
+/// workspace exists — the reverse of [`default_workspace_dir`] +
+/// [`project_name_for`], for out-of-process callers (the `rossi` CLI) that
+/// cannot see a `rossi.rodin.workspace` editor-config override: walk up to
+/// the nearest ancestor holding `.rossi/rodin`, then apply the naming
+/// convention.
+///
+/// The LSP names projects from the editor's raw (uncanonicalized) paths, so
+/// the raw absolute path is tried first and its canonicalized form second —
+/// under a symlinked checkout the two derive different project names, and
+/// only the raw one matches the directory the LSP actually created.
+pub fn workspace_project_dir(source_dir: &Path) -> Option<PathBuf> {
+    let raw = if source_dir.is_absolute() {
+        Some(source_dir.to_path_buf())
+    } else {
+        std::env::current_dir().ok().map(|cwd| cwd.join(source_dir))
+    };
+    let mut candidates: Vec<PathBuf> = raw.into_iter().collect();
+    if let Ok(canon) = std::fs::canonicalize(source_dir)
+        && !candidates.contains(&canon)
+    {
+        candidates.push(canon);
+    }
+    for path in candidates {
+        let Some(root) = path
+            .ancestors()
+            .find(|a| a.join(".rossi").join("rodin").is_dir())
+        else {
+            continue;
+        };
+        let project_dir = default_workspace_dir(root).join(project_name_for(&path, Some(root)));
+        if project_dir.is_dir() {
+            return Some(project_dir);
+        }
+    }
+    None
+}
+
 /// The "Open in Rodin" lenses for a document: one per component, anchored on
 /// the component's name. When the parse yields no components (mid-edit
 /// breakage), fall back to scanning for `MACHINE`/`CONTEXT` header lines so
@@ -493,6 +531,8 @@ impl Progress {
 mod tests {
     use super::*;
 
+    use crate::test_util::TempDir;
+
     #[test]
     fn sanitizes_project_names() {
         assert_eq!(sanitize_project_name("cars on bridge"), "cars_on_bridge");
@@ -531,6 +571,34 @@ mod tests {
         assert_eq!(
             default_workspace_dir(Path::new("/proj")),
             PathBuf::from("/proj/.rossi/rodin")
+        );
+    }
+
+    #[test]
+    fn workspace_walkup_names_nested_dirs_by_relative_path() {
+        let tmp = TempDir::new("rodin-walkup");
+        let nested = tmp.join("models").join("lift");
+        std::fs::create_dir_all(&nested).unwrap();
+        let project = tmp.join(".rossi").join("rodin").join("models_lift");
+        std::fs::create_dir_all(&project).unwrap();
+        assert_eq!(workspace_project_dir(&nested), Some(project));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn workspace_lookup_prefers_the_raw_symlinked_path() {
+        // The checkout really lives at `target`, but the LSP saw it through
+        // the `link` symlink and named the project after the raw path — so
+        // the lookup must derive the name from the raw path too; a
+        // canonicalize-first lookup would derive "target" and find nothing.
+        let tmp = TempDir::new("rodin-symlink");
+        let target = tmp.join("target");
+        std::fs::create_dir_all(target.join(".rossi").join("rodin").join("link")).unwrap();
+        let link = tmp.join("link");
+        std::os::unix::fs::symlink(&target, &link).unwrap();
+        assert_eq!(
+            workspace_project_dir(&link),
+            Some(link.join(".rossi").join("rodin").join("link"))
         );
     }
 

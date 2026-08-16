@@ -84,12 +84,15 @@ impl ProofSource {
         };
         match self {
             ProofSource::Local => {
-                // Next-to-inputs wins over the workspace.
+                // Next-to-inputs wins over the workspace. A custom
+                // `rossi.rodin.workspace` setting lives in editor
+                // configuration and is not discoverable here —
+                // `--proofs=PATH` covers those setups.
                 for dir in local_dirs {
                     absorb(proofs_in_dir(dir)?);
                 }
                 for dir in local_dirs {
-                    if let Some(project_dir) = workspace_project_dir(dir) {
+                    if let Some(project_dir) = eventb_lsp::rodin::workspace_project_dir(dir) {
                         absorb(proofs_in_dir(&project_dir)?);
                     }
                 }
@@ -144,44 +147,6 @@ pub(crate) fn proofs_in_dir(dir: &Path) -> CmdResult<Vec<(String, Vec<u8>)>> {
             Ok((basename, fs::read(&path)?))
         })
         .collect()
-}
-
-/// The LSP's Rodin project directory for a text source directory, if the
-/// shared workspace exists: walk up to the nearest ancestor holding
-/// `.rossi/rodin`, then apply the LSP's project-naming convention. A custom
-/// `rossi.rodin.workspace` setting lives in editor configuration and is not
-/// discoverable here — `--proofs=PATH` covers those setups.
-///
-/// The LSP names projects from the editor's raw (uncanonicalized) paths, so
-/// the raw absolute path is tried first and its canonicalized form second —
-/// under a symlinked checkout the two derive different project names, and
-/// only the raw one matches the directory the LSP actually created.
-fn workspace_project_dir(source_dir: &Path) -> Option<PathBuf> {
-    let raw = if source_dir.is_absolute() {
-        Some(source_dir.to_path_buf())
-    } else {
-        std::env::current_dir().ok().map(|cwd| cwd.join(source_dir))
-    };
-    let mut candidates: Vec<PathBuf> = raw.into_iter().collect();
-    if let Ok(canon) = fs::canonicalize(source_dir)
-        && !candidates.contains(&canon)
-    {
-        candidates.push(canon);
-    }
-    for path in candidates {
-        let Some(root) = path
-            .ancestors()
-            .find(|a| a.join(".rossi").join("rodin").is_dir())
-        else {
-            continue;
-        };
-        let project_dir = eventb_lsp::rodin::default_workspace_dir(root)
-            .join(eventb_lsp::rodin::project_name_for(&path, Some(root)));
-        if project_dir.is_dir() {
-            return Some(project_dir);
-        }
-    }
-    None
 }
 
 /// The proof entries sitting directly under `prefix` (`"Name/"`, or `""` for
@@ -321,23 +286,6 @@ mod tests {
                 ("N.bpr".to_string(), b"local-only".to_vec()),
             ]
         );
-    }
-
-    #[test]
-    fn workspace_walkup_names_nested_dirs_by_relative_path() {
-        let tmp = TempDir::new("rossi-proofs-walkup");
-        let root = &tmp.0;
-        let nested = root.join("models").join("lift");
-        fs::create_dir_all(&nested).unwrap();
-        let project = root.join(".rossi").join("rodin").join("models_lift");
-        fs::create_dir_all(&project).unwrap();
-        fs::write(project.join("L.bps"), b"status").unwrap();
-
-        let files = ProofSource::Local
-            .for_project(None, &[nested])
-            .expect("local resolution");
-        assert_eq!(files.len(), 1);
-        assert_eq!(files[0].0, "L.bps");
     }
 
     #[test]
