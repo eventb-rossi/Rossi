@@ -1,8 +1,8 @@
 //! `rossi build`: diagnostics, output writing, and output-path containment.
 
 use crate::helpers::{
-    ASCII_CONTEXT, BuildFixture, DUP_VARIABLE_MACHINE, dir_has_ext, extract_zip_to, rossi_command,
-    tempdir_unique,
+    ASCII_CONTEXT, BuildFixture, DUP_VARIABLE_MACHINE, dir_has_ext, extract_zip_to,
+    rewrite_zip_entry, rossi_command, tempdir_unique, zip_entry_bytes, zip_entry_names,
 };
 
 #[test]
@@ -352,50 +352,6 @@ fn build_zip(input: &std::path::Path, out_zip: &std::path::Path) {
         "stderr={}",
         String::from_utf8_lossy(&output.stderr)
     );
-}
-
-fn zip_entry_bytes(zip_path: &std::path::Path, name: &str) -> Vec<u8> {
-    use std::io::Read;
-    let mut archive = zip::ZipArchive::new(std::fs::File::open(zip_path).unwrap()).unwrap();
-    let mut entry = archive.by_name(name).unwrap_or_else(|_| panic!("{name}"));
-    let mut bytes = Vec::new();
-    entry.read_to_end(&mut bytes).unwrap();
-    bytes
-}
-
-fn zip_entry_names(zip_path: &std::path::Path) -> Vec<String> {
-    let mut archive = zip::ZipArchive::new(std::fs::File::open(zip_path).unwrap()).unwrap();
-    (0..archive.len())
-        .map(|i| archive.by_index(i).unwrap().name().to_string())
-        .collect()
-}
-
-/// Rewrite one text entry of a zip through `transform`, copying every
-/// other entry as-is.
-fn rewrite_zip_entry(
-    zip_path: &std::path::Path,
-    out_path: &std::path::Path,
-    entry_name: &str,
-    transform: impl Fn(&str) -> String,
-) {
-    use std::io::{Read, Write};
-    let mut archive = zip::ZipArchive::new(std::fs::File::open(zip_path).unwrap()).unwrap();
-    let mut cursor = std::io::Cursor::new(Vec::new());
-    let mut writer = zip::ZipWriter::new(&mut cursor);
-    let options = zip::write::SimpleFileOptions::default();
-    for i in 0..archive.len() {
-        let mut entry = archive.by_index(i).unwrap();
-        let name = entry.name().to_string();
-        let mut bytes = Vec::new();
-        entry.read_to_end(&mut bytes).unwrap();
-        if name == entry_name {
-            bytes = transform(std::str::from_utf8(&bytes).unwrap()).into_bytes();
-        }
-        writer.start_file(name, options).unwrap();
-        writer.write_all(&bytes).unwrap();
-    }
-    writer.finish().unwrap();
-    std::fs::write(out_path, cursor.into_inner()).unwrap();
 }
 
 #[test]

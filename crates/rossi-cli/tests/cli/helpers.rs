@@ -8,6 +8,23 @@ pub fn rossi_command() -> Command {
     Command::new(env!("CARGO_BIN_EXE_rossi"))
 }
 
+/// Run the CLI with `args`, returning the completed process output.
+pub fn run_cli(args: &[&str]) -> std::process::Output {
+    rossi_command()
+        .args(args)
+        .output()
+        .expect("Failed to execute command")
+}
+
+/// Assert a CLI run succeeded, quoting its stderr on failure.
+pub fn assert_cli_ok(output: &std::process::Output, case: &str) {
+    assert!(
+        output.status.success(),
+        "{case}; stderr={}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+}
+
 /// A minimal machine whose variable `dead` is declared but never referenced
 /// outside its typing invariant, so EB011 fires at its declaring level —
 /// independent of any refinement-chain lint semantics (the bundled example
@@ -88,7 +105,7 @@ pub const ASCII_CONTEXT: &str = "CONTEXT c\nCONSTANTS\n    x\nAXIOMS\n    @axm1 
 
 pub const DUP_VARIABLE_MACHINE: &str = "MACHINE M\nVARIABLES\n    x x\nINVARIANTS\n    @inv1 x >= 0\nEVENTS\n    EVENT INITIALISATION\n    THEN\n        x := 0\n    END\nEND\n";
 
-const MINIMAL_BUILD_CONTEXT_XML: &str = "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n\
+pub const MINIMAL_BUILD_CONTEXT_XML: &str = "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n\
     <org.eventb.core.contextFile version=\"3\" \
     org.eventb.core.configuration=\"org.eventb.core.fwd\"></org.eventb.core.contextFile>\n";
 
@@ -201,6 +218,49 @@ pub fn extract_zip_to(zip_path: &PathBuf, dest: &std::path::Path) {
         entry.read_to_end(&mut buf).unwrap();
         std::fs::write(out, buf).unwrap();
     }
+}
+
+pub fn zip_entry_bytes(zip_path: &std::path::Path, name: &str) -> Vec<u8> {
+    let mut archive = zip::ZipArchive::new(std::fs::File::open(zip_path).unwrap()).unwrap();
+    let mut entry = archive.by_name(name).unwrap_or_else(|_| panic!("{name}"));
+    let mut bytes = Vec::new();
+    entry.read_to_end(&mut bytes).unwrap();
+    bytes
+}
+
+pub fn zip_entry_names(zip_path: &std::path::Path) -> Vec<String> {
+    let mut archive = zip::ZipArchive::new(std::fs::File::open(zip_path).unwrap()).unwrap();
+    (0..archive.len())
+        .map(|i| archive.by_index(i).unwrap().name().to_string())
+        .collect()
+}
+
+/// Rewrite one text entry of a zip through `transform`, copying every
+/// other entry as-is.
+pub fn rewrite_zip_entry(
+    zip_path: &std::path::Path,
+    out_path: &std::path::Path,
+    entry_name: &str,
+    transform: impl Fn(&str) -> String,
+) {
+    use std::io::Write;
+    let mut archive = zip::ZipArchive::new(std::fs::File::open(zip_path).unwrap()).unwrap();
+    let mut cursor = std::io::Cursor::new(Vec::new());
+    let mut writer = zip::ZipWriter::new(&mut cursor);
+    let options = zip::write::SimpleFileOptions::default();
+    for i in 0..archive.len() {
+        let mut entry = archive.by_index(i).unwrap();
+        let name = entry.name().to_string();
+        let mut bytes = Vec::new();
+        entry.read_to_end(&mut bytes).unwrap();
+        if name == entry_name {
+            bytes = transform(std::str::from_utf8(&bytes).unwrap()).into_bytes();
+        }
+        writer.start_file(name, options).unwrap();
+        writer.write_all(&bytes).unwrap();
+    }
+    writer.finish().unwrap();
+    std::fs::write(out_path, cursor.into_inner()).unwrap();
 }
 
 /// Run the CLI with `stdin_data` piped to its standard input.
