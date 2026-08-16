@@ -14,7 +14,7 @@
 
 use std::path::{Path, PathBuf};
 
-use rossi::{Component, NamedComponent, parse_components, parse_xml};
+use rossi::{Component, NamedComponent, NamedProject, parse_components, parse_xml};
 
 use crate::error::{ProjectError, Result};
 use crate::rodin_ids::RodinIds;
@@ -273,9 +273,10 @@ pub fn duplicate_component_name(components: &[NamedComponent]) -> Option<&str> {
 /// serializing them to a Rodin source archive and re-discovering the project
 /// from it. The round-trip looks redundant, but it is what keeps handle URIs
 /// byte-exact with the `.zip` pipeline (see [`discover_projects`]'s name
-/// resolution) — both the CLI and the LSP build through here so their
-/// projects can never drift apart for the same sources. Returns the archive
-/// bytes alongside the project for callers that repack them.
+/// resolution) — this door and its N-project sibling
+/// [`projects_from_text_components`] are the only text→project paths, so the
+/// CLI and the LSP can never drift apart for the same sources. Returns the
+/// archive bytes alongside the project for callers that repack them.
 ///
 /// The archive carries a root `.project` descriptor, so the discovered name
 /// is the descriptor's — `name` trimmed, or `rossi_project` when blank —
@@ -298,6 +299,25 @@ pub fn project_from_text_components(
         .next()
         .ok_or(ProjectError::NoComponents)?;
     Ok((bytes, discovered.into_project()))
+}
+
+/// The N-project sibling of [`project_from_text_components`]: serialize each
+/// project under its `<name>/` archive prefix (descriptor included) and
+/// re-discover them all, in archive order, with their prefixes.
+///
+/// Preconditions: every project's components pass
+/// [`duplicate_component_name`], and project names are non-empty, prefix-safe,
+/// and mutually distinct — two equal names would share a prefix and fuse into
+/// one discovery group. A padded name (`"A "`) keeps its raw prefix (`"A /"`)
+/// but discovers under the descriptor-trimmed name (`"A"`). A project with no
+/// components is allowed and discovered empty.
+pub fn projects_from_text_components(
+    projects: &[NamedProject],
+) -> Result<(Vec<u8>, Vec<DiscoveredProject>)> {
+    let bytes = rossi::to_multi_project_zip(projects)?;
+    // Every group carries a descriptor, so the fallback name is inert.
+    let discovered = discover_projects(&bytes, "")?;
+    Ok((bytes, discovered))
 }
 
 enum ProjectDiscoveryEntry {
@@ -834,5 +854,27 @@ mod tests {
             err.to_string().contains("no Event-B components"),
             "unexpected error: {err}"
         );
+    }
+
+    #[test]
+    fn multi_door_returns_prefixed_projects() {
+        let a = NamedProject {
+            name: "A".into(),
+            components: rossi::parse_named_components("CONTEXT C\nEND\n").unwrap(),
+        };
+        let b = NamedProject {
+            name: "B".into(),
+            components: rossi::parse_named_components("MACHINE M\nEND\n").unwrap(),
+        };
+        let (bytes, discovered) = projects_from_text_components(&[a, b]).unwrap();
+        assert_eq!(
+            entry_names(&bytes),
+            ["A/.project", "A/C.buc", "B/.project", "B/M.bum"]
+        );
+        let summary: Vec<(&str, &str, usize)> = discovered
+            .iter()
+            .map(|d| (d.prefix.as_str(), d.name.as_str(), d.components.len()))
+            .collect();
+        assert_eq!(summary, [("A/", "A", 1), ("B/", "B", 1)]);
     }
 }

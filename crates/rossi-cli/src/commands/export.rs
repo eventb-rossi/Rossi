@@ -32,17 +32,19 @@
 
 use clap::Args;
 use rossi::{
-    NamedComponent, NamedProject, to_multi_project_zip, to_project_zip,
-    write_multi_project_directory, write_project_directory, write_project_zip_file,
+    NamedComponent, NamedProject, to_multi_project_zip, write_multi_project_directory,
+    write_project_directory, write_project_zip_file,
 };
-use rossi_build::project::duplicate_component_name;
-use rossi_build::{BuildResult, is_normal_path_component};
+use rossi_build::project::{
+    duplicate_component_name, project_from_text_components, projects_from_text_components,
+};
+use rossi_build::{BuildResult, build, is_normal_path_component};
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 
 use super::build_common::{
-    build_archive_projects, eb019_result, gate_after_write, gate_before_write, project_label,
+    build_discovered, eb019_result, gate_after_write, gate_before_write, project_label,
     repack_results, report_diagnostics,
 };
 use super::eventb_io::{self, CmdResult, InputFamily};
@@ -187,8 +189,9 @@ fn flat_local_dirs(inputs: &[PathBuf]) -> Vec<PathBuf> {
 
 /// Run the build pipeline over the planned projects and write the output.
 ///
-/// The plans are serialized to a Rodin source archive (descriptors included),
-/// any local proof files are injected as entries, and the archive is then
+/// The plans go through the same text→project doors as `rossi build` and the
+/// LSP ([`project_from_text_components`] / [`projects_from_text_components`]),
+/// any local proof files are injected as archive entries, and the result is
 /// checked and repackaged exactly as `rossi build` would: the injected
 /// `.bpo`/`.bps` become the reconcile baselines and the `.bpr` entries ride
 /// through byte-exact. Exit semantics mirror `rossi build` — the output is
@@ -252,18 +255,21 @@ fn export_built(cli: &ExportArgs, plans: Vec<ProjectPlan>, multi: bool) -> CmdRe
     }
     let proof_count = proof_entries.len();
 
-    let fallback_name = plans[0].project.name.clone();
     let projects: Vec<NamedProject> = plans.into_iter().map(|p| p.project).collect();
-    let mut src_bytes = if multi {
-        to_multi_project_zip(&projects)?
+    let (mut src_bytes, results) = if multi {
+        let (bytes, discovered) = projects_from_text_components(&projects)?;
+        (bytes, build_discovered(discovered))
     } else {
-        to_project_zip(&projects[0].components, &projects[0].name)?
+        let (bytes, project) =
+            project_from_text_components(&projects[0].name, &projects[0].components)?;
+        (bytes, vec![(String::new(), build(&project))])
     };
+    // Injecting after discovery is safe: proof entries are invisible to
+    // project discovery, and repack reads them from `src_bytes` as its
+    // reconcile baselines.
     if !proof_entries.is_empty() {
         src_bytes = append_zip_entries(src_bytes, proof_entries)?;
     }
-
-    let results = build_archive_projects(&src_bytes, &fallback_name)?;
     let failed = gate_before_write(&results)?;
 
     let bytes = repack_results(&src_bytes, &results)?;

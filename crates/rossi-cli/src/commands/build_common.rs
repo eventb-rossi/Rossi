@@ -6,7 +6,7 @@
 //! project can never slide through CI under either entry point.
 
 use rossi::NamedComponent;
-use rossi_build::project::discover_projects;
+use rossi_build::project::{DiscoveredProject, discover_projects};
 use rossi_build::repack::repackage_zip_bytes_multi;
 use rossi_build::rodin_ids::RodinIds;
 use rossi_build::{BuildResult, Project, ProjectComponent, Severity, build};
@@ -49,18 +49,27 @@ fn failed_labels(results: &[(String, BuildResult)]) -> Vec<&str> {
         .collect()
 }
 
-/// Discover every project in a source archive and static-check each,
-/// returning one `(archive prefix, BuildResult)` per project — the shared
-/// check step of `rossi build` and `rossi export --build`, so prefixes and
-/// handle URIs can never diverge between the two.
+/// Static-check each discovered project, returning one
+/// `(archive prefix, BuildResult)` per project — the shared check step of
+/// `rossi build` and `rossi export --build`, so prefixes and handle URIs can
+/// never diverge between the two.
+pub(crate) fn build_discovered(projects: Vec<DiscoveredProject>) -> Vec<(String, BuildResult)> {
+    projects
+        .into_iter()
+        .map(|dp| (dp.prefix.clone(), build(&dp.into_project())))
+        .collect()
+}
+
+/// [`build_discovered`] for a source archive whose projects are not yet
+/// discovered — `rossi build`'s zip-input path.
 pub(crate) fn build_archive_projects(
     zip_bytes: &[u8],
     fallback_name: &str,
 ) -> CmdResult<Vec<(String, BuildResult)>> {
-    Ok(discover_projects(zip_bytes, fallback_name)?
-        .into_iter()
-        .map(|dp| (dp.prefix.clone(), build(&dp.into_project())))
-        .collect())
+    Ok(build_discovered(discover_projects(
+        zip_bytes,
+        fallback_name,
+    )?))
 }
 
 /// Repackage the source archive with each project's checked files dropped
