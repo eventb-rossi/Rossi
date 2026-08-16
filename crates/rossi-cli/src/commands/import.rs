@@ -10,6 +10,13 @@
 //! subdirectory (or, with `--merge`, its own `<output>/<project>.eventb`) so
 //! sibling components sharing a basename never overwrite. A single project keeps
 //! the flat output unchanged.
+//!
+//! Proof state rides along: each project's `.bpr`/`.bps`/`.bpo` files are
+//! copied byte-exact into the same directory as its generated text (opt out
+//! with `--no-proofs`), which is exactly where a later bare
+//! `rossi export --proofs` looks — so import → edit → export round-trips
+//! proofs without extra flags. Loose `.buc`/`.bum` inputs carry no project
+//! root, so they contribute no proofs.
 
 use clap::Args;
 use rossi::{FormulaSpacing, NamedComponent, NamedProject, PrettyPrinter};
@@ -19,6 +26,7 @@ use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 
 use super::eventb_io::{self, CmdResult, InputFamily};
+use super::proofs::{proofs_in_dir, zip_proofs_at_prefix};
 
 #[derive(Args)]
 pub struct ImportArgs {
@@ -43,10 +51,20 @@ pub struct ImportArgs {
     #[arg(long, num_args = 0..=1, default_missing_value = "", require_equals = true, value_name = "ORDER")]
     merge: Option<String>,
 
+    /// Do not copy the input's .bpr/.bps/.bpo proof files next to the text
+    #[arg(long)]
+    no_proofs: bool,
+
     /// Show detailed progress
     #[arg(short, long)]
     verbose: bool,
 }
+
+/// One project's proof-state files as byte-exact `(basename, bytes)` pairs.
+type ProofSet = Vec<(String, Vec<u8>)>;
+
+/// Proof state per project, keyed by the project's output name.
+type ProofSets = Vec<(String, ProofSet)>;
 
 pub fn run(cli: ImportArgs) -> ExitCode {
     match run_inner(&cli) {
@@ -63,7 +81,7 @@ fn run_inner(cli: &ImportArgs) -> CmdResult<()> {
         eventb_io::ensure_input(input, InputFamily::Rodin)?;
     }
 
-    let projects = collect_projects(cli)?;
+    let (projects, proof_sets) = collect_projects(cli)?;
     let total: usize = projects.iter().map(|p| p.components.len()).sum();
     if total == 0 {
         return Err("No Event-B components found in input files".into());
@@ -89,6 +107,7 @@ fn run_inner(cli: &ImportArgs) -> CmdResult<()> {
         (None, false) => write_files_flat(cli, &printer, projects)?,
         (None, true) => write_files_per_project(cli, &printer, projects)?,
     }
+    write_proof_files(cli, &proof_sets, multi)?;
 
     if cli.verbose {
         eprintln!(
@@ -108,9 +127,19 @@ fn run_inner(cli: &ImportArgs) -> CmdResult<()> {
 /// component files) are dropped — there is no text to write for them. Every
 /// project name is reduced to a safe single path segment so an untrusted
 /// archive cannot escape the output directory.
-fn collect_projects(cli: &ImportArgs) -> CmdResult<Vec<NamedProject>> {
+///
+/// Alongside the projects, returns each project's proof files (unless
+/// `--no-proofs`), keyed by the same name. Loose component files carry no
+/// project root, so there is no proof state to collect for them.
+fn collect_projects(cli: &ImportArgs) -> CmdResult<(Vec<NamedProject>, ProofSets)> {
     let mut projects: Vec<NamedProject> = Vec::new();
+    let mut proof_sets: ProofSets = Vec::new();
     let mut loose: Vec<NamedComponent> = Vec::new();
+    let mut keep_proofs = |name: &str, proofs: ProofSet| {
+        if !proofs.is_empty() {
+            proof_sets.push((name.to_string(), proofs));
+        }
+    };
 
     for input in &cli.inputs {
         if cli.verbose {
@@ -124,10 +153,11 @@ fn collect_projects(cli: &ImportArgs) -> CmdResult<Vec<NamedProject>> {
             if components.is_empty() {
                 continue;
             }
-            projects.push(NamedProject {
-                name: eventb_io::safe_path_segment(&path_name(input)),
-                components,
-            });
+            let name = eventb_io::safe_path_segment(&path_name(input));
+            if !cli.no_proofs {
+                keep_proofs(&name, proofs_in_dir(input)?);
+            }
+            projects.push(NamedProject { name, components });
         } else {
             match input.extension().and_then(|e| e.to_str()) {
                 Some(ext) if ext.eq_ignore_ascii_case("zip") => {
@@ -136,6 +166,14 @@ fn collect_projects(cli: &ImportArgs) -> CmdResult<Vec<NamedProject>> {
                     for dp in discover_projects(&bytes, &fallback)? {
                         if dp.components.is_empty() {
                             continue;
+                        }
+                        // Key the output subdirectory on the unique archive
+                        // prefix (the SSOT guarantees prefixes are distinct),
+                        // not the resolved `.project` name, which can collide
+                        // between sibling projects or carry path traversal.
+                        let name = eventb_io::safe_path_segment(dp.prefix.trim_end_matches('/'));
+                        if !cli.no_proofs {
+                            keep_proofs(&name, zip_proofs_at_prefix(&bytes, &dp.prefix)?);
                         }
                         let components = dp
                             .components
@@ -152,14 +190,7 @@ fn collect_projects(cli: &ImportArgs) -> CmdResult<Vec<NamedProject>> {
                                 dp.name
                             );
                         }
-                        // Key the output subdirectory on the unique archive
-                        // prefix (the SSOT guarantees prefixes are distinct),
-                        // not the resolved `.project` name, which can collide
-                        // between sibling projects or carry path traversal.
-                        projects.push(NamedProject {
-                            name: eventb_io::safe_path_segment(dp.prefix.trim_end_matches('/')),
-                            components,
-                        });
+                        projects.push(NamedProject { name, components });
                     }
                 }
                 Some(ext) if eventb_io::is_rodin_xml_ext(ext) => {
@@ -173,14 +204,74 @@ fn collect_projects(cli: &ImportArgs) -> CmdResult<Vec<NamedProject>> {
     if !loose.is_empty() {
         // The loose group is only ever namespaced (given a subdirectory) when it
         // sits beside another project; a neutral name avoids doubling the output
-        // directory's own basename.
+        // directory's own basename. Loose component files carry no project
+        // root, so there is no proof state to collect for them.
         projects.push(NamedProject {
             name: "components".to_string(),
             components: loose,
         });
     }
 
-    Ok(projects)
+    Ok((projects, proof_sets))
+}
+
+/// Copy each project's proof files into the same directory its text went to:
+/// the output directory (flat), the project's subdirectory (multi), or the
+/// merged file's directory (`--merge`).
+fn write_proof_files(
+    cli: &ImportArgs,
+    proof_sets: &[(String, ProofSet)],
+    multi: bool,
+) -> CmdResult<()> {
+    if proof_sets.is_empty() {
+        return Ok(());
+    }
+    // With --merge, several projects share one flat output directory; a proof
+    // basename carried by two projects has no unambiguous destination there,
+    // so those files are skipped with a warning.
+    let merged = cli.merge.is_some();
+    let mut skip: std::collections::BTreeSet<&str> = std::collections::BTreeSet::new();
+    if merged && multi {
+        let mut seen: std::collections::BTreeMap<&str, &str> = std::collections::BTreeMap::new();
+        for (project, proofs) in proof_sets {
+            for (name, _) in proofs {
+                if let Some(other) = seen.insert(name, project) {
+                    eprintln!(
+                        "Warning: proof file {name} exists in both {other} and {project}; \
+                         not imported"
+                    );
+                    skip.insert(name);
+                }
+            }
+        }
+    }
+    for (project, proofs) in proof_sets {
+        // The destination mirrors where the text writer for the same
+        // (merge, multi) shape put this project's text.
+        let dir = match (merged, multi) {
+            // One .eventb per component, directly in the output directory.
+            (false, false) => cli.output.clone(),
+            // Each project under its own `<output>/<project>/` subdirectory.
+            (false, true) => cli.output.join(project),
+            // A --merge single-file output: proofs land next to the file.
+            (true, false) => eventb_io::parent_or_cwd(&cli.output),
+            // Merged per-project files share the output directory flat.
+            (true, true) => cli.output.clone(),
+        };
+        fs::create_dir_all(&dir)?;
+        let mut written = 0usize;
+        for (name, bytes) in proofs {
+            if skip.contains(name.as_str()) {
+                continue;
+            }
+            fs::write(dir.join(name), bytes)?;
+            written += 1;
+        }
+        if cli.verbose && written > 0 {
+            eprintln!("  Wrote {written} proof file(s) for {project}");
+        }
+    }
+    Ok(())
 }
 
 /// Merge all components into the single output file (single-project default).

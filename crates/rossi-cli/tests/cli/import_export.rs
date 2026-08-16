@@ -3,8 +3,9 @@
 use std::io::Read;
 
 use crate::helpers::{
-    ASCII_CONTEXT, dir_has_ext, extract_zip_to, project_descriptor, rossi_command,
-    run_cli_with_stdin, tempdir_unique, write_zip,
+    ASCII_CONTEXT, MINIMAL_BUILD_CONTEXT_XML, assert_cli_ok, dir_has_ext, extract_zip_to,
+    project_descriptor, rossi_command, run_cli, run_cli_with_stdin, tempdir_unique, write_zip,
+    zip_entry_bytes, zip_entry_names,
 };
 
 #[test]
@@ -422,6 +423,184 @@ fn export_stdin_to_zip() {
         dir_has_rodin_file(&extracted),
         "expected a .buc/.bum entry in the exported zip"
     );
+
+    std::fs::remove_dir_all(&tmp).ok();
+}
+
+const TRAFFIC_LIGHT: &str = "../rossi/examples/traffic-light.zip";
+
+/// The bundled example's real `M0.bpr` bytes — the byte-exact reference the
+/// proof-carry tests compare against.
+fn traffic_light_m0_bpr() -> Vec<u8> {
+    zip_entry_bytes(std::path::Path::new(TRAFFIC_LIGHT), "traffic-light/M0.bpr")
+}
+
+#[test]
+fn import_zip_copies_proof_files_next_to_text() {
+    let tmp = tempdir_unique("rossi-cli-import-proofs");
+    let out = tmp.join("out");
+
+    let output = run_cli(&["import", TRAFFIC_LIGHT, "-o", out.to_str().unwrap()]);
+    assert_cli_ok(&output, "import should exit 0");
+
+    assert!(out.join("M0.eventb").is_file(), "text must be written");
+    assert_eq!(
+        std::fs::read(out.join("M0.bpr")).expect("M0.bpr"),
+        traffic_light_m0_bpr(),
+        "proofs must be copied byte-exact next to the text"
+    );
+    assert!(out.join("C1.bpr").is_file());
+
+    std::fs::remove_dir_all(&tmp).ok();
+}
+
+#[test]
+fn import_multi_project_zip_scopes_proofs_per_project() {
+    let tmp = tempdir_unique("rossi-cli-import-proofs-multi");
+    let input = tmp.join("multi.zip");
+    write_zip(
+        &input,
+        &[
+            ("A/CA.buc", MINIMAL_BUILD_CONTEXT_XML.as_bytes()),
+            ("A/CA.bpr", b"proof A"),
+            ("B/CB.buc", MINIMAL_BUILD_CONTEXT_XML.as_bytes()),
+        ],
+    );
+    let out = tmp.join("out");
+
+    let output = run_cli(&[
+        "import",
+        input.to_str().unwrap(),
+        "-o",
+        out.to_str().unwrap(),
+    ]);
+    assert_cli_ok(&output, "import should exit 0");
+
+    assert_eq!(
+        std::fs::read(out.join("A").join("CA.bpr")).unwrap(),
+        b"proof A"
+    );
+    assert!(
+        !dir_has_ext(&out.join("B"), &["bpr"]),
+        "project B carries no proofs"
+    );
+
+    std::fs::remove_dir_all(&tmp).ok();
+}
+
+#[test]
+fn import_no_proofs_skips_proof_files() {
+    let tmp = tempdir_unique("rossi-cli-import-no-proofs");
+    let out = tmp.join("out");
+
+    let output = run_cli(&[
+        "import",
+        "--no-proofs",
+        TRAFFIC_LIGHT,
+        "-o",
+        out.to_str().unwrap(),
+    ]);
+    assert_cli_ok(&output, "import --no-proofs should exit 0");
+
+    assert!(out.join("M0.eventb").is_file());
+    assert!(
+        !dir_has_ext(&out, &["bpr"]),
+        "--no-proofs must skip proof files"
+    );
+
+    std::fs::remove_dir_all(&tmp).ok();
+}
+
+#[test]
+fn import_merge_writes_proofs_next_to_the_merged_file() {
+    let tmp = tempdir_unique("rossi-cli-import-merge-proofs");
+    let out_file = tmp.join("model.eventb");
+
+    let output = run_cli(&[
+        "import",
+        "--merge",
+        TRAFFIC_LIGHT,
+        "-o",
+        out_file.to_str().unwrap(),
+    ]);
+    assert_cli_ok(&output, "import --merge should exit 0");
+
+    assert!(out_file.is_file());
+    assert_eq!(
+        std::fs::read(tmp.join("M0.bpr")).expect("M0.bpr"),
+        traffic_light_m0_bpr(),
+        "proofs must land next to the merged output file"
+    );
+
+    std::fs::remove_dir_all(&tmp).ok();
+}
+
+#[test]
+fn import_skips_unsafe_proof_entry_names() {
+    let tmp = tempdir_unique("rossi-cli-import-unsafe-proofs");
+    let input = tmp.join("evil.zip");
+    write_zip(
+        &input,
+        &[
+            ("t/C.buc", MINIMAL_BUILD_CONTEXT_XML.as_bytes()),
+            ("t/../evil.bpr", b"escape attempt"),
+        ],
+    );
+    let out = tmp.join("out");
+
+    let output = run_cli(&[
+        "import",
+        input.to_str().unwrap(),
+        "-o",
+        out.to_str().unwrap(),
+    ]);
+    assert_cli_ok(&output, "import should still succeed");
+
+    assert!(out.join("C.eventb").is_file());
+    assert!(
+        !dir_has_ext(&out, &["bpr"]),
+        "the unsafe entry must be skipped"
+    );
+    assert!(
+        !tmp.join("evil.bpr").exists(),
+        "nothing may escape the output dir"
+    );
+
+    std::fs::remove_dir_all(&tmp).ok();
+}
+
+#[test]
+fn import_then_export_proofs_round_trips_bpr() {
+    // The closed loop: import drops the proofs next to the text, and a bare
+    // `export --proofs` picks them up from exactly that location.
+    let tmp = tempdir_unique("rossi-cli-import-export-roundtrip");
+    let text_dir = tmp.join("text");
+
+    let output = run_cli(&["import", TRAFFIC_LIGHT, "-o", text_dir.to_str().unwrap()]);
+    assert_cli_ok(&output, "import should exit 0");
+
+    let out_zip = tmp.join("traffic-light.zip");
+    let output = run_cli(&[
+        "export",
+        "--proofs",
+        text_dir.to_str().unwrap(),
+        "-o",
+        out_zip.to_str().unwrap(),
+    ]);
+    assert_cli_ok(&output, "export --proofs should exit 0");
+
+    assert_eq!(
+        zip_entry_bytes(&out_zip, "M0.bpr"),
+        traffic_light_m0_bpr(),
+        "proofs must survive the full text round-trip byte-exact"
+    );
+    let names = zip_entry_names(&out_zip);
+    for expected in ["M0.bcm", "M0.bpo", "M0.bps"] {
+        assert!(
+            names.contains(&expected.to_string()),
+            "missing {expected} in {names:?}"
+        );
+    }
 
     std::fs::remove_dir_all(&tmp).ok();
 }
