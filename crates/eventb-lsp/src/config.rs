@@ -174,7 +174,12 @@ pub struct RodinConfig {
     /// the shared workspace at "Open in Rodin" session boundaries: the
     /// files sitting next to the sources are copied into the Rodin project
     /// when the lens runs (the checkout wins; nothing in the workspace is
-    /// deleted). Captured when the lens runs. On by default.
+    /// deleted), and the project's files are copied back next to the
+    /// sources when the launched Rodin exits (the workspace wins; a proof
+    /// deleted in Rodin is deleted next to the sources too). Captured when
+    /// the lens runs — flipping it mid-session does not stop an armed
+    /// mirror. The exit mirror needs the Eclipse workspace lock probe and
+    /// is unavailable on Windows. On by default.
     #[serde(default = "default_mirror_proofs")]
     pub mirror_proofs: bool,
 }

@@ -223,8 +223,11 @@ pub struct OpenRequest {
     /// sync watcher can tell the server's own writes from Rodin's.
     pub written: sync::WrittenFiles,
     /// The `rossi.rodin.mirrorProofs` setting: copy text-adjacent proof
-    /// files into the project before the build.
+    /// files into the project before the build, and mirror the project's
+    /// proof files back next to the sources when the session ends.
     pub mirror_proofs: bool,
+    /// Slot for the per-workspace Rodin session stop monitor.
+    pub(crate) session_monitor: proof_mirror::SessionMonitorSlot,
     /// Analysis handles, for refreshing the proof-status overlay after the
     /// build (the watcher rightly ignores our own writes).
     pub(crate) analyzer: crate::server::Analyzer,
@@ -294,6 +297,7 @@ pub async fn open_in_rodin(client: Client, request: OpenRequest) {
     // Rodin opens. Skipped while a running Rodin holds the workspace — its
     // proof editors may hold newer state in memory than the files. Failures
     // never break the lens flow.
+    let mut seeded = false;
     if request.mirror_proofs
         && lock::workspace_lock_state(&request.workspace_dir) != lock::LockState::Held
     {
@@ -307,12 +311,13 @@ pub async fn open_in_rodin(client: Client, request: OpenRequest) {
             request.workspace_dir.clone(),
             project_name.clone(),
         );
-        let seeded = tokio::task::spawn_blocking(move || {
+        let seed_result = tokio::task::spawn_blocking(move || {
             proof_mirror::seed_project(&source_dir, &workspace_dir, &name)
         })
         .await;
-        match seeded {
+        match seed_result {
             Ok(Ok(report)) => {
+                seeded = true;
                 request.written.record(report.written);
                 if report.replaced > 0 {
                     client
@@ -369,6 +374,19 @@ pub async fn open_in_rodin(client: Client, request: OpenRequest) {
     }
 
     if lock::workspace_lock_state(&request.workspace_dir) == lock::LockState::Held {
+        // The running session still ends someday — arm the stop monitor so
+        // its proofs are mirrored back even though this click launched
+        // nothing (covers an LSP restarted mid-session).
+        if request.mirror_proofs {
+            proof_mirror::RodinSessionMonitor::arm(
+                &request.session_monitor,
+                &client,
+                &request.workspace_dir,
+                &project_name,
+                seeded,
+                &request.written,
+            );
+        }
         // A project that was never registered cannot be, while Rodin holds
         // the workspace: the headless registration needs the same Eclipse
         // workspace. Say so instead of promising an automatic pickup that
@@ -462,7 +480,19 @@ pub async fn open_in_rodin(client: Client, request: OpenRequest) {
     // the spawn above and lock acquisition the lock probe reads `Free`, so
     // a second lens click during Rodin's boot would otherwise launch a
     // duplicate instance (doomed to Eclipse's "workspace in use" dialog).
-    wait_for_workspace_lock(&request.workspace_dir, BOOT_LOCK_TIMEOUT).await;
+    let state = wait_for_workspace_lock(&request.workspace_dir, BOOT_LOCK_TIMEOUT).await;
+    // Only an observed `Held` arms the stop monitor: `Free` means Rodin
+    // never came up, and after `Unknown` the release is unobservable anyway.
+    if state == lock::LockState::Held && request.mirror_proofs {
+        proof_mirror::RodinSessionMonitor::arm(
+            &request.session_monitor,
+            &client,
+            &request.workspace_dir,
+            &project_name,
+            seeded,
+            &request.written,
+        );
+    }
 }
 
 /// How long a just-launched Rodin gets to take the workspace lock before
@@ -472,16 +502,18 @@ pub async fn open_in_rodin(client: Client, request: OpenRequest) {
 const BOOT_LOCK_TIMEOUT: Duration = Duration::from_secs(60);
 
 /// Poll the workspace lock until it leaves [`lock::LockState::Free`] or the
-/// timeout passes. `Held` means the launched instance owns the workspace;
+/// timeout passes, returning the state that ended the wait (`Free` on
+/// timeout). `Held` means the launched instance owns the workspace;
 /// `Unknown` (Windows, probe failures) ends the wait too — the probe cannot
 /// observe more there, and on Windows the `.lock` file appearing is itself
 /// the boot signal that moves the state off `Free`.
-async fn wait_for_workspace_lock(workspace_dir: &Path, timeout: Duration) {
+async fn wait_for_workspace_lock(workspace_dir: &Path, timeout: Duration) -> lock::LockState {
     const POLL: Duration = Duration::from_secs(1);
     let deadline = tokio::time::Instant::now() + timeout;
-    while lock::workspace_lock_state(workspace_dir) == lock::LockState::Free {
-        if tokio::time::Instant::now() >= deadline {
-            return;
+    loop {
+        let state = lock::workspace_lock_state(workspace_dir);
+        if state != lock::LockState::Free || tokio::time::Instant::now() >= deadline {
+            return state;
         }
         tokio::time::sleep(POLL).await;
     }
@@ -655,8 +687,11 @@ mod tests {
     #[tokio::test(flavor = "current_thread")]
     async fn boot_lock_wait_is_bounded_on_a_free_workspace() {
         // A workspace nothing ever locks stays `Free`; the wait must end at
-        // the deadline instead of holding the single-flight guard forever.
-        wait_for_workspace_lock(Path::new("/nonexistent/rossi-boot-ws"), Duration::ZERO).await;
+        // the deadline instead of holding the single-flight guard forever,
+        // and report `Free` so the caller does not arm a stop monitor.
+        let state =
+            wait_for_workspace_lock(Path::new("/nonexistent/rossi-boot-ws"), Duration::ZERO).await;
+        assert_eq!(state, lock::LockState::Free);
     }
 
     #[test]

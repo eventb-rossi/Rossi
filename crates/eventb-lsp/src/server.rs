@@ -447,6 +447,10 @@ pub struct RossiLanguageServer {
     /// Per-project debounce generations for rebuild-on-save: a burst of
     /// saves collapses to one rebuild of each affected project.
     rodin_rebuild_generations: Arc<parking_lot::Mutex<std::collections::HashMap<PathBuf, u64>>>,
+    /// The Rodin session stop monitor (at most one per workspace): armed by
+    /// the Open in Rodin flow, mirrors proof files back next to the sources
+    /// when the launched Rodin releases the workspace lock.
+    rodin_session_monitor: crate::rodin::proof_mirror::SessionMonitorSlot,
 }
 
 impl RossiLanguageServer {
@@ -533,6 +537,7 @@ impl RossiLanguageServer {
             rodin_rebuild_generations: Arc::new(parking_lot::Mutex::new(
                 std::collections::HashMap::new(),
             )),
+            rodin_session_monitor: Arc::new(parking_lot::Mutex::new(None)),
         }
     }
 
@@ -938,6 +943,9 @@ impl LanguageServer for RossiLanguageServer {
         // Stop the Rodin workspace watcher and its processing task (a
         // creation still in flight sees the reset state and discards itself).
         self.replace_rodin_sync(RodinSyncState::Off, |_| false);
+        // Abort the session stop monitor: with the server gone the mirror
+        // cannot fire anyway, and the next lens click re-seeds.
+        drop(self.rodin_session_monitor.lock().take());
         Ok(())
     }
 
@@ -1527,6 +1535,7 @@ impl LanguageServer for RossiLanguageServer {
             progress_supported: self.supports_work_done_progress.load(Ordering::Relaxed),
             written: Arc::clone(&self.rodin_written),
             mirror_proofs: config.rodin.mirror_proofs,
+            session_monitor: Arc::clone(&self.rodin_session_monitor),
             analyzer: self.analyzer.clone(),
         };
 
