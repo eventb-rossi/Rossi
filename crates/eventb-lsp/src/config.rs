@@ -169,6 +169,14 @@ pub struct RodinConfig {
     /// also stops the watcher.
     #[serde(default = "default_sync")]
     pub sync: bool,
+
+    /// Bridge proof files (`.bpr`/`.bps`/`.bpo`) between the checkout and
+    /// the shared workspace at "Open in Rodin" session boundaries: the
+    /// files sitting next to the sources are copied into the Rodin project
+    /// when the lens runs (the checkout wins; nothing in the workspace is
+    /// deleted). Captured when the lens runs. On by default.
+    #[serde(default = "default_mirror_proofs")]
+    pub mirror_proofs: bool,
 }
 
 impl Default for RodinConfig {
@@ -177,11 +185,16 @@ impl Default for RodinConfig {
             path: String::new(),
             workspace: String::new(),
             sync: default_sync(),
+            mirror_proofs: default_mirror_proofs(),
         }
     }
 }
 
 fn default_sync() -> bool {
+    true
+}
+
+fn default_mirror_proofs() -> bool {
     true
 }
 
@@ -230,6 +243,9 @@ mod tests {
         assert_eq!(config.diagnostics.debounce_ms, 500);
 
         assert!(config.completion.enabled);
+
+        assert!(config.rodin.sync);
+        assert!(config.rodin.mirror_proofs);
     }
 
     #[test]
@@ -309,6 +325,7 @@ mod tests {
         // Default values
         assert_eq!(config.format.indentation, "    ");
         assert!(config.diagnostics.enabled);
+        assert!(config.rodin.mirror_proofs);
     }
 
     #[test]

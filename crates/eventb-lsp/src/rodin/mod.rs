@@ -14,6 +14,7 @@ pub mod build;
 pub mod launch;
 pub mod lock;
 pub mod model_sync;
+pub(crate) mod proof_mirror;
 pub mod sync;
 
 use std::path::{Path, PathBuf};
@@ -221,6 +222,9 @@ pub struct OpenRequest {
     /// Shared record of files the server wrote into the workspace, so the
     /// sync watcher can tell the server's own writes from Rodin's.
     pub written: sync::WrittenFiles,
+    /// The `rossi.rodin.mirrorProofs` setting: copy text-adjacent proof
+    /// files into the project before the build.
+    pub mirror_proofs: bool,
     /// Analysis handles, for refreshing the proof-status overlay after the
     /// build (the watcher rightly ignores our own writes).
     pub(crate) analyzer: crate::server::Analyzer,
@@ -283,6 +287,52 @@ pub async fn open_in_rodin(client: Client, request: OpenRequest) {
     let project_dir = request.workspace_dir.join(&project_name);
 
     let progress = Progress::begin(&client, request.progress_supported, "Open in Rodin").await;
+
+    // The checkout's proof files are authoritative at session start: copy
+    // them into the project before the build so the seeded `.bpo`/`.bps`
+    // become its reconcile baselines and the `.bpr` proofs are in place when
+    // Rodin opens. Skipped while a running Rodin holds the workspace — its
+    // proof editors may hold newer state in memory than the files. Failures
+    // never break the lens flow.
+    if request.mirror_proofs
+        && lock::workspace_lock_state(&request.workspace_dir) != lock::LockState::Held
+    {
+        progress.report("seeding proof files").await;
+        // Same write-guard protocol as the build: hold the guard across the
+        // writes and record their hashes before it drops, so the watcher
+        // never mistakes seeded files for Rodin's own proof edits.
+        let seed_guard = sync::begin_build(&request.written);
+        let (source_dir, workspace_dir, name) = (
+            request.source_dir.clone(),
+            request.workspace_dir.clone(),
+            project_name.clone(),
+        );
+        let seeded = tokio::task::spawn_blocking(move || {
+            proof_mirror::seed_project(&source_dir, &workspace_dir, &name)
+        })
+        .await;
+        match seeded {
+            Ok(Ok(report)) => {
+                request.written.record(report.written);
+                if report.replaced > 0 {
+                    client
+                        .show_message(
+                            MessageType::INFO,
+                            format!(
+                                "Open in Rodin: replaced {} workspace proof file(s) \
+                                 with the checkout copies.",
+                                report.replaced
+                            ),
+                        )
+                        .await;
+                }
+            }
+            Ok(Err(e)) => tracing::info!("proof seeding skipped: {e}"),
+            Err(join_error) => tracing::info!("proof seeding task failed: {join_error}"),
+        }
+        drop(seed_guard);
+    }
+
     progress.report("building the Rodin project").await;
 
     let outcome = build_into_workspace(

@@ -1526,6 +1526,7 @@ impl LanguageServer for RossiLanguageServer {
             configured_rodin_path: config.rodin.path.clone(),
             progress_supported: self.supports_work_done_progress.load(Ordering::Relaxed),
             written: Arc::clone(&self.rodin_written),
+            mirror_proofs: config.rodin.mirror_proofs,
             analyzer: self.analyzer.clone(),
         };
 
