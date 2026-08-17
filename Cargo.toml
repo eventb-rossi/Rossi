@@ -53,7 +53,7 @@ walkdir = "2"
 notify = "8"
 # 3-way merge (git-style conflict markers) for syncing Rodin model edits
 # back into the Event-B text sources (eventb-lsp).
-diffy = "0.4"
+diffy = "0.5"
 
 # Dev dependencies
 indoc = "2.0"
