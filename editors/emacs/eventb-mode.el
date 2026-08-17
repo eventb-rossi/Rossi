@@ -254,6 +254,16 @@ Turning it off also stops the workspace watcher."
   :type 'boolean
   :group 'eventb)
 
+(defcustom lsp-rossi-rodin-mirror-proofs t
+  "Bridge proof files between the checkout and the Rodin workspace.
+At Open in Rodin session boundaries: proof files (.bpr/.bps/.bpo) next
+to the .eventb sources are copied into the Rodin project when the lens
+runs (the checkout wins), and the project's proof files are copied back
+next to the sources when Rodin exits (the workspace wins; a proof
+deleted in Rodin is deleted next to the sources too)."
+  :type 'boolean
+  :group 'eventb)
+
 (with-eval-after-load 'lsp-mode
   (lsp-register-client
    (make-lsp-client
@@ -274,7 +284,8 @@ Turning it off also stops the workspace watcher."
                  :completion (:enabled ,lsp-rossi-completion-enabled)
                  :rodin (:path ,lsp-rossi-rodin-path
                          :workspace ,lsp-rossi-rodin-workspace
-                         :sync ,(if lsp-rossi-rodin-sync t :json-false))))))))
+                         :sync ,(if lsp-rossi-rodin-sync t :json-false)
+                         :mirrorProofs ,(if lsp-rossi-rodin-mirror-proofs t :json-false))))))))
 
 ;;; Unicode input method
 

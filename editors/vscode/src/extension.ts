@@ -27,6 +27,7 @@ interface RossiConfiguration {
         path: string;
         workspace: string;
         sync: boolean;
+        mirrorProofs: boolean;
     };
 }
 
@@ -48,6 +49,7 @@ function getRossiConfiguration(): RossiConfiguration {
             path: config.get<string>('rodin.path', ''),
             workspace: config.get<string>('rodin.workspace', ''),
             sync: config.get<boolean>('rodin.sync', true),
+            mirrorProofs: config.get<boolean>('rodin.mirrorProofs', true),
         },
     };
 }

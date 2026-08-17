@@ -174,6 +174,7 @@ All settings can be customized via Emacs customization interface (`M-x customize
 ;; Rodin integration ("Open in Rodin" code lens)
 (setq lsp-rossi-rodin-path "")               ; "" = platform default Rodin install
 (setq lsp-rossi-rodin-workspace "")          ; "" = <root>/.rossi/rodin
+(setq lsp-rossi-rodin-mirror-proofs t)       ; Carry proof files checkout <-> workspace
 ```
 
 ### Pinned LSP Client Defaults
@@ -192,6 +193,10 @@ With `lsp-lens-enable` on (eventb-mode already sets it buffer-locally), an
 `M-x lsp-avy-lens`. The server builds the file's directory into a persistent
 Rodin workspace (`.rossi/rodin` next to your sources — gitignore `.rossi/`)
 and launches the Rodin IDE on it; proofs made in Rodin survive rebuilds.
+Proof files (`.bpr`/`.bps`/`.bpo`) next to the sources are copied into the
+project when the lens runs, and the project's proof files are copied back
+next to the sources when Rodin exits (`lsp-rossi-rodin-mirror-proofs`, on by
+default) — so proof work lands in version control by itself.
 While Rodin is open the sync is live (`lsp-rossi-rodin-sync`, on by default):
 saving a buffer rebuilds the project in the background and Rodin picks it up
 within a few seconds, while edits saved in Rodin flow back into the `.eventb`

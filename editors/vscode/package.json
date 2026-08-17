@@ -265,6 +265,11 @@
           "default": true,
           "description": "Mutual live synchronization with a running Rodin: saving a source file rebuilds its Rodin project while Rodin is open (it picks the edit up within a few seconds), and edits saved in Rodin flow back into the .eventb sources automatically. Turning it off also stops the workspace watcher."
         },
+        "rossi.rodin.mirrorProofs": {
+          "type": "boolean",
+          "default": true,
+          "description": "Bridge proof files (.bpr/.bps/.bpo) between the checkout and the Rodin workspace at Open in Rodin session boundaries: files next to the .eventb sources are copied into the Rodin project when the lens runs (the checkout wins), and the project's proof files are copied back next to the sources when Rodin exits (the workspace wins; a proof deleted in Rodin is deleted next to the sources too). The exit mirror is unavailable on Windows."
+        },
         "rossi.format.useUnicode": {
           "type": "boolean",
           "default": true,

@@ -140,6 +140,7 @@ This extension contributes the following settings:
 - `rossi.rodin.path`: Path to the Rodin IDE executable, macOS `.app` bundle, or app name used by the `Open in Rodin` code lens (defaults: `/Applications/Rodin.app` on macOS, `rodin.exe` on Windows, `rodin` on Linux)
 - `rossi.rodin.workspace`: Directory used as the shared Rodin workspace by the `Open in Rodin` code lens; proofs made in Rodin persist there (default: `.rossi/rodin` inside the workspace folder)
 - `rossi.rodin.sync`: Mutual live synchronization with a running Rodin — saves rebuild the project while Rodin is open, and edits saved in Rodin flow back into the sources (default: `true`)
+- `rossi.rodin.mirrorProofs`: Bridge proof files (`.bpr`/`.bps`/`.bpo`) between the checkout and the Rodin workspace at `Open in Rodin` session boundaries — seed the project from files next to the sources when the lens runs, mirror the project's files back when Rodin exits (default: `true`)
 - `rossi.format.useUnicode`: Use Unicode operators (∧, ∨, ⇒, ∈) instead of ASCII (/\, \/, =>, :) when formatting (default: `true`)
 - `rossi.format.indentation`: Indentation string (spaces or tabs) to use when formatting (default: `"    "` - 4 spaces)
 - `rossi.diagnostics.enabled`: Enable real-time diagnostics for syntax errors (default: `true`)
@@ -278,6 +279,18 @@ a machine or context in Rodin updates the corresponding `.eventb` file — or
 your open buffer — automatically via a three-way merge; when both sides
 changed the same lines, the conflict lands in the source with git-style
 markers and a warning.
+
+Proof files travel with the sources too (`rossi.rodin.mirrorProofs`, on by
+default). When the lens runs, `.bpr`/`.bps`/`.bpo` files sitting next to the
+`.eventb` sources — placed there by `rossi import` or a `git pull` — are
+copied into the Rodin project before Rodin opens; when Rodin exits, the
+project's proof files are copied back next to the sources, so proof work
+lands in version control without a manual `rossi export --proofs`. The
+checkout wins at session start and the workspace at session end: a proof
+deleted in Rodin is deleted next to the sources too, while deleting a proof
+file only in git does not stick — it returns from the workspace when the
+session ends. Commit all three extensions. The exit mirror relies on the
+Eclipse workspace lock probe and is unavailable on Windows.
 
 ## Contributing
 

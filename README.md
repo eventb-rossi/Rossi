@@ -292,7 +292,10 @@ export, sub-projects match `PATH/<name>/`). The bare form looks next to the
 text inputs first and then in the LSP's shared Rodin workspace
 (`<root>/.rossi/rodin/<project>`); a custom `rossi.rodin.workspace` setting
 lives in editor configuration and is not visible to the CLI, so those setups
-pass the location explicitly with `--proofs=PATH`. Proof sources are
+pass the location explicitly with `--proofs=PATH`. When the LSP's Open in
+Rodin lens is in use, its proof mirror copies the workspace's proof files
+back next to the sources whenever Rodin exits, so the bare form normally
+finds current state right next to the text. Proof sources are
 read-only. Note that a directory output is not itself a proof source: to
 carry stamps across repeated loose exports, point `--proofs=<outdir>` at the
 previous output.
