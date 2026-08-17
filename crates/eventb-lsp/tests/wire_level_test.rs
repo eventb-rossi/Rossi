@@ -11,6 +11,19 @@ fn notification(method: &'static str, params: Value) -> Request {
     Request::build(method).params(params).finish()
 }
 
+/// Read server-to-client messages until the next `window/showMessage`.
+async fn next_show_message(
+    messages: &mut (impl futures::StreamExt<Item = Request> + Unpin),
+    timeout: std::time::Duration,
+) -> Option<Value> {
+    while let Ok(Some(req)) = tokio::time::timeout(timeout, messages.next()).await {
+        if req.method() == "window/showMessage" {
+            return req.params().cloned();
+        }
+    }
+    None
+}
+
 /// A uniquely-named workspace directory under the test target tmpdir,
 /// removed again on drop.
 struct TempWorkspace(PathBuf);
@@ -464,7 +477,7 @@ mod rodin_lens {
     //! path building the project on disk even when no Rodin install exists
     //! (the error must point at the `rossi.rodin.path` setting).
 
-    use super::{TempWorkspace, notification};
+    use super::{TempWorkspace, next_show_message, notification};
     use eventb_lsp::lsp_types::Url;
     use eventb_lsp::server::RossiLanguageServer;
     use futures::StreamExt;
@@ -475,19 +488,6 @@ mod rodin_lens {
     use tower_lsp::jsonrpc::Request;
 
     const SOURCE: &str = "CONTEXT wire_ctx\nCONSTANTS\n    lo\nAXIOMS\n    @axm1 lo ∈ ℤ\nEND\n\nMACHINE wire_m\nSEES wire_ctx\nEND\n";
-
-    /// Read server-to-client messages until the next `window/showMessage`.
-    async fn next_show_message(
-        messages: &mut (impl StreamExt<Item = Request> + Unpin),
-        timeout: Duration,
-    ) -> Option<Value> {
-        while let Ok(Some(req)) = tokio::time::timeout(timeout, messages.next()).await {
-            if req.method() == "window/showMessage" {
-                return req.params().cloned();
-            }
-        }
-        None
-    }
 
     #[tokio::test(flavor = "current_thread")]
     async fn advertises_capabilities_and_serves_lenses() {
@@ -511,7 +511,11 @@ mod rodin_lens {
         assert_eq!(capabilities["codeLensProvider"]["resolveProvider"], false);
         assert_eq!(
             capabilities["executeCommandProvider"]["commands"],
-            json!(["rossi.rodin.open"])
+            json!([
+                "rossi.rodin.open",
+                "rossi.animate.check",
+                "rossi.animate.po"
+            ])
         );
 
         let uri = "file:///wire.eventb";
@@ -543,8 +547,10 @@ mod rodin_lens {
         let (_id, result) = response.into_parts();
         let lenses = result.expect("codeLens succeeds");
         let lenses = lenses.as_array().expect("codeLens result is an array");
-        assert_eq!(lenses.len(), 2, "one lens per component: {lenses:?}");
-        for lens in lenses {
+        // One rodin lens per component, plus the two animate lenses on the
+        // machine (contexts cannot be animated).
+        assert_eq!(lenses.len(), 4, "unexpected lens set: {lenses:?}");
+        for lens in &lenses[..2] {
             assert_eq!(lens["command"]["title"], "Open in Rodin");
             assert_eq!(lens["command"]["command"], "rossi.rodin.open");
             assert_eq!(lens["command"]["arguments"], json!([uri]));
@@ -552,6 +558,15 @@ mod rodin_lens {
         // The context header is on line 0, the machine header on line 7.
         assert_eq!(lenses[0]["range"]["start"]["line"], 0);
         assert_eq!(lenses[1]["range"]["start"]["line"], 7);
+        for (lens, (title, command)) in lenses[2..].iter().zip([
+            ("Model-check", "rossi.animate.check"),
+            ("Disprove POs", "rossi.animate.po"),
+        ]) {
+            assert_eq!(lens["command"]["title"], title);
+            assert_eq!(lens["command"]["command"], command);
+            assert_eq!(lens["command"]["arguments"], json!([uri, "wire_m"]));
+            assert_eq!(lens["range"]["start"]["line"], 7);
+        }
     }
 
     #[tokio::test(flavor = "current_thread")]
@@ -663,6 +678,115 @@ mod rodin_lens {
             .expect("executeCommand responds");
         let (_id, result) = response.into_parts();
         assert!(result.is_err(), "unknown commands must be rejected");
+    }
+}
+
+mod animate_lens {
+    //! Wire-level tests for the eventb-animate executeCommand surface: the
+    //! spawned flow must fail fast with a message naming the
+    //! `rossi.animate.path` setting when the configured tool is missing, and
+    //! malformed arguments must be rejected at the JSON-RPC layer.
+
+    use super::{next_show_message, notification};
+    use eventb_lsp::server::RossiLanguageServer;
+    use futures::StreamExt;
+    use serde_json::{Value, json};
+    use std::time::Duration;
+    use tower::{Service, ServiceExt};
+    use tower_lsp::LspService;
+    use tower_lsp::jsonrpc::Request;
+
+    const SOURCE: &str = "MACHINE animate_m\nEND\n";
+    const URI: &str = "file:///animate.eventb";
+
+    async fn initialized_service(
+        path: &str,
+    ) -> (
+        LspService<RossiLanguageServer>,
+        impl StreamExt<Item = Request> + Unpin,
+    ) {
+        let (mut service, messages) = LspService::build(RossiLanguageServer::new).finish();
+        let init = Request::build("initialize")
+            .id(1)
+            .params(json!({
+                "capabilities": {},
+                "initializationOptions": { "animate": { "path": path } }
+            }))
+            .finish();
+        service.ready().await.unwrap().call(init).await.unwrap();
+        let open = notification(
+            "textDocument/didOpen",
+            json!({
+                "textDocument": {
+                    "uri": URI,
+                    "languageId": "eventb",
+                    "version": 1,
+                    "text": SOURCE
+                }
+            }),
+        );
+        service.ready().await.unwrap().call(open).await.unwrap();
+        (service, messages)
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn execute_command_reports_missing_tool_naming_the_setting() {
+        let (mut service, mut messages) = initialized_service("/nonexistent/eventb-animate").await;
+
+        let execute = Request::build("workspace/executeCommand")
+            .id(2)
+            .params(json!({
+                "command": "rossi.animate.check",
+                "arguments": [URI, "animate_m"]
+            }))
+            .finish();
+        let response = service
+            .ready()
+            .await
+            .unwrap()
+            .call(execute)
+            .await
+            .unwrap()
+            .expect("executeCommand responds");
+        let (_id, result) = response.into_parts();
+        assert_eq!(result.expect("executeCommand succeeds"), Value::Null);
+
+        let message = next_show_message(&mut messages, Duration::from_secs(10))
+            .await
+            .expect("the flow reports through window/showMessage");
+        let text = message["message"].as_str().unwrap();
+        assert!(
+            text.contains("was not found") && text.contains("rossi.animate.path"),
+            "unexpected message: {text}"
+        );
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn execute_command_rejects_missing_machine_argument() {
+        let (mut service, _messages) = initialized_service("/nonexistent/eventb-animate").await;
+
+        let execute = Request::build("workspace/executeCommand")
+            .id(2)
+            .params(json!({
+                "command": "rossi.animate.po",
+                "arguments": [URI]
+            }))
+            .finish();
+        let response = service
+            .ready()
+            .await
+            .unwrap()
+            .call(execute)
+            .await
+            .unwrap()
+            .expect("executeCommand responds");
+        let (_id, result) = response.into_parts();
+        let error = result.expect_err("a missing machine argument is invalid");
+        assert!(
+            error.message.contains("machine name"),
+            "unexpected error: {}",
+            error.message
+        );
     }
 }
 

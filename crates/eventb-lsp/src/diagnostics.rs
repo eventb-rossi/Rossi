@@ -318,7 +318,8 @@ pub(crate) fn cycle_diagnostics(
 /// name)`: a machine's REFINES parent and SEES contexts, or a context's EXTENDS
 /// parents. The target [`ComponentKind`] is derived from the edge via
 /// [`EdgeKind::target_kind`], the shared SSOT, rather than re-stated here.
-fn component_references(component: &rossi::Component) -> Vec<(EdgeKind, &str)> {
+/// Also the edge SSOT for the animate closure walk.
+pub(crate) fn component_references(component: &rossi::Component) -> Vec<(EdgeKind, &str)> {
     match component {
         rossi::Component::Machine(m) => m
             .refines

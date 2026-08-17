@@ -104,6 +104,10 @@ pub(crate) struct Analyzer {
     /// scoped to the source file each project was built from, maintained by
     /// the rodin sync watcher. Empty until a Rodin workspace exists.
     proof_status: Arc<parking_lot::RwLock<crate::rodin::sync::ProofStatusOverlay>>,
+    /// Findings from eventb-animate lens runs, keyed by `(machine, mode)`
+    /// and re-anchored onto the live buffers at publish time. Empty until a
+    /// lens runs.
+    animate_findings: Arc<parking_lot::RwLock<crate::animate::diagnostics::FindingsOverlay>>,
     client: Client,
 }
 
@@ -201,6 +205,13 @@ impl Analyzer {
         // The proof-status overlay comes from disk, not the AST, so it is
         // emitted even mid-edit, before the clean-parse gate below.
         diags.extend(self.proof_status_diagnostics(uri, doc));
+        // Animate findings are anchored by name and resolved via text-scan
+        // fallbacks, so they too survive mid-edit breakage.
+        diags.extend(crate::animate::diagnostics::animate_diagnostics(
+            uri,
+            doc,
+            &self.animate_findings.read(),
+        ));
         if !doc.parse().errors.is_empty() {
             return diags;
         }
@@ -345,6 +356,24 @@ impl Analyzer {
         }
     }
 
+    /// Replace one `(machine, mode)` slot of the animate findings overlay
+    /// and, if anything visible changed, republish diagnostics for every
+    /// open document — an empty `findings` set retracts the previous run's.
+    /// The animate counterpart of [`Self::refresh_proof_status`].
+    pub(crate) async fn refresh_animate_findings(
+        &self,
+        machine: String,
+        mode: crate::animate::AnimateMode,
+        findings: Vec<crate::animate::diagnostics::Finding>,
+    ) {
+        if !self.animate_findings.write().apply(machine, mode, findings) {
+            return;
+        }
+        for uri in self.document_manager.all_uris() {
+            self.republish_diagnostics(uri).await;
+        }
+    }
+
     /// Recompute and publish a document's diagnostics from its stored parse,
     /// without re-committing the cross-reference/symbol indexes — the cheap
     /// half of [`Self::analyze`], for refreshes where only diagnostic inputs
@@ -434,7 +463,13 @@ pub struct RossiLanguageServer {
     /// launched Rodin to take the workspace lock) is refused, not queued.
     /// The boot wait is what keeps a second lens click during Rodin's
     /// startup from launching a duplicate instance.
-    rodin_open_in_flight: Arc<std::sync::atomic::AtomicBool>,
+    rodin_open_in_flight: SingleFlight,
+    /// Single-flight guard shared by both eventb-animate lens commands: one
+    /// JVM + ProB instance at a time is the resource being protected.
+    /// Deliberately separate from the Rodin guard — that one can be held
+    /// for up to a minute waiting on Eclipse's workspace lock, and neither
+    /// flow should block the other.
+    animate_in_flight: SingleFlight,
     /// Whether the client advertised `window.workDoneProgress` support.
     supports_work_done_progress: std::sync::atomic::AtomicBool,
     /// Watcher over the shared Rodin workspace, started lazily once such a
@@ -451,6 +486,56 @@ pub struct RossiLanguageServer {
     /// the Open in Rodin flow, mirrors proof files back next to the sources
     /// when the launched Rodin releases the workspace lock.
     rodin_session_monitor: crate::rodin::proof_mirror::SessionMonitorSlot,
+}
+
+/// A single-flight command guard: [`SingleFlight::try_begin`] either yields
+/// the release guard or reports the command busy, so acquisition can never
+/// be separated from release — a handler cannot latch the flag by returning
+/// early without a guard to drop.
+#[derive(Default)]
+struct SingleFlight(Arc<std::sync::atomic::AtomicBool>);
+
+impl SingleFlight {
+    /// Take the flight slot. `None` while a previous holder's guard lives.
+    fn try_begin(&self) -> Option<InFlightReset> {
+        use std::sync::atomic::Ordering;
+        (!self.0.swap(true, Ordering::SeqCst)).then(|| InFlightReset(Arc::clone(&self.0)))
+    }
+}
+
+/// Resets the single-flight flag when the task future is dropped —
+/// completion and panic alike — so one failure can't wedge the command
+/// forever.
+struct InFlightReset(Arc<std::sync::atomic::AtomicBool>);
+
+impl Drop for InFlightReset {
+    fn drop(&mut self) {
+        self.0.store(false, std::sync::atomic::Ordering::SeqCst);
+    }
+}
+
+/// The `file://` document URI every lens command carries as its first
+/// argument — the shared decode for the `workspace/executeCommand` handlers,
+/// erroring with the command's own name.
+fn file_uri_argument(params: &ExecuteCommandParams) -> Result<Url> {
+    let uri = params
+        .arguments
+        .first()
+        .and_then(|value| value.as_str())
+        .and_then(|value| Url::parse(value).ok())
+        .ok_or_else(|| {
+            Error::invalid_params(format!(
+                "{} expects a document URI argument",
+                params.command
+            ))
+        })?;
+    if uri.to_file_path().is_err() {
+        return Err(Error::invalid_params(format!(
+            "{} needs a file:// URI",
+            params.command
+        )));
+    }
+    Ok(uri)
 }
 
 impl RossiLanguageServer {
@@ -508,6 +593,9 @@ impl RossiLanguageServer {
             proof_status: Arc::new(parking_lot::RwLock::new(
                 crate::rodin::sync::ProofStatusOverlay::default(),
             )),
+            animate_findings: Arc::new(parking_lot::RwLock::new(
+                crate::animate::diagnostics::FindingsOverlay::default(),
+            )),
             client: client.clone(),
         };
 
@@ -530,7 +618,8 @@ impl RossiLanguageServer {
             selection_range_provider: Arc::new(SelectionRangeProvider::new()),
             signature_help_provider: Arc::new(SignatureHelpProvider::new()),
             analyzer,
-            rodin_open_in_flight: Arc::new(std::sync::atomic::AtomicBool::new(false)),
+            rodin_open_in_flight: SingleFlight::default(),
+            animate_in_flight: SingleFlight::default(),
             supports_work_done_progress: std::sync::atomic::AtomicBool::new(false),
             rodin_sync: Arc::new(parking_lot::Mutex::new(RodinSyncState::Off)),
             rodin_written: Arc::new(crate::rodin::sync::WriteRegistry::default()),
@@ -564,6 +653,119 @@ impl RossiLanguageServer {
             };
         }
         root().map(|root| crate::rodin::default_workspace_dir(&root))
+    }
+
+    /// The "Open in Rodin" command: resolve the request up front, refuse a
+    /// concurrent run, and spawn the flow.
+    async fn execute_rodin_open(
+        &self,
+        params: ExecuteCommandParams,
+    ) -> Result<Option<serde_json::Value>> {
+        use std::sync::atomic::Ordering;
+
+        let uri = file_uri_argument(&params)?;
+        let path = uri
+            .to_file_path()
+            .expect("file_uri_argument checked the scheme");
+        let source_dir = path
+            .parent()
+            .map(std::path::Path::to_path_buf)
+            .filter(|dir| !dir.as_os_str().is_empty())
+            .ok_or_else(|| Error::invalid_params("the document has no parent directory"))?;
+
+        let Some(reset) = self.rodin_open_in_flight.try_begin() else {
+            self.client
+                .show_message(MessageType::INFO, "Open in Rodin is already running.")
+                .await;
+            return Ok(None);
+        };
+
+        let config = self.config_manager.get();
+        let workspace_dir = self
+            .resolved_rodin_workspace(Some(&source_dir))
+            .expect("a source dir fallback always yields a workspace dir");
+        // Start the sync watcher before the build so even the first build's
+        // results are watched; the directory must exist to be watchable
+        // (creating it also serves the build below), and `rossi.rodin.sync`
+        // is the watcher's master switch.
+        if std::fs::create_dir_all(&workspace_dir).is_ok() && config.rodin.sync {
+            self.ensure_rodin_sync(&workspace_dir);
+        }
+        let project_name = crate::rodin::project_name_for(
+            &source_dir,
+            self.cross_reference_manager.workspace_root().as_deref(),
+        );
+        let request = crate::rodin::OpenRequest {
+            source_dir,
+            project_name,
+            documents: Arc::clone(&self.document_manager),
+            workspace_dir,
+            configured_rodin_path: config.rodin.path.clone(),
+            progress_supported: self.supports_work_done_progress.load(Ordering::Relaxed),
+            written: Arc::clone(&self.rodin_written),
+            mirror_proofs: config.rodin.mirror_proofs,
+            session_monitor: Arc::clone(&self.rodin_session_monitor),
+            analyzer: self.analyzer.clone(),
+        };
+
+        let client = self.client.clone();
+        tokio::spawn(async move {
+            let _reset = reset;
+            crate::rodin::open_in_rodin(client, request).await;
+        });
+        Ok(None)
+    }
+
+    /// An eventb-animate lens command ([`crate::animate::COMMAND_CHECK`] /
+    /// [`crate::animate::COMMAND_PO`]): validate the `[uri, machine]`
+    /// arguments, refuse a concurrent run, and spawn the flow.
+    async fn execute_animate(
+        &self,
+        mode: crate::animate::AnimateMode,
+        params: ExecuteCommandParams,
+    ) -> Result<Option<serde_json::Value>> {
+        use std::sync::atomic::Ordering;
+
+        let uri = file_uri_argument(&params)?;
+        let machine = params
+            .arguments
+            .get(1)
+            .and_then(|value| value.as_str())
+            .filter(|name| !name.is_empty())
+            .ok_or_else(|| {
+                Error::invalid_params(format!(
+                    "{} expects a machine name argument",
+                    params.command
+                ))
+            })?
+            .to_string();
+
+        let Some(reset) = self.animate_in_flight.try_begin() else {
+            self.client
+                .show_message(MessageType::INFO, "eventb-animate is already running.")
+                .await;
+            return Ok(None);
+        };
+
+        let request = crate::animate::AnimateRequest {
+            input: crate::animate::ExecuteInput {
+                mode,
+                uri,
+                machine,
+                documents: Arc::clone(&self.document_manager),
+                cross_references: Arc::clone(&self.cross_reference_manager),
+                config: self.config_manager.get().animate.clone(),
+            },
+            progress_supported: self.supports_work_done_progress.load(Ordering::Relaxed),
+            analyzer: self.analyzer.clone(),
+        };
+
+        let client = self.client.clone();
+        tokio::spawn(async move {
+            let _reset = reset;
+            crate::animate::run(client, request).await;
+        });
+        Ok(None)
     }
 
     /// Replace the watcher state unless `keep` says the current state
@@ -860,7 +1062,11 @@ impl LanguageServer for RossiLanguageServer {
                     resolve_provider: Some(false),
                 }),
                 execute_command_provider: Some(ExecuteCommandOptions {
-                    commands: vec![crate::rodin::COMMAND_OPEN.to_string()],
+                    commands: vec![
+                        crate::rodin::COMMAND_OPEN.to_string(),
+                        crate::animate::COMMAND_CHECK.to_string(),
+                        crate::animate::COMMAND_PO.to_string(),
+                    ],
                     work_done_progress_options: WorkDoneProgressOptions::default(),
                 }),
                 folding_range_provider: Some(FoldingRangeProviderCapability::Simple(true)),
@@ -1462,98 +1668,31 @@ impl LanguageServer for RossiLanguageServer {
         let Some(doc) = self.document_manager.parse_result(&uri) else {
             return Ok(None);
         };
-        Ok(Some(crate::rodin::code_lenses(
+        let mut lenses = crate::rodin::code_lenses(doc.components(), doc.text(), &uri);
+        lenses.extend(crate::animate::code_lenses(
             doc.components(),
             doc.text(),
             &uri,
-        )))
+        ));
+        Ok(Some(lenses))
     }
 
     async fn execute_command(
         &self,
         params: ExecuteCommandParams,
     ) -> Result<Option<serde_json::Value>> {
-        use std::sync::atomic::Ordering;
-
-        if params.command != crate::rodin::COMMAND_OPEN {
-            return Err(Error::invalid_params(format!(
-                "unknown command: {}",
-                params.command
-            )));
-        }
-        let uri = params
-            .arguments
-            .first()
-            .and_then(|value| value.as_str())
-            .and_then(|value| Url::parse(value).ok())
-            .ok_or_else(|| {
-                Error::invalid_params(format!(
-                    "{} expects a document URI argument",
-                    crate::rodin::COMMAND_OPEN
-                ))
-            })?;
-        let path = uri.to_file_path().map_err(|()| {
-            Error::invalid_params(format!(
-                "{} needs a file:// URI",
-                crate::rodin::COMMAND_OPEN
-            ))
-        })?;
-        let source_dir = path
-            .parent()
-            .map(std::path::Path::to_path_buf)
-            .filter(|dir| !dir.as_os_str().is_empty())
-            .ok_or_else(|| Error::invalid_params("the document has no parent directory"))?;
-
-        if self.rodin_open_in_flight.swap(true, Ordering::SeqCst) {
-            self.client
-                .show_message(MessageType::INFO, "Open in Rodin is already running.")
-                .await;
-            return Ok(None);
-        }
-
-        let config = self.config_manager.get();
-        let workspace_dir = self
-            .resolved_rodin_workspace(Some(&source_dir))
-            .expect("a source dir fallback always yields a workspace dir");
-        // Start the sync watcher before the build so even the first build's
-        // results are watched; the directory must exist to be watchable
-        // (creating it also serves the build below), and `rossi.rodin.sync`
-        // is the watcher's master switch.
-        if std::fs::create_dir_all(&workspace_dir).is_ok() && config.rodin.sync {
-            self.ensure_rodin_sync(&workspace_dir);
-        }
-        let project_name = crate::rodin::project_name_for(
-            &source_dir,
-            self.cross_reference_manager.workspace_root().as_deref(),
-        );
-        let request = crate::rodin::OpenRequest {
-            source_dir,
-            project_name,
-            documents: Arc::clone(&self.document_manager),
-            workspace_dir,
-            configured_rodin_path: config.rodin.path.clone(),
-            progress_supported: self.supports_work_done_progress.load(Ordering::Relaxed),
-            written: Arc::clone(&self.rodin_written),
-            mirror_proofs: config.rodin.mirror_proofs,
-            session_monitor: Arc::clone(&self.rodin_session_monitor),
-            analyzer: self.analyzer.clone(),
-        };
-
-        // Reset the guard when the task future is dropped — completion and
-        // panic alike — so one failure can't wedge the command forever.
-        struct InFlightReset(Arc<std::sync::atomic::AtomicBool>);
-        impl Drop for InFlightReset {
-            fn drop(&mut self) {
-                self.0.store(false, Ordering::SeqCst);
+        match params.command.as_str() {
+            crate::rodin::COMMAND_OPEN => self.execute_rodin_open(params).await,
+            crate::animate::COMMAND_CHECK => {
+                self.execute_animate(crate::animate::AnimateMode::Check, params)
+                    .await
             }
+            crate::animate::COMMAND_PO => {
+                self.execute_animate(crate::animate::AnimateMode::Po, params)
+                    .await
+            }
+            other => Err(Error::invalid_params(format!("unknown command: {other}"))),
         }
-        let reset = InFlightReset(Arc::clone(&self.rodin_open_in_flight));
-        let client = self.client.clone();
-        tokio::spawn(async move {
-            let _reset = reset;
-            crate::rodin::open_in_rodin(client, request).await;
-        });
-        Ok(None)
     }
 
     async fn folding_range(&self, params: FoldingRangeParams) -> Result<Option<Vec<FoldingRange>>> {

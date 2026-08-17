@@ -57,6 +57,9 @@ walkdir.workspace = true
 notify.workspace = true
 diffy.workspace = true
 
+# Throwaway Rodin project directories for the eventb-animate lens flow.
+tempfile.workspace = true
+
 # Workspace-lock probe for the Open in Rodin flow: Eclipse holds a POSIX
 # fcntl lock on `.metadata/.lock` while running, and only fcntl(F_GETLK)
 # can observe it without taking it.

@@ -54,6 +54,9 @@ notify = "8"
 # 3-way merge (git-style conflict markers) for syncing Rodin model edits
 # back into the Event-B text sources (eventb-lsp).
 diffy = "0.5"
+# RAII temp directories for the eventb-animate lens flow (eventb-lsp):
+# each run builds the model into a throwaway Rodin project directory.
+tempfile = "3"
 
 # Dev dependencies
 indoc = "2.0"
