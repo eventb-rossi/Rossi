@@ -18,10 +18,10 @@ pub(crate) mod proof_mirror;
 pub mod sync;
 
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::Duration;
 
 use crate::lsp_types::*;
+use crate::progress::Progress;
 use tower_lsp::Client;
 
 /// The `workspace/executeCommand` command behind the code lens.
@@ -516,96 +516,6 @@ async fn wait_for_workspace_lock(workspace_dir: &Path, timeout: Duration) -> loc
             return state;
         }
         tokio::time::sleep(POLL).await;
-    }
-}
-
-/// `$/progress` reporting against a client-acknowledged token, degrading to
-/// log messages when the client lacks `window.workDoneProgress`.
-struct Progress {
-    client: Client,
-    token: Option<ProgressToken>,
-}
-
-impl Progress {
-    async fn begin(client: &Client, supported: bool, title: &str) -> Self {
-        static NEXT_TOKEN: AtomicU64 = AtomicU64::new(0);
-        let mut token = None;
-        if supported {
-            let candidate = ProgressToken::String(format!(
-                "rossi-rodin-{}",
-                NEXT_TOKEN.fetch_add(1, Ordering::Relaxed)
-            ));
-            let created = client
-                .send_request::<request::WorkDoneProgressCreate>(WorkDoneProgressCreateParams {
-                    token: candidate.clone(),
-                })
-                .await;
-            if created.is_ok() {
-                client
-                    .send_notification::<notification::Progress>(ProgressParams {
-                        token: candidate.clone(),
-                        value: ProgressParamsValue::WorkDone(WorkDoneProgress::Begin(
-                            WorkDoneProgressBegin {
-                                title: title.to_string(),
-                                cancellable: Some(false),
-                                message: None,
-                                percentage: None,
-                            },
-                        )),
-                    })
-                    .await;
-                token = Some(candidate);
-            }
-        }
-        Self {
-            client: client.clone(),
-            token,
-        }
-    }
-
-    async fn report(&self, message: &str) {
-        match &self.token {
-            Some(token) => {
-                self.client
-                    .send_notification::<notification::Progress>(ProgressParams {
-                        token: token.clone(),
-                        value: ProgressParamsValue::WorkDone(WorkDoneProgress::Report(
-                            WorkDoneProgressReport {
-                                cancellable: Some(false),
-                                message: Some(message.to_string()),
-                                percentage: None,
-                            },
-                        )),
-                    })
-                    .await;
-            }
-            None => {
-                self.client
-                    .log_message(MessageType::INFO, format!("Open in Rodin: {message}"))
-                    .await;
-            }
-        }
-    }
-
-    async fn end(&self) {
-        if let Some(token) = &self.token {
-            self.client
-                .send_notification::<notification::Progress>(ProgressParams {
-                    token: token.clone(),
-                    value: ProgressParamsValue::WorkDone(WorkDoneProgress::End(
-                        WorkDoneProgressEnd { message: None },
-                    )),
-                })
-                .await;
-        }
-    }
-
-    /// End the progress and show the flow's outcome — the tail every exit
-    /// path of [`open_in_rodin`] shares, so no path can forget to close the
-    /// progress before messaging.
-    async fn finish(self, kind: MessageType, message: String) {
-        self.end().await;
-        self.client.show_message(kind, message).await;
     }
 }
 
