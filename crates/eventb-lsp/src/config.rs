@@ -29,6 +29,10 @@ pub struct RossiConfig {
     /// Rodin integration configuration
     #[serde(default)]
     pub rodin: RodinConfig,
+
+    /// eventb-animate integration configuration
+    #[serde(default)]
+    pub animate: AnimateConfig,
 }
 
 impl RossiConfig {
@@ -201,6 +205,67 @@ fn default_sync() -> bool {
 
 fn default_mirror_proofs() -> bool {
     true
+}
+
+/// eventb-animate integration configuration ("Model-check" / "Disprove POs"
+/// code lenses)
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AnimateConfig {
+    /// eventb-animate executable path or bare command name. Empty resolves
+    /// `eventb-animate` via PATH when a lens runs.
+    #[serde(default)]
+    pub path: String,
+
+    /// `--time-limit` (seconds) for the model-check lens; the watchdog that
+    /// kills a hung tool derives from it. `0` selects the default.
+    #[serde(default = "default_time_limit_secs")]
+    pub time_limit_secs: u32,
+
+    /// `--disprove-timeout` (milliseconds) per proof obligation for the
+    /// Disprove POs lens; also feeds that lens's watchdog. `0` selects the
+    /// default.
+    #[serde(default = "default_disprove_timeout_ms")]
+    pub disprove_timeout_ms: u32,
+}
+
+impl AnimateConfig {
+    /// The effective `--time-limit`, with `0` mapped back to the default.
+    pub fn effective_time_limit_secs(&self) -> u32 {
+        if self.time_limit_secs == 0 {
+            default_time_limit_secs()
+        } else {
+            self.time_limit_secs
+        }
+    }
+
+    /// The effective `--disprove-timeout`, with `0` mapped back to the
+    /// default.
+    pub fn effective_disprove_timeout_ms(&self) -> u32 {
+        if self.disprove_timeout_ms == 0 {
+            default_disprove_timeout_ms()
+        } else {
+            self.disprove_timeout_ms
+        }
+    }
+}
+
+impl Default for AnimateConfig {
+    fn default() -> Self {
+        Self {
+            path: String::new(),
+            time_limit_secs: default_time_limit_secs(),
+            disprove_timeout_ms: default_disprove_timeout_ms(),
+        }
+    }
+}
+
+fn default_time_limit_secs() -> u32 {
+    120
+}
+
+fn default_disprove_timeout_ms() -> u32 {
+    1000
 }
 
 /// Configuration manager that holds the current configuration
@@ -394,5 +459,42 @@ mod tests {
         let settings = serde_json::json!({ "rossi": { "rodin": {} } });
         let config = RossiConfig::from_client_settings(&settings).unwrap();
         assert!(config.rodin.sync);
+    }
+
+    #[test]
+    fn test_animate_config_defaults_and_nested_parse() {
+        let config = RossiConfig::default();
+        assert_eq!(config.animate.path, "");
+        assert_eq!(config.animate.time_limit_secs, 120);
+        assert_eq!(config.animate.disprove_timeout_ms, 1000);
+
+        let settings = serde_json::json!({
+            "rossi": {
+                "animate": {
+                    "path": "/opt/eventb-animate/bin/eventb-animate",
+                    "timeLimitSecs": 30,
+                    "disproveTimeoutMs": 500
+                }
+            }
+        });
+        let config = RossiConfig::from_client_settings(&settings).unwrap();
+        assert_eq!(
+            config.animate.path,
+            "/opt/eventb-animate/bin/eventb-animate"
+        );
+        assert_eq!(config.animate.time_limit_secs, 30);
+        assert_eq!(config.animate.disprove_timeout_ms, 500);
+
+        // An absent key keeps the defaults; 0 falls back to them.
+        let settings = serde_json::json!({ "rossi": { "animate": {} } });
+        let config = RossiConfig::from_client_settings(&settings).unwrap();
+        assert_eq!(config.animate.time_limit_secs, 120);
+        let zeroed = AnimateConfig {
+            time_limit_secs: 0,
+            disprove_timeout_ms: 0,
+            ..AnimateConfig::default()
+        };
+        assert_eq!(zeroed.effective_time_limit_secs(), 120);
+        assert_eq!(zeroed.effective_disprove_timeout_ms(), 1000);
     }
 }
