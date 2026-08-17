@@ -270,6 +270,23 @@
           "default": true,
           "description": "Bridge proof files (.bpr/.bps/.bpo) between the checkout and the Rodin workspace at Open in Rodin session boundaries: files next to the .eventb sources are copied into the Rodin project when the lens runs (the checkout wins), and the project's proof files are copied back next to the sources when Rodin exits (the workspace wins; a proof deleted in Rodin is deleted next to the sources too). The exit mirror is unavailable on Windows."
         },
+        "rossi.animate.path": {
+          "type": "string",
+          "default": "",
+          "description": "Path to the eventb-animate executable used by the Model-check and Disprove POs code lenses (handled by the language server). Leave empty to resolve eventb-animate via PATH."
+        },
+        "rossi.animate.timeLimitSecs": {
+          "type": "integer",
+          "minimum": 0,
+          "default": 120,
+          "description": "Time limit in seconds for the Model-check code lens (eventb-animate --time-limit). 0 uses the default."
+        },
+        "rossi.animate.disproveTimeoutMs": {
+          "type": "integer",
+          "minimum": 0,
+          "default": 1000,
+          "description": "Solver timeout in milliseconds per proof obligation for the Disprove POs code lens (eventb-animate po --disprove-timeout). 0 uses the default."
+        },
         "rossi.format.useUnicode": {
           "type": "boolean",
           "default": true,

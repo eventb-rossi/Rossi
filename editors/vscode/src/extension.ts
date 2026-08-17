@@ -29,6 +29,11 @@ interface RossiConfiguration {
         sync: boolean;
         mirrorProofs: boolean;
     };
+    animate: {
+        path: string;
+        timeLimitSecs: number;
+        disproveTimeoutMs: number;
+    };
 }
 
 function getRossiConfiguration(): RossiConfiguration {
@@ -50,6 +55,11 @@ function getRossiConfiguration(): RossiConfiguration {
             workspace: config.get<string>('rodin.workspace', ''),
             sync: config.get<boolean>('rodin.sync', true),
             mirrorProofs: config.get<boolean>('rodin.mirrorProofs', true),
+        },
+        animate: {
+            path: config.get<string>('animate.path', ''),
+            timeLimitSecs: config.get<number>('animate.timeLimitSecs', 120),
+            disproveTimeoutMs: config.get<number>('animate.disproveTimeoutMs', 1000),
         },
     };
 }
