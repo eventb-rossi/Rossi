@@ -12,6 +12,60 @@ pub fn is_identifier_char(ch: char) -> bool {
     ch.is_alphanumeric() || ch == '_'
 }
 
+/// One `MACHINE`/`CONTEXT` header line found by [`header_lines`].
+#[derive(Debug)]
+pub(crate) struct HeaderLine<'a> {
+    /// 0-based line index in the scanned text.
+    pub line: usize,
+    /// Whether the header keyword is `MACHINE` (else `CONTEXT`).
+    pub is_machine: bool,
+    /// The identifier after the keyword, when one is present.
+    pub name: Option<&'a str>,
+    /// The raw line, for range construction.
+    pub text: &'a str,
+}
+
+/// Every `MACHINE`/`CONTEXT` header line in `text` — the shared scan behind
+/// the mid-edit fallbacks (code lenses, diagnostic anchors) that must keep
+/// working while the parse yields no components. Deliberately runs on the
+/// raw text, like the fallbacks it replaced: on a broken parse there is no
+/// reliable comment structure to mask against, and a header spelled inside a
+/// comment matching is an acceptable cost for a last-resort scan.
+pub(crate) fn header_lines(text: &str) -> impl Iterator<Item = HeaderLine<'_>> {
+    text.lines().enumerate().filter_map(move |(line, raw)| {
+        let trimmed = raw.trim_start();
+        let (is_machine, rest) = if let Some(rest) = trimmed.strip_prefix("MACHINE") {
+            (true, rest)
+        } else {
+            (false, trimmed.strip_prefix("CONTEXT")?)
+        };
+        if !rest.is_empty() && !rest.starts_with(char::is_whitespace) {
+            return None;
+        }
+        let after = rest.trim_start();
+        let name_len = after
+            .char_indices()
+            .find(|(_, c)| !is_identifier_char(*c))
+            .map_or(after.len(), |(i, _)| i);
+        Some(HeaderLine {
+            line,
+            is_machine,
+            name: (name_len > 0).then(|| &after[..name_len]),
+            text: raw,
+        })
+    })
+}
+
+/// The last `max` chars of a process's output, `…`-prefixed when truncated —
+/// for keeping a failure excerpt in a user-facing message bounded.
+pub(crate) fn output_excerpt(text: &str, max: usize) -> String {
+    let trimmed = text.trim();
+    match trimmed.char_indices().nth_back(max) {
+        Some((idx, _)) => format!("…{}", &trimmed[idx..]),
+        None => trimmed.to_string(),
+    }
+}
+
 pub fn identifier_words(line: &str) -> Vec<String> {
     let mut words = Vec::new();
     let mut current = String::new();

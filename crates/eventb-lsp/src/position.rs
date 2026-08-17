@@ -76,6 +76,15 @@ pub fn utf16_to_byte(line: &str, utf16_col: usize) -> Option<usize> {
     (units >= utf16_col).then_some(line.len())
 }
 
+/// LSP range covering all of the line at 0-indexed `line_idx`, whose text
+/// (newline excluded) is `line`.
+pub fn full_line_range(line: &str, line_idx: u32) -> Range {
+    Range::new(
+        Position::new(line_idx, 0),
+        Position::new(line_idx, utf16_len(line)),
+    )
+}
+
 /// LSP range for the `[start_col, end_col)` char-column run on the line at
 /// 0-indexed `line_idx`, with the columns converted to UTF-16. Line-local: no
 /// scan of the surrounding document.

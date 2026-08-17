@@ -83,7 +83,10 @@ fn mac_rodin_app(rodin_path: &str, platform: Platform) -> Option<MacRodinApp> {
     None
 }
 
-fn has_path_separator(value: &str) -> bool {
+/// Whether a tool setting denotes a filesystem path rather than a bare name
+/// resolved elsewhere (`PATH`, `open -a`) — the shared classification every
+/// pre-flight existence check must agree on with the spawn it fronts.
+pub(crate) fn has_path_separator(value: &str) -> bool {
     value.contains('/') || value.contains('\\')
 }
 
@@ -324,12 +327,7 @@ fn output_tail(output: &std::process::Output) -> String {
     } else {
         String::from_utf8_lossy(&output.stderr)
     };
-    let trimmed = text.trim();
-    const MAX: usize = 2000;
-    match trimmed.char_indices().nth_back(MAX) {
-        Some((idx, _)) => format!("…{}", &trimmed[idx..]),
-        None => trimmed.to_string(),
-    }
+    crate::text_utils::output_excerpt(&text, 2000)
 }
 
 /// Launch the Rodin GUI detached: the server neither owns nor waits on it

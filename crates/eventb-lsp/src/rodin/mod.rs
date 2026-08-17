@@ -175,29 +175,12 @@ fn lens_at(range: Range, uri: &Url) -> CodeLens {
 }
 
 fn header_line_scan(text: &str, uri: &Url) -> Vec<CodeLens> {
-    let is_header = |line: &str| {
-        let trimmed = line.trim_start();
-        ["MACHINE", "CONTEXT"].iter().any(|kw| {
-            trimmed
-                .strip_prefix(kw)
-                .is_some_and(|rest| rest.is_empty() || rest.starts_with(char::is_whitespace))
-        })
-    };
-    text.lines()
-        .enumerate()
-        .filter(|(_, line)| is_header(line))
-        .map(|(line_num, line)| {
-            let range = Range {
-                start: Position {
-                    line: line_num as u32,
-                    character: 0,
-                },
-                end: Position {
-                    line: line_num as u32,
-                    character: line.encode_utf16().count() as u32,
-                },
-            };
-            lens_at(range, uri)
+    crate::text_utils::header_lines(text)
+        .map(|header| {
+            lens_at(
+                crate::position::full_line_range(header.text, header.line as u32),
+                uri,
+            )
         })
         .collect()
 }
