@@ -27,7 +27,7 @@ repository = "https://github.com/eventb-rossi/rossi"
 # Parser dependencies
 pest = "2.7"
 pest_derive = "2.7"
-num-bigint = "0.4"
+num-bigint = "0.5"
 stacker = "0.1"
 thiserror = "2.0"
 serde = { version = "1.0", features = ["derive"] }
