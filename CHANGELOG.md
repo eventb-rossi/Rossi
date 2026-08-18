@@ -1,5 +1,66 @@
 # Changelog
 
+## [0.1.9](https://github.com/eventb-rossi/rossi/compare/v0.1.8...v0.1.9) - 2026-08-18
+
+### Added
+- *(build)* Stamp a .project descriptor into text-built source archives
+- *(cli)* Import proof files next to the generated text
+- *(cli)* Add export --build and --proofs
+- *(cli)* Preserve proof state in directory and flat-archive builds
+- *(build)* Emit proof-obligation files from the build
+- *(validate)* Surface proof status in text, JSON and SARIF output
+- *(validate)* Surface EB010 with --show-info
+- *(parse)* Accept multiple event refinement targets
+- *(parse)* Accept labeled and repeatable machine variants
+- *(formula)* Derive before-after and feasibility predicates for assignments
+- *(wd)* Emit EB010 from checked formulas
+- *(lsp)* Sync Rodin model edits back into the sources automatically
+- *(build)* Preserve proofs and carry stamps when repacking archives
+- *(pog)* Reconcile regenerated obligations with previous proof state
+- *(pog)* Parse obligation stamps and expose semantic equality in the po view
+- *(pog)* Emit merged guard-strengthening obligations
+- *(build)* Check merged events statically
+- *(pog)* Emit lexicographic variant obligations
+- *(build)* Check every labeled variant
+- *(pog)* Emit convergence obligations
+- *(pog)* Emit guard strengthening and simulation obligations
+- *(pog)* Emit witness obligations and refined-event invariants
+- *(pog)* Emit action and invariant preservation obligations
+- *(pog)* Build event hypotheses and guard obligations
+- *(pog)* Build machine hypotheses, invariant and variant obligations
+- *(pog)* Emit context proof obligations
+- *(pog)* Model proof-obligation files and hypothesis chains
+- *(build)* Add typed closure lookups to the checked model
+- *(build)* Report proof status from Rodin proof files
+- *(lsp)* Mirror workspace proofs back beside the sources when Rodin exits
+- *(lsp)* Seed text-adjacent proof files into the Rodin project at lens start
+- *(lsp)* Catch up on Rodin model edits at watcher startup
+- *(lsp)* Rebuild the shared Rodin project on save
+- *(lsp)* Watch the Rodin workspace and surface proof status live
+- *(lsp)* Serve Open in Rodin as CodeLens + executeCommand
+- *(lsp)* Add the Rodin workspace build, launch, and lock core
+
+### Changed
+- *(lsp)* Host the .rossi/rodin reverse lookup beside its naming convention
+- *(build)* Route export --build through the text-to-project doors
+- *(cli)* Hoist the shared build pipeline into build_common
+- *(build)* Share the text-to-project assembly between the CLI and the LSP
+- *(parse)* Tighten the AST layer after review
+- *(build)* Simplify the checker and generator internals
+- *(lsp)* Derive the pretty-printer from one FormatConfig mapping
+
+### Fixed
+- *(cli,lsp)* Skip dot-directories when collecting source files
+- *(parse)* Reject nonstandard set declarations
+- *(build)* Keep theorem guards over variables disappearing here
+- *(lsp)* Hold the Open in Rodin single-flight until Rodin takes the lock
+- *(lsp)* Seed Rodin workspace preferences without clobbering foreign keys
+- *(lsp)* Harden and streamline the Rodin sync loop
+- *(lsp)* Create the Rodin workspace watcher off the request path
+
+### Documentation
+- *(cli)* Document the proof round-trip through import and export
+
 ## [0.1.8](https://github.com/eventb-rossi/rossi/compare/v0.1.7...v0.1.8) - 2026-08-11
 
 ### Added
