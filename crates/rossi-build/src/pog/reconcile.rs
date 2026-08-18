@@ -28,22 +28,16 @@ use quick_xml::events::Event;
 
 use crate::ScFile;
 use crate::po_view::PoView;
+use crate::proofs::Confidence;
 use crate::xml_out::{DOC_HEADER, attr, tag as xtag};
 
 /// Reconcile every generated `.bpo` / `.bps` pair in `files` against
 /// the previous contents supplied by `old` (keyed by the generated
 /// filename; `None` when no previous file exists).
 pub fn reconcile_build_files(files: &mut [ScFile], mut old: impl FnMut(&str) -> Option<String>) {
-    for i in 0..files.len() {
-        let Some(stem) = files[i].filename.strip_suffix(".bpo") else {
-            continue;
-        };
-        let bps_name = format!("{stem}.bps");
-        let Some(j) = files.iter().position(|f| f.filename == bps_name) else {
-            continue;
-        };
+    for (i, j) in bpo_bps_pairs(files) {
         let old_bpo = old(&files[i].filename);
-        let old_bps = old(&bps_name);
+        let old_bps = old(&files[j].filename);
         let (bpo_out, bps_out) = reconcile_pair(
             old_bpo.as_deref(),
             old_bps.as_deref(),
@@ -53,6 +47,22 @@ pub fn reconcile_build_files(files: &mut [ScFile], mut old: impl FnMut(&str) -> 
         files[i].contents = bpo_out;
         files[j].contents = bps_out;
     }
+}
+
+/// The `(bpo index, bps index)` of every same-stem `.bpo` / `.bps` pair —
+/// the one implementation of the pairing rule, shared with
+/// [`reset_stale_statuses`]. Indices, so callers keep their `&mut` access.
+fn bpo_bps_pairs(files: &[ScFile]) -> Vec<(usize, usize)> {
+    files
+        .iter()
+        .enumerate()
+        .filter_map(|(i, file)| {
+            let stem = file.filename.strip_suffix(".bpo")?;
+            let bps_name = format!("{stem}.bps");
+            let j = files.iter().position(|f| f.filename == bps_name)?;
+            Some((i, j))
+        })
+        .collect()
 }
 
 /// Reconcile one component's generated `.bpo` / `.bps` contents with
@@ -100,18 +110,18 @@ pub fn reconcile_pair(
         _ => {
             let carried: HashMap<&str, &str> = old_rows
                 .iter()
-                .map(|(name, row)| (name.as_str(), row.as_str()))
+                .map(|row| (row.name.as_str(), row.row.as_str()))
                 .collect();
             let rows: Vec<String> = new_rows
                 .iter()
-                .map(|(name, row)| match carried.get(name.as_str()) {
+                .map(|row| match carried.get(row.name.as_str()) {
                     Some(old_row) => (*old_row).to_string(),
                     None => {
                         let stamp = plan
                             .as_ref()
-                            .and_then(|plan| plan.sequents.get(name))
+                            .and_then(|plan| plan.sequents.get(&row.name))
                             .map_or("0", String::as_str);
-                        replace_stamp(row, stamp)
+                        replace_stamp(&row.row, stamp)
                     }
                 })
                 .collect();
@@ -121,10 +131,131 @@ pub fn reconcile_pair(
     (bpo_out, bps_out)
 }
 
-fn same_names(old_rows: &[(String, String)], new_rows: &[(String, String)]) -> bool {
-    let old: BTreeSet<&str> = old_rows.iter().map(|(name, _)| name.as_str()).collect();
-    let new: BTreeSet<&str> = new_rows.iter().map(|(name, _)| name.as_str()).collect();
+fn same_names(old_rows: &[StatusRow], new_rows: &[StatusRow]) -> bool {
+    let old: BTreeSet<&str> = old_rows.iter().map(|row| row.name.as_str()).collect();
+    let new: BTreeSet<&str> = new_rows.iter().map(|row| row.name.as_str()).collect();
     old == new
+}
+
+/// Reset stale proof statuses after [`reconcile_build_files`]: a `.bps`
+/// row whose recorded `poStamp` differs from its sequent's stamp in the
+/// sibling `.bpo` records a proof of an obligation that has since
+/// changed. Rodin uses exactly that divergence as its replay signal, but
+/// a consumer that cannot replay proofs (eventb-animate's po gate is
+/// stamp-blind) must not trust the carried confidence — so every such
+/// row is replaced by a fresh unattempted one (confidence `-99`, the
+/// sequent's stamp, `psManual="false"`), dropping `psBroken` and any
+/// other carried attribute. Stamp-matched rows keep their exact bytes.
+///
+/// Returns `(bpo filename, open count)` per pair, where open = sequents
+/// minus the rows that are stamp-valid and classify as discharged
+/// (broken caps a high confidence) — exactly the rows the PO gate skips.
+///
+/// Deliberately separate from [`reconcile_build_files`]: the persistent
+/// Rodin-project writers (LSP rebuild, CLI build, repack) must carry
+/// rows verbatim so Rodin itself sees the divergence; they never call
+/// this.
+pub fn reset_stale_statuses(files: &mut [ScFile]) -> Vec<(String, usize)> {
+    let mut counts = Vec::new();
+    for (i, j) in bpo_bps_pairs(files) {
+        let stamps = sequent_stamps(&files[i].contents);
+        let rows = parse_status_rows(&files[j].contents);
+        let stamp_valid = |row: &StatusRow| {
+            stamps
+                .get(&row.name)
+                .is_some_and(|stamp| row.stamp.as_deref() == Some(stamp.as_str()))
+        };
+
+        // `max` keeps the count conservative when a malformed `.bpo` scan
+        // yields fewer sequents than there are rows: those rows all reset
+        // and must count as open, not vanish from the total.
+        let total = stamps.len().max(rows.len());
+        let skipped = rows
+            .iter()
+            .filter(|row| {
+                stamp_valid(row)
+                    && Confidence::classify(row.confidence).cap_if_broken(row.broken)
+                        == Confidence::Discharged
+            })
+            .count();
+
+        if rows.iter().any(|row| !stamp_valid(row)) {
+            let out: Vec<String> = rows
+                .iter()
+                .map(|row| {
+                    if stamp_valid(row) {
+                        row.row.clone()
+                    } else {
+                        fresh_status_row(
+                            &row.name,
+                            stamps.get(&row.name).map_or("0", String::as_str),
+                        )
+                    }
+                })
+                .collect();
+            files[j].contents = assemble_status(&out);
+        }
+        counts.push((files[i].filename.clone(), total.saturating_sub(skipped)));
+    }
+    counts
+}
+
+/// The `name → poStamp` of every sequent in a `.bpo`, by attribute scan —
+/// no formula parsing, unlike [`PoView`], so a Rodin-written predicate our
+/// parser cannot reparse never voids the stamps (which would reset every
+/// recorded discharge). A sequent without a stamp reads as `"0"`, the
+/// generator's default. Malformed XML stops the scan; the missing entries
+/// then read as open and their rows reset — conservative, never unsafe.
+fn sequent_stamps(bpo: &str) -> HashMap<String, String> {
+    let mut reader = Reader::from_str(bpo);
+    let mut buf = Vec::new();
+    let mut stamps = HashMap::new();
+    loop {
+        match reader.read_event_into(&mut buf) {
+            Ok(Event::Start(e)) | Ok(Event::Empty(e))
+                if e.name().as_ref() == xtag::PO_SEQUENT.as_bytes() =>
+            {
+                let mut name = None;
+                let mut stamp = None;
+                for attr in e.attributes().flatten() {
+                    let unescaped = || {
+                        let raw = String::from_utf8_lossy(&attr.value);
+                        match quick_xml::escape::unescape(&raw) {
+                            Ok(cow) => cow.into_owned(),
+                            Err(_) => raw.into_owned(),
+                        }
+                    };
+                    if attr.key.as_ref() == attr::NAME.as_bytes() {
+                        name = Some(unescaped());
+                    } else if attr.key.as_ref() == attr::PO_STAMP.as_bytes() {
+                        stamp = Some(unescaped());
+                    }
+                }
+                if let Some(name) = name {
+                    stamps.insert(name, stamp.unwrap_or_else(|| "0".into()));
+                }
+            }
+            Ok(Event::Eof) | Err(_) => break,
+            _ => {}
+        }
+        buf.clear();
+    }
+    stamps
+}
+
+/// A fresh unattempted status row in the generator's exact shape
+/// (`pog::model::into_sc_files`), escaped by the same
+/// [`crate::xml_out::escape_attr`] the generator uses.
+fn fresh_status_row(name: &str, stamp: &str) -> String {
+    let mut row = format!("<{} {}=\"", xtag::PS_STATUS, attr::NAME);
+    crate::xml_out::escape_attr(name, &mut row);
+    row.push_str(&format!(
+        "\" {}=\"-99\" {}=\"{stamp}\" {}=\"false\"/>",
+        attr::CONFIDENCE,
+        attr::PO_STAMP,
+        attr::PS_MANUAL,
+    ));
+    row
 }
 
 /// The stamp each output element should carry.
@@ -252,11 +383,25 @@ fn line_name(line: &str, prefix: &str) -> Option<String> {
     )
 }
 
-/// Parse a `.bps` document into `(sequent name, rebuilt row)` pairs in
-/// document order. Rows rebuild from their raw attribute bytes, so
-/// carried values survive byte-for-byte; status rows are attribute-only
-/// by construction, so children are not represented.
-fn parse_status_rows(bps: &str) -> Vec<(String, String)> {
+/// One `.bps` row as parsed for reconciliation and stamp guarding.
+struct StatusRow {
+    /// Unescaped `name` attribute.
+    name: String,
+    /// The row rebuilt from its raw attribute bytes (carried verbatim).
+    row: String,
+    /// Unescaped `org.eventb.core.poStamp`, when present.
+    stamp: Option<String>,
+    /// Parsed `org.eventb.core.confidence`, when present and numeric.
+    confidence: Option<i64>,
+    /// `org.eventb.core.psBroken="true"`.
+    broken: bool,
+}
+
+/// Parse a `.bps` document into [`StatusRow`]s in document order. Rows
+/// rebuild from their raw attribute bytes, so carried values survive
+/// byte-for-byte; status rows are attribute-only by construction, so
+/// children are not represented.
+fn parse_status_rows(bps: &str) -> Vec<StatusRow> {
     let mut reader = Reader::from_str(bps);
     let mut buf = Vec::new();
     let mut rows = Vec::new();
@@ -265,25 +410,37 @@ fn parse_status_rows(bps: &str) -> Vec<(String, String)> {
             Ok(Event::Start(e)) | Ok(Event::Empty(e))
                 if e.name().as_ref() == xtag::PS_STATUS.as_bytes() =>
             {
-                let mut name = None;
-                let mut row = format!("<{}", xtag::PS_STATUS);
+                let mut parsed = StatusRow {
+                    name: String::new(),
+                    row: format!("<{}", xtag::PS_STATUS),
+                    stamp: None,
+                    confidence: None,
+                    broken: false,
+                };
                 for attr in e.attributes().flatten() {
                     let key = String::from_utf8_lossy(attr.key.as_ref());
                     let raw = String::from_utf8_lossy(&attr.value);
-                    if attr.key.as_ref() == b"name" {
-                        name = Some(match quick_xml::escape::unescape(&raw) {
-                            Ok(cow) => cow.into_owned(),
-                            Err(_) => raw.to_string(),
-                        });
+                    let unescaped = || match quick_xml::escape::unescape(&raw) {
+                        Ok(cow) => cow.into_owned(),
+                        Err(_) => raw.to_string(),
+                    };
+                    if attr.key.as_ref() == attr::NAME.as_bytes() {
+                        parsed.name = unescaped();
+                    } else if attr.key.as_ref() == attr::PO_STAMP.as_bytes() {
+                        parsed.stamp = Some(unescaped());
+                    } else if attr.key.as_ref() == attr::CONFIDENCE.as_bytes() {
+                        parsed.confidence = unescaped().parse::<i64>().ok();
+                    } else if attr.key.as_ref() == attr::PS_BROKEN.as_bytes() {
+                        parsed.broken = raw == "true";
                     }
-                    row.push(' ');
-                    row.push_str(&key);
-                    row.push_str("=\"");
-                    row.push_str(&raw);
-                    row.push('"');
+                    parsed.row.push(' ');
+                    parsed.row.push_str(&key);
+                    parsed.row.push_str("=\"");
+                    parsed.row.push_str(&raw);
+                    parsed.row.push('"');
                 }
-                row.push_str("/>");
-                rows.push((name.unwrap_or_default(), row));
+                parsed.row.push_str("/>");
+                rows.push(parsed);
             }
             Ok(Event::Eof) | Err(_) => break,
             _ => {}

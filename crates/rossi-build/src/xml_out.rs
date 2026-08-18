@@ -236,6 +236,7 @@ pub mod attr {
     pub const PO_SEL_HINT_SND: &str = "org.eventb.core.poSelHintSnd";
     pub const CONFIDENCE: &str = "org.eventb.core.confidence";
     pub const PS_MANUAL: &str = "org.eventb.core.psManual";
+    pub const PS_BROKEN: &str = "org.eventb.core.psBroken";
 }
 
 /// Element tags used in `.bcc`/`.bcm`.

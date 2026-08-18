@@ -4,8 +4,9 @@
 
 mod common;
 
+use rossi_build::ScFile;
 use rossi_build::po_view::PoView;
-use rossi_build::pog::reconcile::reconcile_pair;
+use rossi_build::pog::reconcile::{reconcile_pair, reset_stale_statuses};
 
 /// Build a one-machine project and return its `(bpo, bps)` contents.
 fn generate(machine: &str) -> (String, String) {
@@ -246,4 +247,109 @@ fn fresh_stamp_exceeds_every_previous_stamp() {
     let view = PoView::from_xml(&bpo_out).unwrap();
     assert_eq!(view.stamp.as_deref(), Some("8"));
     assert_eq!(view.sequents["evt/inv1/INV"].stamp.as_deref(), Some("8"));
+}
+
+/// Wrap one component's `(bpo, bps)` contents as the build-file slice
+/// [`reset_stale_statuses`] operates on.
+fn pair_files(bpo: String, bps: String) -> Vec<ScFile> {
+    vec![
+        ScFile {
+            filename: "M0.bpo".into(),
+            contents: bpo,
+            accurate: true,
+        },
+        ScFile {
+            filename: "M0.bps".into(),
+            contents: bps,
+            accurate: true,
+        },
+    ]
+}
+
+#[test]
+fn guard_keeps_stamp_matched_rows_including_broken() {
+    let (bpo, bps) = base();
+    // Both rows stamp-match their sequents (all stamps "0"): one
+    // discharged, one discharged-but-broken.
+    let bps = bps
+        .replace(
+            r#"name="INITIALISATION/inv1/INV" org.eventb.core.confidence="-99""#,
+            r#"name="INITIALISATION/inv1/INV" org.eventb.core.confidence="1000""#,
+        )
+        .replace(
+            r#"name="evt/inv1/INV" org.eventb.core.confidence="-99" org.eventb.core.poStamp="0" org.eventb.core.psManual="false""#,
+            r#"name="evt/inv1/INV" org.eventb.core.confidence="1000" org.eventb.core.poStamp="0" org.eventb.core.psManual="false" org.eventb.core.psBroken="true""#,
+        );
+    let mut files = pair_files(bpo, bps.clone());
+
+    let counts = reset_stale_statuses(&mut files);
+
+    assert_eq!(files[1].contents, bps, "stamp-matched rows carry verbatim");
+    // Two sequents; only the non-broken discharged row is skipped — the
+    // broken one stays open (the gate fails it and the disprover runs).
+    assert_eq!(counts, vec![("M0.bpo".to_string(), 1)]);
+}
+
+#[test]
+fn guard_resets_stamp_mismatched_rows() {
+    let (old_bpo, old_bps) = base();
+    let old_bps = old_bps.replace(
+        r#"org.eventb.core.confidence="-99""#,
+        r#"org.eventb.core.confidence="1000""#,
+    );
+    // The changed guard bumps evt/inv1/INV to stamp "1" while its
+    // carried row keeps stamp "0" — the divergence the guard resets.
+    let (new_bpo, new_bps) = generate(&machine("a &lt; 9", ""));
+    let (bpo_out, bps_out) = reconcile_pair(Some(&old_bpo), Some(&old_bps), &new_bpo, &new_bps);
+    let mut files = pair_files(bpo_out, bps_out);
+
+    let counts = reset_stale_statuses(&mut files);
+
+    assert!(
+        files[1].contents.contains(
+            r#"<org.eventb.core.psStatus name="evt/inv1/INV" org.eventb.core.confidence="-99" org.eventb.core.poStamp="1" org.eventb.core.psManual="false"/>"#
+        ),
+        "the stale row resets to a fresh unattempted one carrying the sequent's stamp: {}",
+        files[1].contents
+    );
+    assert!(
+        files[1]
+            .contents
+            .contains(r#"name="INITIALISATION/inv1/INV" org.eventb.core.confidence="1000""#),
+        "the untouched sequent's row survives"
+    );
+    assert_eq!(counts, vec![("M0.bpo".to_string(), 1)]);
+}
+
+#[test]
+fn guard_is_noop_without_previous_state() {
+    let (bpo, bps) = base();
+    let mut files = pair_files(bpo, bps.clone());
+
+    let counts = reset_stale_statuses(&mut files);
+
+    assert_eq!(files[1].contents, bps, "fresh output is untouched");
+    assert_eq!(counts, vec![("M0.bpo".to_string(), 2)]);
+}
+
+#[test]
+fn guard_counts_reviewed_and_pending_as_open() {
+    let (bpo, bps) = base();
+    let bps = bps
+        .replace(
+            r#"name="INITIALISATION/inv1/INV" org.eventb.core.confidence="-99""#,
+            r#"name="INITIALISATION/inv1/INV" org.eventb.core.confidence="300""#,
+        )
+        .replace(
+            r#"name="evt/inv1/INV" org.eventb.core.confidence="-99""#,
+            r#"name="evt/inv1/INV" org.eventb.core.confidence="50""#,
+        );
+    let mut files = pair_files(bpo, bps.clone());
+
+    let counts = reset_stale_statuses(&mut files);
+
+    assert_eq!(files[1].contents, bps, "stamp-matched rows carry verbatim");
+    // Reviewed (300) and pending (50) both stay open — only discharged
+    // (> 500) rows are skipped, matching the po gate.
+    assert_eq!(counts, vec![("M0.bpo".to_string(), 2)]);
 }

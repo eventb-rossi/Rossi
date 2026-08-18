@@ -58,9 +58,10 @@ pub struct ProofReport {
 
 /// Rodin's proof confidence buckets. Thresholds are eventb-checker's
 /// (`>500` discharged, `101..=500` reviewed, `0..=100` pending, absent or
-/// negative unattempted).
+/// negative unattempted). `pub(crate)` because `pog::reconcile`'s stamp
+/// guard classifies status rows by the same rules.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum Confidence {
+pub(crate) enum Confidence {
     Discharged,
     Reviewed,
     Pending,
@@ -68,7 +69,7 @@ enum Confidence {
 }
 
 impl Confidence {
-    fn classify(confidence: Option<i64>) -> Self {
+    pub(crate) fn classify(confidence: Option<i64>) -> Self {
         match confidence {
             None => Confidence::Unattempted,
             Some(c) if c > 500 => Confidence::Discharged,
@@ -82,7 +83,7 @@ impl Confidence {
     /// `.bps`, but eventb-checker 1.6 does not count it as discharged or
     /// reviewed: such an obligation is reported `pending`. Lower
     /// classifications (already pending / unattempted) are left untouched.
-    fn cap_if_broken(self, broken: bool) -> Self {
+    pub(crate) fn cap_if_broken(self, broken: bool) -> Self {
         if broken && matches!(self, Confidence::Discharged | Confidence::Reviewed) {
             Confidence::Pending
         } else {
