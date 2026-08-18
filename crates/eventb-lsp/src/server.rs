@@ -514,6 +514,17 @@ impl Drop for InFlightReset {
     }
 }
 
+/// The Rodin workspace project a source file maps to — see
+/// [`RossiLanguageServer::rodin_project_target`].
+struct RodinProjectTarget {
+    source_dir: PathBuf,
+    workspace_dir: PathBuf,
+    project_name: String,
+    /// `workspace_dir`/`project_name`. Not existence-checked; callers gate
+    /// as they need.
+    project_dir: PathBuf,
+}
+
 /// The `file://` document URI every lens command carries as its first
 /// argument — the shared decode for the `workspace/executeCommand` handlers,
 /// erroring with the command's own name.
@@ -655,6 +666,33 @@ impl RossiLanguageServer {
         root().map(|root| crate::rodin::default_workspace_dir(&root))
     }
 
+    /// The Rodin workspace project the file at `uri` maps to — the one
+    /// resolution (source dir → workspace → project name) every consumer of
+    /// an existing project must agree on with the Open in Rodin flow, so
+    /// rebuild-on-save and the animate po lens read exactly the directory
+    /// Rodin records into. `None` for non-file URIs, files without a usable
+    /// parent, and when no workspace resolves.
+    fn rodin_project_target(&self, uri: &Url) -> Option<RodinProjectTarget> {
+        let source_dir = uri
+            .to_file_path()
+            .ok()?
+            .parent()
+            .map(std::path::Path::to_path_buf)
+            .filter(|dir| !dir.as_os_str().is_empty())?;
+        let workspace_dir = self.resolved_rodin_workspace(Some(&source_dir))?;
+        let project_name = crate::rodin::project_name_for(
+            &source_dir,
+            self.cross_reference_manager.workspace_root().as_deref(),
+        );
+        let project_dir = workspace_dir.join(&project_name);
+        Some(RodinProjectTarget {
+            source_dir,
+            workspace_dir,
+            project_name,
+            project_dir,
+        })
+    }
+
     /// The "Open in Rodin" command: resolve the request up front, refuse a
     /// concurrent run, and spawn the flow.
     async fn execute_rodin_open(
@@ -747,6 +785,15 @@ impl RossiLanguageServer {
             return Ok(None);
         };
 
+        // The shared Rodin workspace project for the clicked file's
+        // directory, when one exists — only Po mode reads recorded proof
+        // state, so Check clicks skip the resolution entirely.
+        let rodin_project_dir = matches!(mode, crate::animate::AnimateMode::Po)
+            .then(|| self.rodin_project_target(&uri))
+            .flatten()
+            .map(|target| target.project_dir)
+            .filter(|dir| dir.is_dir());
+
         let request = crate::animate::AnimateRequest {
             input: crate::animate::ExecuteInput {
                 mode,
@@ -755,6 +802,7 @@ impl RossiLanguageServer {
                 documents: Arc::clone(&self.document_manager),
                 cross_references: Arc::clone(&self.cross_reference_manager),
                 config: self.config_manager.get().animate.clone(),
+                rodin_project_dir,
             },
             progress_supported: self.supports_work_done_progress.load(Ordering::Relaxed),
             analyzer: self.analyzer.clone(),
@@ -870,23 +918,18 @@ impl RossiLanguageServer {
         if !self.config_manager.get().rodin.sync {
             return;
         }
-        let Ok(path) = uri.to_file_path() else {
+        let Some(target) = self.rodin_project_target(uri) else {
             return;
         };
-        let Some(source_dir) = path.parent().map(std::path::Path::to_path_buf) else {
-            return;
-        };
-        let Some(workspace_dir) = self.resolved_rodin_workspace(Some(&source_dir)) else {
-            return;
-        };
-        let project_name = crate::rodin::project_name_for(
-            &source_dir,
-            self.cross_reference_manager.workspace_root().as_deref(),
-        );
-        let project_dir = workspace_dir.join(&project_name);
-        if !project_dir.is_dir() {
+        if !target.project_dir.is_dir() {
             return;
         }
+        let RodinProjectTarget {
+            source_dir,
+            workspace_dir,
+            project_name,
+            project_dir,
+        } = target;
 
         let generation = {
             let mut generations = self.rodin_rebuild_generations.lock();

@@ -193,6 +193,11 @@ pub struct ExecuteInput {
     pub cross_references: Arc<CrossReferenceManager>,
     /// The `rossi.animate` configuration, snapshotted at click time.
     pub config: AnimateConfig,
+    /// The shared Rodin workspace project for the clicked file's directory,
+    /// when it exists. Po mode reconciles the generated proof files against
+    /// it (and against proof files next to the sources) so obligations
+    /// Rodin already discharged skip the disprover. Ignored in Check mode.
+    pub rodin_project_dir: Option<std::path::PathBuf>,
 }
 
 /// The classified result of one run.
@@ -313,11 +318,21 @@ async fn execute_with_progress(
         let cross_references = Arc::clone(&input.cross_references);
         let uri = input.uri.clone();
         let machine = input.machine.clone();
+        let mode = input.mode;
+        // Moved, not cloned: the field has no use after this block.
+        let rodin_project_dir = input.rodin_project_dir;
         // The closure walk parses files and the static check is CPU-bound;
         // both stay off the async workers. The ComponentLoader is `!Sync`,
         // so it is constructed and dropped inside this one blocking task.
         tokio::task::spawn_blocking(move || {
-            closure::prepare(&cross_references, &documents, &uri, &machine)
+            closure::prepare(
+                &cross_references,
+                &documents,
+                &uri,
+                &machine,
+                mode,
+                rodin_project_dir.as_deref(),
+            )
         })
         .await
         .map_err(|join_error| AnimateError::Io(format!("the build task failed: {join_error}")))??
@@ -328,7 +343,10 @@ async fn execute_with_progress(
             AnimateMode::Check => progress.report("running eventb-animate").await,
             AnimateMode::Po => {
                 progress
-                    .report(&format!("disproving {} obligation(s)", prepared.po_count))
+                    .report(&format!(
+                        "disproving {} open obligation(s)",
+                        prepared.po_count
+                    ))
                     .await;
             }
         }

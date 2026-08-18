@@ -9,13 +9,14 @@
 //! dropped elements produces verdicts about a different model.
 
 use std::collections::HashSet;
+use std::path::Path;
 
 use crate::component_loader::ComponentLoader;
 use crate::cross_references::CrossReferenceManager;
 use crate::document::DocumentManager;
 use crate::lsp_types::Url;
 
-use super::AnimateError;
+use super::{AnimateError, AnimateMode};
 
 /// The Rodin project name every temp build uses.
 const PROJECT_NAME: &str = "rossi_animate";
@@ -63,7 +64,9 @@ pub(crate) struct Closure {
 
 /// Everything [`super::execute`]'s blocking stage produces: the closure, the
 /// temp project the tool runs on (removed when the guard drops), and the
-/// number of generated proof-obligation sequents (sizes the po watchdog).
+/// clicked machine's proof-obligation count for the po watchdog — all
+/// generated sequents in Check mode, the still-open ones after merging
+/// recorded proof state in Po mode.
 #[derive(Debug)]
 pub(crate) struct Prepared {
     pub closure: Closure,
@@ -71,22 +74,86 @@ pub(crate) struct Prepared {
     pub po_count: usize,
 }
 
-/// The full blocking stage: closure → static check → temp project.
+/// The full blocking stage: closure → static check → (Po mode) recorded
+/// proof state → temp project.
 pub(crate) fn prepare(
     cross_references: &CrossReferenceManager,
     documents: &DocumentManager,
     uri: &Url,
     machine: &str,
+    mode: AnimateMode,
+    rodin_project_dir: Option<&Path>,
 ) -> Result<Prepared, AnimateError> {
     let closure = collect_closure(cross_references, documents, uri, machine)?;
-    let build = build_in_memory(&closure.components)?;
-    let po_count = count_po_sequents(&build, &closure.machine);
+    let mut build = build_in_memory(&closure.components)?;
+    let po_count = match mode {
+        AnimateMode::Po => apply_recorded_proof_state(&mut build, &closure, rodin_project_dir),
+        AnimateMode::Check => count_po_sequents(&build, &closure.machine),
+    };
     let temp_dir = write_temp_project(&closure.components, &build)?;
     Ok(Prepared {
         closure,
         temp_dir,
         po_count,
     })
+}
+
+/// Po mode only: merge recorded Rodin proof state into the generated
+/// `.bpo`/`.bps` pairs so obligations Rodin already discharged skip the
+/// disprover, reset stamp-diverged statuses (the po gate is stamp-blind, so
+/// a stale proof of a since-edited obligation must never pass vacuously),
+/// and return the clicked machine's open-obligation count for the watchdog.
+///
+/// Check mode deliberately skips this: with recorded statuses present,
+/// ProB's `PROOF_INFO` would let discharged INV obligations skip invariant
+/// re-checking during the model check.
+fn apply_recorded_proof_state(
+    build: &mut rossi_build::BuildResult,
+    closure: &Closure,
+    rodin_project_dir: Option<&Path>,
+) -> usize {
+    rossi_build::pog::reconcile::reconcile_build_files(&mut build.files, |name| {
+        recorded_proof_file(name, rodin_project_dir, closure)
+    });
+    let bpo_name = format!("{}.bpo", closure.machine);
+    rossi_build::pog::reconcile::reset_stale_statuses(&mut build.files)
+        .into_iter()
+        .find(|(name, _)| *name == bpo_name)
+        .map_or(0, |(_, open)| open)
+}
+
+/// Previously recorded contents for generated proof file `name`
+/// ("M0.bpo" / "M0.bps"), freshest source first:
+/// 1. the shared Rodin workspace project (Rodin writes `.bps` there live
+///    while a session runs);
+/// 2. the component's own source directory (the proof mirror's session-end
+///    checkout copies, or a plain Rodin export);
+/// 3. `None` — reconcile no-ops for the pair and every obligation stays
+///    unattempted, the pre-existing behavior.
+///
+/// Workspace-first is deliberately the *inverse* of `rodin::proof_mirror`'s
+/// seed policy ("the checkout is authoritative when a session starts"): the
+/// mirror arbitrates ownership at session boundaries, while this lens wants
+/// whatever state is freshest right now.
+fn recorded_proof_file(
+    name: &str,
+    rodin_project_dir: Option<&Path>,
+    closure: &Closure,
+) -> Option<String> {
+    if !rossi_build::is_normal_path_component(name) {
+        return None;
+    }
+    if let Some(dir) = rodin_project_dir
+        && let Ok(contents) = std::fs::read_to_string(dir.join(name))
+    {
+        return Some(contents);
+    }
+    let stem = name
+        .strip_suffix(".bpo")
+        .or_else(|| name.strip_suffix(".bps"))?;
+    let info = closure.infos.iter().find(|info| info.name == stem)?;
+    let path = info.uri.to_file_path().ok()?;
+    std::fs::read_to_string(path.parent()?.join(name)).ok()
 }
 
 /// Collect the machine named `machine` in the document at `uri`, plus its
@@ -420,14 +487,9 @@ mod tests {
     fn prepare_builds_and_writes_a_complete_temp_project() {
         let documents = DocumentManager::new();
         let xref = CrossReferenceManager::new();
-        open(
-            &documents,
-            &xref,
-            "file:///m.eventb",
-            "MACHINE m\nVARIABLES\n    x\nINVARIANTS\n    @inv1 x ∈ ℕ\nEVENTS\n    EVENT INITIALISATION\n    THEN\n        @act1 x := 0\n    END\nEND\n",
-        );
+        open(&documents, &xref, "file:///m.eventb", PROVABLE_MACHINE);
         let uri = Url::parse("file:///m.eventb").unwrap();
-        let prepared = prepare(&xref, &documents, &uri, "m").unwrap();
+        let prepared = prepare(&xref, &documents, &uri, "m", AnimateMode::Check, None).unwrap();
         let dir = prepared.temp_dir.path();
         assert!(dir.join("m.bum").is_file());
         assert!(dir.join("m.bcm").is_file());
@@ -453,9 +515,132 @@ mod tests {
             "MACHINE m\nVARIABLES\n    x\nINVARIANTS\n    @inv1 y ∈ ℕ\nEVENTS\n    EVENT INITIALISATION\n    THEN\n        @act1 x := 0\n    END\nEND\n",
         );
         let uri = Url::parse("file:///m.eventb").unwrap();
-        match prepare(&xref, &documents, &uri, "m").unwrap_err() {
+        match prepare(&xref, &documents, &uri, "m", AnimateMode::Check, None).unwrap_err() {
             AnimateError::BuildFailed(count) => assert!(count >= 1),
             other => panic!("expected BuildFailed, got {other:?}"),
         }
+    }
+
+    const PROVABLE_MACHINE: &str = "MACHINE m\nVARIABLES\n    x\nINVARIANTS\n    @inv1 x ∈ ℕ\nEVENTS\n    EVENT INITIALISATION\n    THEN\n        @act1 x := 0\n    END\nEND\n";
+
+    /// Copy a baseline temp project's generated `m.bpo`/`m.bps` into `to`,
+    /// doctoring every status to discharged — a recorded proof state
+    /// claiming everything is proven.
+    fn write_discharged(from: &Path, to: &Path) {
+        let bpo = std::fs::read_to_string(from.join("m.bpo")).unwrap();
+        let bps = std::fs::read_to_string(from.join("m.bps")).unwrap();
+        std::fs::write(to.join("m.bpo"), bpo).unwrap();
+        std::fs::write(
+            to.join("m.bps"),
+            bps.replace("confidence=\"-99\"", "confidence=\"1000\""),
+        )
+        .unwrap();
+    }
+
+    /// A workspace holding `m` open in a buffer, plus a "recorded" proof
+    /// state: the generated `m.bpo`/`m.bps` pair with every confidence
+    /// doctored to 1000 (discharged), written into a directory posing as
+    /// the shared Rodin workspace project.
+    fn discharged_fixture() -> (DocumentManager, CrossReferenceManager, Url, TempDir, usize) {
+        let documents = DocumentManager::new();
+        let xref = CrossReferenceManager::new();
+        open(&documents, &xref, "file:///m.eventb", PROVABLE_MACHINE);
+        let uri = Url::parse("file:///m.eventb").unwrap();
+
+        let baseline = prepare(&xref, &documents, &uri, "m", AnimateMode::Po, None).unwrap();
+        assert!(baseline.po_count >= 1, "the fixture machine must have POs");
+        let recorded = TempDir::new("animate-proof-state");
+        write_discharged(baseline.temp_dir.path(), recorded.path());
+        (documents, xref, uri, recorded, baseline.po_count)
+    }
+
+    #[test]
+    fn po_mode_carries_matching_proof_state_and_counts_open() {
+        let (documents, xref, uri, recorded, _) = discharged_fixture();
+        let prepared = prepare(
+            &xref,
+            &documents,
+            &uri,
+            "m",
+            AnimateMode::Po,
+            Some(recorded.path()),
+        )
+        .unwrap();
+        let bps = std::fs::read_to_string(prepared.temp_dir.path().join("m.bps")).unwrap();
+        assert!(
+            bps.contains("confidence=\"1000\""),
+            "recorded discharges carry into the temp project: {bps}"
+        );
+        assert_eq!(prepared.po_count, 0, "every obligation is discharged");
+    }
+
+    #[test]
+    fn po_mode_resets_stale_proof_state_after_edits() {
+        let (documents, xref, uri, recorded, baseline_count) = discharged_fixture();
+        // The initialisation changes, so the INV sequent's goal changes
+        // (`0 ∈ ℕ` → `1 ∈ ℕ`): the recorded discharge is for a different
+        // model and must not carry.
+        documents.change(
+            &uri,
+            2,
+            vec![crate::lsp_types::TextDocumentContentChangeEvent {
+                range: None,
+                range_length: None,
+                text: PROVABLE_MACHINE.replace("x := 0", "x := 1"),
+            }],
+        );
+        let prepared = prepare(
+            &xref,
+            &documents,
+            &uri,
+            "m",
+            AnimateMode::Po,
+            Some(recorded.path()),
+        )
+        .unwrap();
+        let bps = std::fs::read_to_string(prepared.temp_dir.path().join("m.bps")).unwrap();
+        assert!(
+            !bps.contains("confidence=\"1000\""),
+            "stale discharges must reset to unattempted: {bps}"
+        );
+        assert_eq!(prepared.po_count, baseline_count);
+    }
+
+    #[test]
+    fn po_mode_reads_proof_state_next_to_sources() {
+        // An on-disk model whose recorded proof files sit next to the
+        // sources (the proof mirror's checkout copies): the fallback path.
+        let tmp = TempDir::new("animate-checkout-proofs");
+        let machine_path = tmp.join("m.eventb");
+        std::fs::write(&machine_path, PROVABLE_MACHINE).unwrap();
+        let documents = DocumentManager::new();
+        let xref = CrossReferenceManager::new();
+        let uri = Url::from_file_path(&machine_path).unwrap();
+
+        let baseline = prepare(&xref, &documents, &uri, "m", AnimateMode::Po, None).unwrap();
+        write_discharged(baseline.temp_dir.path(), tmp.path());
+
+        let prepared = prepare(&xref, &documents, &uri, "m", AnimateMode::Po, None).unwrap();
+        assert_eq!(prepared.po_count, 0, "checkout proof state is honored");
+    }
+
+    #[test]
+    fn check_mode_ignores_recorded_proof_state() {
+        let (documents, xref, uri, recorded, baseline_count) = discharged_fixture();
+        let prepared = prepare(
+            &xref,
+            &documents,
+            &uri,
+            "m",
+            AnimateMode::Check,
+            Some(recorded.path()),
+        )
+        .unwrap();
+        let bps = std::fs::read_to_string(prepared.temp_dir.path().join("m.bps")).unwrap();
+        assert!(
+            !bps.contains("confidence=\"1000\""),
+            "Check mode keeps pristine statuses: {bps}"
+        );
+        assert_eq!(prepared.po_count, baseline_count);
     }
 }

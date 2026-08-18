@@ -69,9 +69,11 @@ pub(crate) fn command_args(
 }
 
 /// The outer deadline for one run. Check is bounded by its own
-/// `--time-limit`; po runs one solver attempt per open obligation — on a
-/// fresh build that is *every* generated sequent, so the deadline scales
-/// with their count (doubled for slack around solver setup per obligation).
+/// `--time-limit`; po runs one solver attempt per open obligation, so the
+/// deadline scales with `po_count` — the still-open count once recorded
+/// proof state is merged (every generated sequent when there is none),
+/// doubled for slack around solver setup per obligation. An all-discharged
+/// run leaves [`GRACE`] alone, ample for the gate-only pass.
 pub(crate) fn watchdog(mode: AnimateMode, config: &AnimateConfig, po_count: usize) -> Duration {
     match mode {
         AnimateMode::Check => {
