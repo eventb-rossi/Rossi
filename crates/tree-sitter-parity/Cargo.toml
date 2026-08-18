@@ -1,0 +1,18 @@
+[package]
+name = "tree-sitter-parity"
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.85"
+publish = false
+license = "MIT OR Apache-2.0"
+description = "Corpus parity gate between Rossi's parser and the standalone tree-sitter Event-B grammar"
+repository = "https://github.com/eventb-rossi/rossi"
+
+# Deliberately outside the workspace (see the root Cargo.toml `exclude` list):
+# `tree-sitter-eventb` is a path dependency on the grammar submodule, and a
+# workspace member depending on it would make every `cargo build` — including a
+# fresh clone without `--recurse-submodules` — fail at manifest resolution.
+[dev-dependencies]
+rossi = { path = "../rossi" }
+tree-sitter = "0.26.9"
+tree-sitter-eventb = { path = "../../editors/tree-sitter-eventb" }
