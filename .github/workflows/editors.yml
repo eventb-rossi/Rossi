@@ -3,7 +3,8 @@ name: Editors
 # Editor-plugin-only changes skip the full CI suite (see ci.yml's paths-ignore).
 # This lightweight job preserves the two real couplings between editor files and
 # the Rust workspace: `cargo xtask gen-grammars --check` byte-checks the generated
-# grammar/snippet files under editors/{vscode,zed,neovim,emacs,sublime}, and
+# grammar/snippet files under editors/{vscode,zed,neovim,emacs,sublime} (plus the
+# token manifest it exports to the grammar submodule), and
 # doc_snippets_test parses editors/vscode/src/rossiCommands.ts (the New-Project
 # starter files). editors/tree-sitter-eventb (the submodule) still runs full CI.
 # ci.yml's full suite already runs both on main-branch pushes, so no duplication here.
@@ -42,7 +43,8 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@v7
         with:
-          # gen-grammars --check reads the tree-sitter-eventb submodule's grammar.js region.
+          # gen-grammars --check reads the tree-sitter-eventb submodule: its
+          # highlights query (copied into the Zed extension), tokens.json and examples.
           submodules: recursive
 
       - name: Install Rust toolchain

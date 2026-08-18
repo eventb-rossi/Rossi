@@ -10,10 +10,17 @@
 //! Whole-file targets (TextMate JSON, Sublime YAML, the tree-sitter token
 //! manifest, and the verbatim copies: Zed's snippets and highlights, the
 //! standalone grammar repo's examples) are pure generated files. The Vim and
-//! Emacs files, the tree-sitter `grammar.js`, and the standalone grammar's
-//! `highlights.scm` carry hand-maintained scaffolding (and may be
-//! hand-extended), so only the marked region between their generated markers is
-//! replaced — the rest is preserved.
+//! Emacs files carry hand-maintained scaffolding (and may be hand-extended), so
+//! only the marked region between their generated markers is replaced — the
+//! rest is preserved.
+//!
+//! The standalone grammar repo (`editors/tree-sitter-eventb`) is *not* written
+//! to: its `grammar.js` and `queries/highlights.scm` are hand-maintained there.
+//! What crosses the boundary is data, not source text — the token manifest
+//! ([`crate::grammars::zed::tokens_manifest`]), which that repo's behavioural
+//! test reads to prove the built parser still classifies every canonical
+//! spelling. Its `highlights.scm` flows the other way, copied verbatim into the
+//! Zed extension.
 
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -76,16 +83,6 @@ fn run_inner(args: &GenGrammarsArgs) -> Result<ExitCode, String> {
     for (rel, markers, body) in [
         (paths::VIM, &vim::MARKERS, vim::render(&model)),
         (paths::EMACS, &emacs::MARKERS, emacs::render(&model)),
-        (
-            paths::TS_GRAMMAR,
-            &zed::MARKERS,
-            zed::render_grammar_region(&model),
-        ),
-        (
-            paths::TS_HIGHLIGHTS,
-            &zed::MARKERS_SCM,
-            zed::render_highlights_region(&model),
-        ),
     ] {
         let path = root.join(rel);
         let existing = fs::read_to_string(&path).map_err(|e| io_err(&path, e))?;

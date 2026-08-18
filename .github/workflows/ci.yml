@@ -45,8 +45,9 @@ jobs:
         uses: actions/checkout@v7
         with:
           # The tree-sitter-eventb grammar is a submodule; `cargo xtask
-          # gen-grammars --check` and the gen_grammars test read its grammar.js
-          # / queries.
+          # gen-grammars --check` and the gen_grammars test read its
+          # queries/highlights.scm (copied into the Zed extension), its
+          # test/tokens.json and its examples/.
           submodules: recursive
 
       - name: Install Rust toolchain
@@ -163,7 +164,7 @@ jobs:
         uses: actions/checkout@v7
         with:
           # Tarpaulin runs the same tests as the test job, which read the
-          # tree-sitter-eventb submodule (cargo xtask gen-grammars --check, grammar.js).
+          # tree-sitter-eventb submodule (cargo xtask gen-grammars --check).
           submodules: recursive
 
       - name: Install Rust toolchain

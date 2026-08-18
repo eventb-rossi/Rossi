@@ -13,12 +13,12 @@
 //! TextMate / Sublime / Vim-syntax / Emacs-font-lock are all *lexical* (regex)
 //! highlighters: every distinction they draw is token data, which is exactly
 //! what the tables hold. The tree-sitter consumers (Zed, nvim-treesitter,
-//! Helix) need a tree-sitter grammar, but only a *lexical* one: the [`zed`]
-//! emitter generates the token rules (the regex alternations that recognise
-//! each coloured class) into the standalone grammar's `grammar.js` and the
-//! node→capture lines into its `highlights.scm` (both as marked regions inside
-//! hand-maintained scaffolding) — so the table-derived part stays generated and
-//! the (small) parser scaffold does not pretend to parse Event-B.
+//! Helix) need a real grammar instead, which is hand-maintained in the
+//! standalone `tree-sitter-eventb` repository. Nothing generates its source, so
+//! the [`zed`] emitter exports the tables as *data* — the token manifest that
+//! repo's behavioural test reads to prove its parser still classifies every
+//! canonical spelling. That keeps the two in lockstep without either one
+//! generating the other.
 //!
 //! ## Correctness rules baked into the [`Model`]
 //!
@@ -323,17 +323,12 @@ pub mod paths {
     pub const SUBLIME: &str = "editors/sublime/EventB/EventB.sublime-syntax";
     pub const VIM: &str = "editors/neovim/syntax/eventb.vim";
     pub const EMACS: &str = "editors/emacs/eventb-mode.el";
-    /// The standalone tree-sitter grammar (published as
-    /// `eventb-rossi/tree-sitter-eventb`, vendored here as a submodule). The token
-    /// rules live in a generated region; the surrounding scaffold — and any future
-    /// hand-written structural rules — are hand-maintained (so this is a region
-    /// target). The Zed extension and nvim-treesitter/Helix all consume this repo.
-    pub const TS_GRAMMAR: &str = "editors/tree-sitter-eventb/grammar.js";
-    /// The standalone grammar's highlight queries: node→capture mapping. The
-    /// generated token captures live in a region so hand-written captures for
-    /// future structural nodes can sit outside it (region target). The one
-    /// hand-editable highlights file — Zed's bundled copy derives from it via
-    /// [`COPIES`].
+    /// The standalone grammar's highlight queries: node→capture mapping,
+    /// hand-maintained in the `eventb-rossi/tree-sitter-eventb` repository
+    /// (vendored here as a submodule) alongside the structural grammar it
+    /// captures. Nothing here writes to it — it is a [`COPIES`] *source*, the
+    /// upstream original from which Zed's bundled copy is written verbatim, so
+    /// a submodule bump that touches it needs a `cargo xtask gen-grammars` run.
     pub const TS_HIGHLIGHTS: &str = "editors/tree-sitter-eventb/queries/highlights.scm";
     /// Canonical token classification exported as data: `{ node_name: [spellings] }`,
     /// generated whole-file and byte-checked here, then consumed by the standalone

@@ -34,10 +34,11 @@ jobs:
         with:
           workspaces: editors/zed
 
-      # The tree-sitter grammar now lives in the standalone tree-sitter-eventb
-      # repository, which has its own CI for `tree-sitter generate`/`test`. The
-      # main CI's `cargo xtask gen-grammars --check` still guards that its generated regions
-      # match the token tables. Here we only build the wasm extension.
+      # The tree-sitter grammar lives in the standalone tree-sitter-eventb
+      # repository, which has its own CI for `tree-sitter generate`/`test` and for
+      # the token contract. The main CI's `cargo xtask gen-grammars --check` guards
+      # that this extension's bundled highlights copy still matches that repo's
+      # query. Here we only build the wasm extension.
       - name: Build extension (wasm)
         run: cargo build --locked --target wasm32-wasip1
         working-directory: editors/zed

@@ -1,68 +1,36 @@
-//! The standalone tree-sitter grammar (`editors/tree-sitter-eventb`, published as
-//! `eventb-rossi/tree-sitter-eventb`) and its highlight queries. This grammar is
-//! consumed by the Zed extension, nvim-treesitter, Helix and friends; the captures
-//! use the standard ecosystem names (`@keyword`, `@operator`, …).
+//! The bridge to the standalone tree-sitter grammar (`editors/tree-sitter-eventb`,
+//! published as `eventb-rossi/tree-sitter-eventb`) and the Zed extension that
+//! bundles its queries.
 //!
-//! tree-sitter consumers need a *lexical* grammar to start: a parser that
-//! recognises each coloured token class as its own node. We generate exactly that
-//! — the token rules — into `grammar.js`'s marked region, and the token→capture
-//! lines into `highlights.scm`'s marked region (so hand-written captures for future
-//! structural nodes can live outside it). The grammar's surrounding scaffold
-//! (`source_file`, `identifier`, `number`, `string`, `comment`, `label`,
-//! punctuation, `extras`, `word`) — and any later hand-written structural rules —
-//! are hand-maintained, since they are structure rather than token data.
+//! The grammar itself is *not* generated. It is a hand-maintained structural
+//! grammar living in its own repository, together with the `queries/highlights.scm`
+//! that captures its nodes (whose captures use the standard ecosystem names —
+//! `@keyword`, `@operator`, …). Rossi neither writes nor parses that source.
 //!
-//! We also emit a token *manifest* ([`tokens_manifest`]): the canonical
-//! classification as plain JSON the standalone repo's behavioral test reads to
-//! check the built parser still tokenizes every canonical spelling correctly —
-//! a contract that holds even after the grammar is hand-extended.
+//! What crosses the boundary instead is the canonical classification as *data*:
+//! [`tokens_manifest`] emits `{ node_name: [spellings…] }`, byte-checked on this
+//! side by `cargo xtask gen-grammars --check` and read on the other side by the
+//! grammar repo's behavioural test, which places every spelling in a minimal
+//! component, asserts the built parser accepts it in that role, and asserts the
+//! compiled highlight query captures every token it produced. A table change
+//! that the grammar has not caught up with therefore fails there, on behaviour,
+//! rather than here, on source text — which is the only check that stays honest
+//! once the grammar is hand-extended.
 //!
-//! ## Why one node per (class, kind), and no `prec`
-//!
-//! tree-sitter's lexer breaks ties **by precedence first, then by length**. So
-//! `token(prec(1, …))` on a keyword would make `mod` win over the longer
-//! `model` (stealing its prefix) and `/` win over the `//` comment. We therefore
-//! emit *no* precedence and let plain longest-match do the work: `model` (the
-//! identifier) is longer than `mod`, and `//…` (the comment) is longer than `/`.
-//!
-//! For the one case longest-match cannot settle — an exact-length tie like
-//! `context` (keyword) vs `context` (identifier) — the grammar declares
-//! `word: $ => $.identifier`, enabling tree-sitter's keyword extraction, which
-//! resolves a whole-word match to the keyword. Keyword extraction only applies
-//! to *pure word* tokens, so each class is split into a `*_word` node (a word
-//! regex, extractable; case-insensitive only where the grammar's tokens are)
-//! and a `*_sym` node (exact string
-//! literals that never collide with identifiers). Within one word regex JS
-//! alternation is leftmost — not longest — so the spellings are sorted
-//! longest-first (`events` before `event`). Symbol literals need no ordering
-//! (the lexer's longest-match picks `<=>` over `<`) and no escaping.
+//! The flow back is a verbatim copy: Zed loads queries from the extension's own
+//! `languages/` directory rather than from the grammar repo, so
+//! `paths::TS_HIGHLIGHTS` is copied into `paths::ZED_HIGHLIGHTS` (see
+//! `paths::COPIES`).
 
-use super::{Markers, MatchKind, Model, Scope, TokenGroup};
+use super::{MatchKind, Model, Scope, TokenGroup};
 
-/// The generated region inside the otherwise hand-maintained `grammar.js`.
-pub const MARKERS: Markers = Markers {
-    begin: "// >>> cargo xtask gen-grammars (generated, do not edit)",
-    end: "// <<< cargo xtask gen-grammars",
-};
-
-/// The generated region inside the standalone grammar's `queries/highlights.scm`
-/// (the one hand-editable highlights file; Zed's bundled copy is written verbatim
-/// from it). The token→capture lines are generated; hand-written captures for
-/// future structural nodes live outside the region, so highlighting can be
-/// hand-extended without breaking the byte check.
-pub const MARKERS_SCM: Markers = Markers {
-    begin: "; >>> cargo xtask gen-grammars (generated, do not edit)",
-    end: "; <<< cargo xtask gen-grammars",
-};
-
-/// The tree-sitter node (rule) name a coloured class is emitted as, split by
-/// match kind so word nodes stay pure (keyword-extractable) and symbol nodes
-/// stay free of identifier collisions. The hand-maintained `_token` rule in
-/// `grammar.js` lists exactly these names, and [`render_highlights_region`]
-/// captures them — so a new [`Scope`] variant breaks this `match` until it is
-/// handled. All operator words share one exact-case `operator_word` node
-/// (`DOM`, `pow`, `union` are ordinary identifiers — only the canonical
-/// `dom`, `POW`, `UNION` light up).
+/// The class name a coloured group is exported under in [`tokens_manifest`],
+/// split by match kind so word classes stay separable from symbol ones. The
+/// grammar repo's behavioural test keys its templates off exactly these names
+/// (and asserts the set has not changed), so a new [`Scope`] variant breaks
+/// this `match` until it is handled. All operator words share one exact-case
+/// `operator_word` class (`DOM`, `pow`, `union` are ordinary identifiers —
+/// only the canonical `dom`, `POW`, `UNION` light up).
 pub fn node_name(group: &TokenGroup) -> &'static str {
     match (group.scope, group.kind) {
         (Scope::KeywordControl, _) => "keyword",
@@ -73,67 +41,6 @@ pub fn node_name(group: &TokenGroup) -> &'static str {
         (Scope::KeywordOperator, MatchKind::Word) => "operator_word",
         (Scope::KeywordOperator, MatchKind::Symbol) => "operator_sym",
     }
-}
-
-/// The tree-sitter highlight capture a class maps to in `highlights.scm` — the
-/// standard ecosystem capture names (nvim-treesitter/Helix conventions, which
-/// Zed also resolves to theme styles). The generated grammar splits each class
-/// into a `*_word` and/or `*_sym` node (see [`node_name`]); both map to this one
-/// capture. Kept beside `node_name` as a renderer-local mapping (not a method on
-/// the shared `Scope`), since both are tree-sitter-only — matching how
-/// `vim_group` lives in `vim.rs`.
-fn capture_name(scope: Scope) -> &'static str {
-    match scope {
-        Scope::KeywordControl | Scope::KeywordOther => "keyword",
-        Scope::ConstantLanguage => "constant.builtin",
-        Scope::SupportFunction => "function.builtin",
-        Scope::KeywordOperator => "operator",
-    }
-}
-
-/// Render the generated token-rule region of `grammar.js` (between the markers).
-/// One rule per non-empty model group, in model order. Ends with the closing
-/// marker's indentation, which the splice drops from the region itself.
-pub fn render_grammar_region(model: &Model) -> String {
-    let mut out = String::new();
-    for group in &model.groups {
-        if group.members.is_empty() {
-            continue;
-        }
-        let name = node_name(group);
-        out.push_str(&format!("    {name}: $ => {},\n", token_expr(group)));
-    }
-    out.push_str("    ");
-    out
-}
-
-/// Render the generated region of `highlights.scm` (between [`MARKERS_SCM`]):
-/// one capture per generated node (locked to [`capture_name`]) plus the fixed
-/// structural captures. Spliced into the standalone grammar's
-/// `queries/highlights.scm`; Zed's bundled copy is then written verbatim from the
-/// spliced result. Hand-written captures for future structural nodes live outside
-/// the region and are preserved by the splice.
-pub fn render_highlights_region(model: &Model) -> String {
-    let mut out = String::new();
-    // One capture per non-empty group; `node_name` gives each a distinct node
-    // (so does `render_grammar_region`, which relies on the same uniqueness).
-    for group in &model.groups {
-        if group.members.is_empty() {
-            continue;
-        }
-        let name = node_name(group);
-        out.push_str(&format!("({}) @{}\n", name, capture_name(group.scope)));
-    }
-    out.push_str(
-        "\n(comment) @comment\n\
-         (string) @string\n\
-         (number) @number\n\
-         (label) @label\n\
-         (identifier) @variable\n\n\
-         [\"(\" \")\" \"[\" \"]\" \"{\" \"}\"] @punctuation.bracket\n\
-         \",\" @punctuation.delimiter\n",
-    );
-    out
 }
 
 /// Render the canonical token manifest (`paths::TS_TOKENS`): a JSON object
@@ -160,110 +67,9 @@ pub fn tokens_manifest(model: &Model) -> String {
     out
 }
 
-/// The tree-sitter token expression for one group: a longest-first regex for a
-/// word group (with the `i` flag only when the grammar's tokens fold case), or
-/// a `choice` of exact string literals for a symbol group. Both are wrapped in
-/// `token(…)` so the node is one leaf.
-fn token_expr(group: &TokenGroup) -> String {
-    match group.kind {
-        MatchKind::Word => {
-            // JS alternation is leftmost-not-longest, so `events` must precede
-            // `event` (see `super::longest_first`).
-            let mut words: Vec<&str> = group.members.iter().map(String::as_str).collect();
-            words.sort_by(|a, b| super::longest_first(a, b));
-            // Escape regex metacharacters before splicing into the `/(?:…)/`
-            // literal. The metacharacter set is identical for Oniguruma and JS
-            // RegExp, so we reuse `escape_oniguruma`. Every word member is
-            // alphanumeric today (so this is a no-op), but it keeps the word path
-            // as safe as the symbol path, which escapes via `js_string`.
-            let alts: Vec<String> = words.iter().map(|w| super::escape_oniguruma(w)).collect();
-            let flag = if group.case_insensitive { "i" } else { "" };
-            format!("token(/(?:{})/{flag})", alts.join("|"))
-        }
-        MatchKind::Symbol => {
-            let lits: Vec<String> = group.members.iter().map(|s| js_string(s)).collect();
-            if lits.len() == 1 {
-                format!("token({})", lits[0])
-            } else {
-                format!("token(choice({}))", lits.join(", "))
-            }
-        }
-    }
-}
-
-/// A JavaScript double-quoted string literal (with surrounding quotes), escaping
-/// the backslash and double-quote a JS string must escape. Operator spellings
-/// like `\/`, `/\` and `\` carry backslashes; private-use glyphs pass through raw.
-fn js_string(s: &str) -> String {
-    let mut out = String::with_capacity(s.len() + 2);
-    out.push('"');
-    for c in s.chars() {
-        if c == '\\' || c == '"' {
-            out.push('\\');
-        }
-        out.push(c);
-    }
-    out.push('"');
-    out
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    /// Every generated node name must be referenced by the hand-maintained
-    /// `_token` choice in `grammar.js`; otherwise that class would tokenize but
-    /// never reach the tree (silent missing highlight). This is the one coupling
-    /// between the generated region and the hand-written scaffold, so it is
-    /// guarded explicitly.
-    fn grammar_js() -> String {
-        let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
-            .join("../../editors/tree-sitter-eventb/grammar.js");
-        std::fs::read_to_string(&path).unwrap_or_else(|e| panic!("read {}: {e}", path.display()))
-    }
-
-    #[test]
-    fn generated_nodes_are_listed_in_token_choice() {
-        let model = Model::build();
-        let grammar = grammar_js();
-        for group in &model.groups {
-            if group.members.is_empty() {
-                continue;
-            }
-            let name = node_name(group);
-            assert!(
-                grammar.contains(&format!("$.{name},")),
-                "grammar.js `_token` is missing `$.{name}` (generated node has no place in the tree)"
-            );
-        }
-    }
-
-    #[test]
-    fn highlights_capture_every_node_and_the_structural_tokens() {
-        let model = Model::build();
-        let scm = render_highlights_region(&model);
-        for group in &model.groups {
-            if group.members.is_empty() {
-                continue;
-            }
-            let name = node_name(group);
-            let capture = capture_name(group.scope);
-            assert!(
-                scm.contains(&format!("({name}) @{capture}\n")),
-                "highlights.scm is missing `({name}) @{capture}`"
-            );
-        }
-        for fixed in [
-            "(comment) @comment",
-            "(string) @string",
-            "(number) @number",
-            "(label) @label",
-            "(identifier) @variable",
-            "@punctuation.bracket",
-        ] {
-            assert!(scm.contains(fixed), "highlights.scm is missing `{fixed}`");
-        }
-    }
 
     #[test]
     fn tokens_manifest_lists_every_node_and_all_members() {
@@ -311,76 +117,5 @@ mod tests {
                 .iter()
                 .any(|v| v == "∈")
         );
-    }
-
-    /// Extract the `|`-separated alternatives from a `token(/(?:…)/…)` rule line
-    /// (with or without the `i` flag).
-    fn word_alternatives(region: &str, rule: &str) -> Vec<String> {
-        let line = region
-            .lines()
-            .find(|l| l.trim_start().starts_with(&format!("{rule}:")))
-            .unwrap_or_else(|| panic!("missing rule {rule}"));
-        let body = line
-            .split_once("(?:")
-            .and_then(|(_, rest)| rest.split_once(")/"))
-            .map(|(body, _)| body)
-            .unwrap_or_else(|| panic!("rule {rule} is not a `token(/(?:…)/…)` regex: {line}"));
-        body.split('|').map(str::to_string).collect()
-    }
-
-    #[test]
-    fn word_rules_are_longest_first() {
-        let model = Model::build();
-        let region = render_grammar_region(&model);
-        // JS alternation is leftmost-not-longest: within one word regex, if `a`
-        // is a prefix of a longer `b`, then `b` must come first or `a` would
-        // shadow it. Assert the invariant for every generated word group rather
-        // than for specific spellings (which come and go from the tables).
-        let mut pairs_checked = 0;
-        for group in &model.groups {
-            if !matches!(group.kind, MatchKind::Word) || group.members.is_empty() {
-                continue;
-            }
-            let rule = node_name(group);
-            let alts = word_alternatives(&region, rule);
-            for (i, a) in alts.iter().enumerate() {
-                for (j, b) in alts.iter().enumerate() {
-                    if i != j && b.len() > a.len() && b.starts_with(a.as_str()) {
-                        pairs_checked += 1;
-                        assert!(
-                            j < i,
-                            "in `{rule}`, longer `{b}` must precede its prefix `{a}`: {alts:?}"
-                        );
-                    }
-                }
-            }
-        }
-        // events/event, nat/nat1, POW/POW1 all exist, so the loop must have
-        // exercised the ordering — guard against the check silently going dark.
-        assert!(
-            pairs_checked > 0,
-            "no prefix pair found to exercise ordering"
-        );
-    }
-
-    #[test]
-    fn symbol_rules_are_string_literals() {
-        let model = Model::build();
-        let region = render_grammar_region(&model);
-        let op_sym = region
-            .lines()
-            .find(|l| l.trim_start().starts_with("operator_sym:"))
-            .expect("operator_sym rule");
-        // No regex — exact string literals the lexer's longest-match orders.
-        assert!(op_sym.contains("token(choice("));
-        assert!(!op_sym.contains("/(?:"));
-        assert!(op_sym.contains("\"∈\""));
-        assert!(op_sym.contains("\"<=>\""));
-    }
-
-    #[test]
-    fn js_string_escapes_backslashes() {
-        assert_eq!(js_string("\\/"), "\"\\\\/\""); // set union ASCII `\/`
-        assert_eq!(js_string("∈"), "\"∈\"");
     }
 }

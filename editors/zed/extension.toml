@@ -9,13 +9,15 @@ repository = "https://github.com/eventb-rossi/rossi"
 # The tree-sitter grammar. Zed fetches grammars from a git repository at a
 # pinned revision (there is no local-path option). The grammar is the standalone
 # `eventb-rossi/tree-sitter-eventb` repository, developed in this monorepo as
-# the `editors/tree-sitter-eventb/` submodule and kept in sync with the
-# canonical token tables by `cargo xtask gen-grammars`. `rev` pins the submodule's
-# commit; until the repository is published, see editors/zed/INSTALL.md for the
-# local-development `file://` workflow.
+# the `editors/tree-sitter-eventb/` submodule. `rev` must match the submodule's
+# commit: `languages/eventb/highlights.scm` is a byte-for-byte copy of that
+# revision's `queries/highlights.scm`, so a stale `rev` means the bundled query
+# references nodes the fetched grammar does not have. Until the repository is
+# published, see editors/zed/INSTALL.md for the local-development `file://`
+# workflow.
 [grammars.eventb]
 repository = "https://github.com/eventb-rossi/tree-sitter-eventb"
-rev = "465d62af637dd0b95da4dce736c735f59e26347d"
+rev = "c28e8a26046e54ed97821a8cc3380fc70384228d"
 
 [language_servers.eventb-language-server]
 name = "Rossi Event-B Language Server"
