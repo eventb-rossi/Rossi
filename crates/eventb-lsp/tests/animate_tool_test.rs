@@ -93,6 +93,7 @@ fn input_with_tool(
             time_limit_secs: 60,
             ..AnimateConfig::default()
         },
+        rodin_project_dir: None,
     })
 }
 
@@ -242,4 +243,100 @@ async fn po_disprove_reports_open_pos_without_failure() {
         "open-but-not-disproved POs must not become diagnostics: {:?}",
         outcome.findings
     );
+}
+
+/// Build `machine_text` with rossi-build and return its generated
+/// `(bpo, bps)` contents. Same generator as the lens; the project name
+/// deliberately differs ("fixture" vs the lens's "rossi_animate"), pinning
+/// that the reconcile comparison is project-independent (`PoView` strips
+/// the leading `/PROJECT/` handle segment).
+fn generate_proof_files(machine_text: &str, component: &str) -> (String, String) {
+    let components = rossi::parse_components(machine_text).unwrap();
+    let xml = rossi::to_xml(&components[0]);
+    let project_component =
+        rossi_build::ProjectComponent::from_xml(format!("{component}.bum"), &xml).unwrap();
+    let project = rossi_build::Project::new("fixture", vec![project_component]);
+    let result = rossi_build::build(&project);
+    let file = |name: &str| result.file(name).expect(name).contents.clone();
+    (
+        file(&format!("{component}.bpo")),
+        file(&format!("{component}.bps")),
+    )
+}
+
+/// A recorded proof state claiming every obligation of `machine_text` is
+/// discharged, written into a temp directory posing as the shared Rodin
+/// workspace project.
+fn discharged_fixture(machine_text: &str, component: &str) -> tempfile::TempDir {
+    let fixture = tempfile::Builder::new()
+        .prefix("animate-recorded-proofs-")
+        .tempdir()
+        .unwrap();
+    let (bpo, bps) = generate_proof_files(machine_text, component);
+    std::fs::write(fixture.path().join(format!("{component}.bpo")), bpo).unwrap();
+    std::fs::write(
+        fixture.path().join(format!("{component}.bps")),
+        bps.replace("confidence=\"-99\"", "confidence=\"1000\""),
+    )
+    .unwrap();
+    fixture
+}
+
+#[tokio::test]
+#[ignore]
+async fn po_disprove_trusts_recorded_discharges() {
+    let Some(mut input) = input_with_tool(
+        &[("po_m.eventb", DISPROVABLE_MACHINE)],
+        "po_m.eventb",
+        "po_m",
+        AnimateMode::Po,
+    ) else {
+        return;
+    };
+    // The recorded state claims the (actually false) INITIALISATION PO is
+    // discharged, and the buffer matches the recorded model — so the gate
+    // must trust it and never run the disprover, which would disprove it.
+    let fixture = discharged_fixture(DISPROVABLE_MACHINE, "po_m");
+    input.rodin_project_dir = Some(fixture.path().to_path_buf());
+
+    let outcome = execute(input).await.expect("the po gate runs");
+    assert!(
+        matches!(outcome.verdict, Verdict::PoOk { .. }),
+        "a recorded discharge must skip the disprover, got {:?}",
+        outcome.verdict
+    );
+    assert!(outcome.findings.is_empty(), "{:?}", outcome.findings);
+}
+
+#[tokio::test]
+#[ignore]
+async fn po_disprove_reattempts_stale_discharges() {
+    // The recorded state was made for `x := 0`, but the buffer now says
+    // `x := 1`: the INV sequent changed, so the stamp guard resets the
+    // recorded discharge and the disprover finds the counterexample —
+    // a stale proof can never mask a disproof.
+    let edited = DISPROVABLE_MACHINE.replace("x := 0", "x := 1");
+    let Some(mut input) = input_with_tool(
+        &[("po_m.eventb", edited.as_str())],
+        "po_m.eventb",
+        "po_m",
+        AnimateMode::Po,
+    ) else {
+        return;
+    };
+    let fixture = discharged_fixture(DISPROVABLE_MACHINE, "po_m");
+    input.rodin_project_dir = Some(fixture.path().to_path_buf());
+
+    let outcome = execute(input).await.expect("the po gate runs");
+    match &outcome.verdict {
+        Verdict::PoDisproved { disproved, .. } => {
+            assert!(
+                disproved
+                    .iter()
+                    .any(|po| po.name.contains("INITIALISATION") && po.name.contains("inv1")),
+                "expected the INITIALISATION inv1 PO, got {disproved:?}"
+            );
+        }
+        other => panic!("expected PoDisproved, got {other:?}"),
+    }
 }
