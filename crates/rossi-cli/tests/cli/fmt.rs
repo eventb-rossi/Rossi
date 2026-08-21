@@ -608,3 +608,93 @@ fn fmt_output_ends_with_exactly_one_newline() {
 
     std::fs::remove_dir_all(&tmp).ok();
 }
+
+#[test]
+fn fmt_max_width_wraps_long_formulas() {
+    let source =
+        "MACHINE m\nINVARIANTS\n@inv1 x : NAT & y : NAT & x + y <= maximum & z : dom(f)\nEND\n";
+    let output = run_cli_with_stdin(&["fmt", "--max-width", "40", "-"], source);
+    assert!(output.status.success());
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let expected = "\
+  @inv1 x ∈ ℕ
+        ∧ y ∈ ℕ
+        ∧ x + y ≤ maximum
+        ∧ z ∈ dom(f)\n";
+    assert!(stdout.contains(expected), "got:\n{stdout}");
+
+    // 0 disables wrapping.
+    let output = run_cli_with_stdin(&["fmt", "--max-width", "0", "-"], source);
+    assert!(output.status.success());
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(
+        stdout.contains("\n  @inv1 x ∈ ℕ ∧ y ∈ ℕ ∧ x + y ≤ maximum ∧ z ∈ dom(f)\n"),
+        "got:\n{stdout}"
+    );
+}
+
+#[test]
+fn fmt_wraps_at_120_by_default() {
+    // 14 conjuncts render far past 120 columns flat.
+    let conjuncts: Vec<String> = (0..14)
+        .map(|i| format!("variable_number_{i} : NAT"))
+        .collect();
+    let source = format!(
+        "MACHINE m\nINVARIANTS\n@inv1 {}\nEND\n",
+        conjuncts.join(" & ")
+    );
+    let output = run_cli_with_stdin(&["fmt", "-"], &source);
+    assert!(output.status.success());
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(
+        stdout.lines().all(|line| line.chars().count() <= 120),
+        "default output must wrap at 120, got:\n{stdout}"
+    );
+    assert!(
+        stdout.contains("\n        ∧ variable_number_1 ∈ ℕ\n"),
+        "got:\n{stdout}"
+    );
+}
+
+#[test]
+fn fmt_check_respects_the_width() {
+    let tmp = tempdir_unique("rossi-cli-fmt-width-check");
+    let file = tmp.join("m.eventb");
+    std::fs::write(
+        &file,
+        "MACHINE m\nINVARIANTS\n@inv1 x : NAT & y : NAT & x + y <= maximum & z : dom(f)\nEND\n",
+    )
+    .unwrap();
+
+    let formatted = rossi_command()
+        .args(["fmt", "--max-width", "40", "-i", file.to_str().unwrap()])
+        .output()
+        .expect("Failed to execute command");
+    assert!(formatted.status.success());
+
+    let same_width = rossi_command()
+        .args([
+            "fmt",
+            "--max-width",
+            "40",
+            "--check",
+            file.to_str().unwrap(),
+        ])
+        .output()
+        .expect("Failed to execute command");
+    assert!(
+        same_width.status.success(),
+        "a width-40-formatted file passes --check at the same width"
+    );
+
+    let no_wrap = rossi_command()
+        .args(["fmt", "--max-width", "0", "--check", file.to_str().unwrap()])
+        .output()
+        .expect("Failed to execute command");
+    assert!(
+        !no_wrap.status.success(),
+        "a wrapped file fails --check with wrapping disabled"
+    );
+
+    std::fs::remove_dir_all(&tmp).ok();
+}

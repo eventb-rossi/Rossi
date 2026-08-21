@@ -22,6 +22,12 @@ pub struct StyleArgs {
     /// Override the preset's blank line between top-level clauses
     #[arg(long, value_name = "BOOL")]
     blank_between_clauses: Option<bool>,
+
+    /// Maximum line width for Event-B text output, measured in characters
+    /// (a tab counts as one); long formulas wrap onto operator-leading
+    /// continuation lines. 0 disables wrapping
+    #[arg(long, value_name = "N", default_value_t = rossi::DEFAULT_MAX_LINE_WIDTH)]
+    max_width: usize,
 }
 
 impl StyleArgs {
@@ -39,7 +45,7 @@ impl StyleArgs {
                 blank_between_clauses: self.blank_between_clauses,
                 indent: indent.map(str::to_string),
                 use_unicode,
-                max_line_width: 0,
+                max_line_width: self.max_width,
             },
         )
     }
