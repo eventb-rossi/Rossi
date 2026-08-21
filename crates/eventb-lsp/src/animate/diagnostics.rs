@@ -16,7 +16,7 @@ use crate::position::span_to_range;
 
 use super::AnimateMode;
 use super::closure::Closure;
-use super::report::{PoResult, Verdict};
+use super::report::{PoResult, StateBinding, Verdict};
 
 /// The `source` every animate diagnostic carries. Deliberately distinct from
 /// the `"rossi"` source the rest of the server publishes: these findings
@@ -277,7 +277,23 @@ fn find_label_line<'t>(
     })
 }
 
-fn state_suffix(state: &str) -> String {
+/// The state part of a finding message. Structured bindings become a
+/// trailing block, one `name = value` line per identifier; without them
+/// (reports of older tool versions) the tool's printed state collapses
+/// onto the message line as before.
+fn state_suffix(state: &str, bindings: &[StateBinding]) -> String {
+    if !bindings.is_empty() {
+        let mut suffix = String::from("\nstate:");
+        for binding in bindings {
+            suffix.push_str("\n  ");
+            suffix.push_str(&binding.name);
+            suffix.push_str(" = ");
+            // A value never spans lines, whatever whitespace ProB printed.
+            let value: Vec<_> = binding.value.split_whitespace().collect();
+            suffix.push_str(&value.join(" "));
+        }
+        return suffix;
+    }
     if state.trim().is_empty() {
         String::new()
     } else {
@@ -296,7 +312,10 @@ pub(crate) fn findings(verdict: &Verdict, closure: &Closure) -> Vec<Finding> {
     match verdict {
         Verdict::PoDisproved { disproved, .. } => po_findings(disproved, closure),
         Verdict::InvariantViolation {
-            violated, state, ..
+            violated,
+            state,
+            bindings,
+            ..
         } => {
             let (matched, unmatched) =
                 super::report::match_violated(violated, &closure.invariants, &closure.machine);
@@ -311,7 +330,7 @@ pub(crate) fn findings(verdict: &Verdict, closure: &Closure) -> Vec<Finding> {
                         "Invariant @{} violated during model check of {}{}",
                         info.label,
                         closure.machine,
-                        state_suffix(state)
+                        state_suffix(state, bindings)
                     ),
                 })
                 .collect();
@@ -326,17 +345,23 @@ pub(crate) fn findings(verdict: &Verdict, closure: &Closure) -> Vec<Finding> {
                     component: closure.machine.clone(),
                     anchor: Anchor::InvariantsSection,
                     code: "animate-inv",
+                    // The detail comes before the state so it cannot end up
+                    // stranded under a multi-line state block.
                     message: format!(
                         "Invariant violation during model check of {}{}{}",
                         closure.machine,
-                        state_suffix(state),
-                        detail
+                        detail,
+                        state_suffix(state, bindings)
                     ),
                 });
             }
             findings
         }
-        Verdict::Deadlock { state, steps } => vec![Finding {
+        Verdict::Deadlock {
+            state,
+            bindings,
+            steps,
+        } => vec![Finding {
             uri: closure.uri.clone(),
             component: closure.machine.clone(),
             anchor: Anchor::MachineHeader,
@@ -344,7 +369,7 @@ pub(crate) fn findings(verdict: &Verdict, closure: &Closure) -> Vec<Finding> {
             message: format!(
                 "Deadlock: no event of {} is enabled after {steps} step(s){}",
                 closure.machine,
-                state_suffix(state)
+                state_suffix(state, bindings)
             ),
         }],
         Verdict::OtherFinding { category, message } => vec![Finding {
@@ -482,6 +507,7 @@ mod tests {
         let verdict = Verdict::InvariantViolation {
             violated: vec!["x : NAT".to_string()],
             state: "x = -1".to_string(),
+            bindings: Vec::new(),
             steps: 2,
         };
         let findings = findings(&verdict, &test_closure());
@@ -502,6 +528,7 @@ mod tests {
         let verdict = Verdict::InvariantViolation {
             violated: vec!["y = 0".to_string()],
             state: String::new(),
+            bindings: Vec::new(),
             steps: 1,
         };
         let findings = findings(&verdict, &test_closure());
@@ -513,9 +540,63 @@ mod tests {
     }
 
     #[test]
+    fn state_bindings_render_one_per_line() {
+        let binding = |name: &str, value: &str| StateBinding {
+            name: name.to_string(),
+            value: value.to_string(),
+        };
+        let verdict = Verdict::InvariantViolation {
+            violated: vec!["x : NAT".to_string()],
+            state: "( x = -1 & AdmRoles = {} )".to_string(),
+            bindings: vec![binding("x", "-1"), binding("AdmRoles", "{}")],
+            steps: 2,
+        };
+        let findings = findings(&verdict, &test_closure());
+        let message = &findings[0].message;
+        assert!(
+            message.ends_with("model check of m\nstate:\n  x = -1\n  AdmRoles = {}"),
+            "{message}"
+        );
+        assert!(!message.contains("(state:"), "{message}");
+    }
+
+    #[test]
+    fn without_bindings_the_state_stays_a_single_line_suffix() {
+        let verdict = Verdict::Deadlock {
+            state: " x  =\n 10 ".to_string(),
+            bindings: Vec::new(),
+            steps: 10,
+        };
+        let findings = findings(&verdict, &test_closure());
+        let message = &findings[0].message;
+        assert!(message.ends_with(" (state: x = 10)"), "{message}");
+        assert!(!message.contains('\n'), "{message}");
+    }
+
+    #[test]
+    fn fallback_detail_precedes_the_state_block() {
+        let verdict = Verdict::InvariantViolation {
+            violated: vec!["y = 0".to_string()],
+            state: String::new(),
+            bindings: vec![StateBinding {
+                name: "y".to_string(),
+                value: "1".to_string(),
+            }],
+            steps: 1,
+        };
+        let findings = findings(&verdict, &test_closure());
+        let message = &findings[0].message;
+        assert!(
+            message.contains("— violated: y = 0\nstate:\n  y = 1"),
+            "{message}"
+        );
+    }
+
+    #[test]
     fn deadlock_anchors_on_the_machine_header() {
         let verdict = Verdict::Deadlock {
             state: "x = 10".to_string(),
+            bindings: Vec::new(),
             steps: 10,
         };
         let findings = findings(&verdict, &test_closure());

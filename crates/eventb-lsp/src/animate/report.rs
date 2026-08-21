@@ -61,6 +61,17 @@ pub(crate) struct Counterexample {
     pub transitions: Vec<String>,
     pub violating_state: String,
     pub violated_invariants: Vec<String>,
+    pub bindings: Vec<StateBinding>,
+}
+
+/// One identifier of the violating state with the tool's rendering of its
+/// value — the structured form of `violatingState`, absent from reports of
+/// older tool versions.
+#[derive(Debug, Clone, Default, Deserialize, PartialEq, Eq)]
+#[serde(default)]
+pub struct StateBinding {
+    pub name: String,
+    pub value: String,
 }
 
 /// One classified run, whichever mode produced it.
@@ -72,14 +83,20 @@ pub enum Verdict {
     /// Check: the search ended without a verdict.
     CheckIncomplete { reason: String },
     /// Check: an invariant broke; `violated` are the tool's printed
-    /// predicate strings.
+    /// predicate strings, `bindings` the structured state (empty from
+    /// older tools).
     InvariantViolation {
         violated: Vec<String>,
         state: String,
+        bindings: Vec<StateBinding>,
         steps: usize,
     },
     /// Check: a reachable state enables no event.
-    Deadlock { state: String, steps: usize },
+    Deadlock {
+        state: String,
+        bindings: Vec<StateBinding>,
+        steps: usize,
+    },
     /// Check: any other finding category (unreachable with the lens's flag
     /// set, but the report may still say so).
     OtherFinding { category: String, message: String },
@@ -174,13 +191,14 @@ pub(crate) fn classify_check(report: &Report) -> Verdict {
                 .as_ref()
                 .map(|f| f.category.clone())
                 .unwrap_or_else(|| "unknown".to_string());
-            let (violated, state, steps) = report
+            let (violated, state, bindings, steps) = report
                 .counterexample
                 .as_ref()
                 .map(|cx| {
                     (
                         cx.violated_invariants.clone(),
                         cx.violating_state.clone(),
+                        cx.bindings.clone(),
                         cx.transitions.len(),
                     )
                 })
@@ -189,9 +207,14 @@ pub(crate) fn classify_check(report: &Report) -> Verdict {
                 "invariant_violation" => Verdict::InvariantViolation {
                     violated,
                     state,
+                    bindings,
                     steps,
                 },
-                "deadlock" => Verdict::Deadlock { state, steps },
+                "deadlock" => Verdict::Deadlock {
+                    state,
+                    bindings,
+                    steps,
+                },
                 _ => Verdict::OtherFinding {
                     category,
                     message: report_message(report),
@@ -359,7 +382,8 @@ mod tests {
         "counterexample": {
             "transitions": ["INITIALISATION()", "event()"],
             "violatingState": "(x = 1)",
-            "violatedInvariants": ["inv1"]
+            "violatedInvariants": ["inv1"],
+            "bindings": [{"name": "x", "value": "1"}]
         }
     }"#;
 
@@ -394,9 +418,25 @@ mod tests {
             Verdict::InvariantViolation {
                 violated: vec!["inv1".into()],
                 state: "(x = 1)".into(),
+                bindings: vec![StateBinding {
+                    name: "x".into(),
+                    value: "1".into()
+                }],
                 steps: 2
             }
         );
+    }
+
+    #[test]
+    fn a_report_without_bindings_classifies_with_none() {
+        // Older tool versions do not emit `bindings`; the unknown spelling
+        // also pins the deserializer's ignore-unknown-fields tolerance.
+        let legacy = COUNTEREXAMPLE.replace("\"bindings\"", "\"legacyBindings\"");
+        let report = parse(&legacy, "").unwrap();
+        match classify_check(&report) {
+            Verdict::InvariantViolation { bindings, .. } => assert!(bindings.is_empty()),
+            other => panic!("expected InvariantViolation, got {other:?}"),
+        }
     }
 
     #[test]
