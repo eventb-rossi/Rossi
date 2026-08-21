@@ -320,6 +320,12 @@
           "default": null,
           "description": "Emit one blank line before each top-level clause keyword. Unset follows the style preset."
         },
+        "rossi.format.maxLineWidth": {
+          "type": "integer",
+          "minimum": 0,
+          "default": 120,
+          "description": "Maximum line width when formatting, in characters (a tab counts as one); long formulas wrap onto operator-leading continuation lines. 0 disables wrapping."
+        },
         "rossi.diagnostics.enabled": {
           "type": "boolean",
           "default": true,

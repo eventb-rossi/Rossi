@@ -147,6 +147,7 @@ This extension contributes the following settings:
 - `rossi.format.keywordCase`: Keyword-case override — `"lower"` or `"upper"`; empty follows the style preset (default: `""`)
 - `rossi.format.declLists`: Declaration-list layout override — `"inline"` or `"one-per-line"`; empty follows the style preset (default: `""`)
 - `rossi.format.blankBetweenClauses`: Blank line before each top-level clause keyword; unset follows the style preset (default: `null`)
+- `rossi.format.maxLineWidth`: Maximum line width when formatting, in characters; long formulas wrap onto operator-leading continuation lines, `0` disables wrapping (default: `120`)
 - `rossi.diagnostics.enabled`: Enable real-time diagnostics for syntax errors (default: `true`)
 - `rossi.diagnostics.debounceMs`: Reserved for future diagnostic debouncing; diagnostics currently run immediately after typing (default: `500`)
 - `rossi.completion.enabled`: Enable Event-B code completion (default: `true`)

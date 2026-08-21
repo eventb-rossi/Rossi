@@ -19,6 +19,7 @@ interface RossiConfiguration {
         keywordCase: string;
         declLists: string;
         blankBetweenClauses: boolean | null;
+        maxLineWidth: number;
     };
     diagnostics: {
         enabled: boolean;
@@ -50,6 +51,7 @@ function getRossiConfiguration(): RossiConfiguration {
             keywordCase: config.get<string>('format.keywordCase', ''),
             declLists: config.get<string>('format.declLists', ''),
             blankBetweenClauses: config.get<boolean | null>('format.blankBetweenClauses', null),
+            maxLineWidth: config.get<number>('format.maxLineWidth', 120),
         },
         diagnostics: {
             enabled: config.get<boolean>('diagnostics.enabled', true),
