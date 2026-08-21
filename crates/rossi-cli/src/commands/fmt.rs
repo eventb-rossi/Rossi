@@ -16,7 +16,7 @@
 //! writes elsewhere. With none of these, a single text input is printed to stdout.
 
 use clap::Args;
-use rossi::{PrettyPrinter, Style, format_str, parse_xml, to_xml};
+use rossi::{PrettyPrinter, format_str, parse_xml, to_xml};
 use std::collections::{HashMap, hash_map::Entry};
 use std::fs;
 use std::io::{Read, Write};
@@ -24,6 +24,7 @@ use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 
 use super::eventb_io::{self, CmdResult, InputKind};
+use super::style::StyleArgs;
 
 #[derive(Args)]
 pub struct FmtArgs {
@@ -52,9 +53,12 @@ pub struct FmtArgs {
     #[arg(long)]
     unicode: bool,
 
-    /// Indentation string for text output (default: four spaces)
+    /// Indentation string for text output (default: the style preset's)
     #[arg(long, value_name = "STR")]
     indent: Option<String>,
+
+    #[command(flatten)]
+    style: StyleArgs,
 
     /// Show detailed progress
     #[arg(short, long)]
@@ -97,13 +101,7 @@ fn run_inner(cli: &FmtArgs) -> CmdResult<ExitCode> {
         Mode::Stdout
     };
 
-    let printer = PrettyPrinter {
-        use_unicode: !cli.ascii,
-        indent: cli.indent.clone().unwrap_or_else(|| "    ".to_string()),
-        // The remaining fields keep the preset's deliberate pins: portable
-        // text (no private-use glyphs), readable formula spacing.
-        ..PrettyPrinter::styled(Style::Rossi)
-    };
+    let printer = cli.style.printer(!cli.ascii, cli.indent.as_deref());
 
     // `-` reads one Event-B text stream from stdin (the lone input). It has no
     // on-disk file to rewrite or compare against, so only stdout / -o apply.

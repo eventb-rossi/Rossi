@@ -19,7 +19,7 @@
 //! root, so they contribute no proofs.
 
 use clap::Args;
-use rossi::{NamedComponent, NamedProject, PrettyPrinter, Style};
+use rossi::{NamedComponent, NamedProject, PrettyPrinter};
 use rossi_build::project::discover_projects;
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -27,6 +27,7 @@ use std::process::ExitCode;
 
 use super::eventb_io::{self, CmdResult, InputFamily};
 use super::proofs::{proofs_in_dir, zip_proofs_at_prefix};
+use super::style::StyleArgs;
 
 #[derive(Args)]
 pub struct ImportArgs {
@@ -42,9 +43,12 @@ pub struct ImportArgs {
     #[arg(long)]
     ascii: bool,
 
-    /// Indentation string for the text output (default: four spaces)
+    /// Indentation string for the text output (default: the style preset's)
     #[arg(long, value_name = "STR")]
     indent: Option<String>,
+
+    #[command(flatten)]
+    style: StyleArgs,
 
     /// Merge all components into a single file, optionally specifying order
     /// (e.g., --merge=M1,C1,M2). Unmentioned components are appended at the end.
@@ -88,13 +92,7 @@ fn run_inner(cli: &ImportArgs) -> CmdResult<()> {
     }
     let project_count = projects.len();
 
-    let printer = PrettyPrinter {
-        use_unicode: !cli.ascii,
-        indent: cli.indent.clone().unwrap_or_else(|| "    ".to_string()),
-        // The remaining fields keep the preset's deliberate pins: portable
-        // text (no private-use glyphs), readable formula spacing.
-        ..PrettyPrinter::styled(Style::Rossi)
-    };
+    let printer = cli.style.printer(!cli.ascii, cli.indent.as_deref());
 
     // Multiple projects (a multi-project archive, or several inputs) are kept
     // apart under their own subdirectory / file; a single project writes flat,
