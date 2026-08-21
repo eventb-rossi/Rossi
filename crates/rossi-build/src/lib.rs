@@ -77,6 +77,13 @@ pub fn build_with_model(project: &Project) -> (BuildResult, sc_model::ScModel) {
     (result, model)
 }
 
+/// Like [`build_with_model`] but static-check only: the typed model without
+/// proof-obligation generation. IDE features (inlay hints) need the type
+/// environments but never the `.bpo`/`.bps` files, so they skip that cost.
+pub fn check_with_model(project: &Project) -> (BuildResult, sc_model::ScModel) {
+    sc::build_project(project)
+}
+
 /// The output of a build: emitted files plus diagnostics collected along the way.
 #[derive(Debug, Default, Clone)]
 pub struct BuildResult {

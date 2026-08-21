@@ -101,6 +101,24 @@ impl ProjectComponent {
             .collect())
     }
 
+    /// Wrap a component that was already parsed in memory.
+    ///
+    /// `source` carries the text the component's spans index, when the caller
+    /// wants diagnostics mapped to line/columns; pass `None` when spans are
+    /// resolved externally (the LSP holds the text in its document store).
+    pub fn from_parsed(
+        filename: impl Into<String>,
+        component: Component,
+        source: Option<String>,
+    ) -> Self {
+        Self {
+            filename: filename.into(),
+            component,
+            rodin_ids: RodinIds::default(),
+            source,
+        }
+    }
+
     /// Short name (extension stripped). For `"AuctionContext.buc"` this is
     /// `"AuctionContext"`.
     pub fn stem(&self) -> &str {
