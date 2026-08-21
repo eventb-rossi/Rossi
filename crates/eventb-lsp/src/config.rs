@@ -81,8 +81,17 @@ pub struct FormatConfig {
     pub decl_lists: String,
 
     /// Blank line between top-level clauses; unset follows the preset
-    #[serde(default)]
+    #[serde(default, deserialize_with = "tolerant_blank_between_clauses")]
     pub blank_between_clauses: Option<bool>,
+
+    /// Maximum line width when formatting, in characters (a tab counts
+    /// as one); long formulas wrap onto operator-leading continuation
+    /// lines. 0 disables wrapping
+    #[serde(
+        default = "default_max_line_width",
+        deserialize_with = "tolerant_max_line_width"
+    )]
+    pub max_line_width: u32,
 }
 
 impl FormatConfig {
@@ -118,7 +127,7 @@ impl FormatConfig {
                 // clients' "unset" spelling); `Some` is always an override.
                 indent: (!self.indentation.is_empty()).then(|| self.indentation.clone()),
                 use_unicode: self.use_unicode,
-                max_line_width: 0,
+                max_line_width: self.max_line_width as usize,
             },
         )
     }
@@ -133,12 +142,42 @@ impl Default for FormatConfig {
             keyword_case: String::new(),
             decl_lists: String::new(),
             blank_between_clauses: None,
+            max_line_width: default_max_line_width(),
         }
     }
 }
 
 fn default_use_unicode() -> bool {
     true
+}
+
+fn default_max_line_width() -> u32 {
+    rossi::DEFAULT_MAX_LINE_WIDTH as u32
+}
+
+/// Tolerant deserializer for `maxLineWidth`: like the string style fields,
+/// an out-of-range or mistyped value (negative, fractional, string — some
+/// clients enforce no schema) falls back to the default instead of failing
+/// the all-or-nothing `from_client_settings` parse.
+fn tolerant_max_line_width<'de, D>(deserializer: D) -> Result<u32, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    let value = Value::deserialize(deserializer)?;
+    Ok(value
+        .as_u64()
+        .and_then(|width| u32::try_from(width).ok())
+        .unwrap_or_else(default_max_line_width))
+}
+
+/// Tolerant deserializer for `blankBetweenClauses`: any non-boolean value
+/// follows the preset instead of discarding the whole configuration.
+fn tolerant_blank_between_clauses<'de, D>(deserializer: D) -> Result<Option<bool>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    let value = Value::deserialize(deserializer)?;
+    Ok(value.as_bool())
 }
 
 /// Diagnostics configuration
@@ -478,6 +517,60 @@ mod tests {
     }
 
     #[test]
+    fn test_format_max_line_width_maps_to_printer() {
+        // Absent: the 120-column default.
+        let settings = serde_json::json!({ "rossi": { "format": {} } });
+        let config = RossiConfig::from_client_settings(&settings).unwrap();
+        assert_eq!(config.format.printer().max_line_width, 120);
+
+        // Explicit value.
+        let settings = serde_json::json!({
+            "rossi": { "format": { "maxLineWidth": 100 } }
+        });
+        let config = RossiConfig::from_client_settings(&settings).unwrap();
+        assert_eq!(config.format.printer().max_line_width, 100);
+
+        // 0 disables wrapping.
+        let settings = serde_json::json!({
+            "rossi": { "format": { "maxLineWidth": 0 } }
+        });
+        let config = RossiConfig::from_client_settings(&settings).unwrap();
+        assert_eq!(config.format.printer().max_line_width, 0);
+    }
+
+    #[test]
+    fn test_format_invalid_non_string_values_keep_whole_config() {
+        // `from_client_settings` is all-or-nothing: a mistyped value in the
+        // non-string fields (some clients enforce no schema) must fall back
+        // to the default instead of discarding the whole configuration —
+        // the sibling settings must survive.
+        for bad_width in [
+            serde_json::json!(-1),
+            serde_json::json!(120.5),
+            serde_json::json!("120"),
+            serde_json::json!(u64::from(u32::MAX) + 1),
+        ] {
+            let settings = serde_json::json!({
+                "rossi": {
+                    "format": { "maxLineWidth": bad_width, "useUnicode": false },
+                    "diagnostics": { "enabled": false }
+                }
+            });
+            let config = RossiConfig::from_client_settings(&settings)
+                .unwrap_or_else(|e| panic!("config discarded for {bad_width}: {e}"));
+            assert_eq!(config.format.max_line_width, 120, "for {bad_width}");
+            assert!(!config.format.use_unicode);
+            assert!(!config.diagnostics.enabled);
+        }
+
+        let settings = serde_json::json!({
+            "rossi": { "format": { "blankBetweenClauses": "false" } }
+        });
+        let config = RossiConfig::from_client_settings(&settings).unwrap();
+        assert_eq!(config.format.blank_between_clauses, None);
+    }
+
+    #[test]
     fn test_format_unknown_style_values_fall_back_to_preset() {
         // Unknown values must not fail whole-config parsing (it is
         // all-or-nothing) and fall back to the preset defaults.
@@ -499,11 +592,29 @@ mod tests {
 
     #[test]
     fn test_default_config_printer_matches_library_default() {
-        // An untouched client config denotes exactly the library's default
-        // printer, so LSP formatting and `rossi fmt` agree byte-for-byte.
+        // An untouched client config denotes the library's default printer
+        // plus the user-facing 120-column wrap — the same resolved printer
+        // the CLI defaults build, so LSP formatting and `rossi fmt` agree
+        // byte-for-byte.
         let lsp = FormatConfig::default().printer();
+        let expected = rossi::PrettyPrinter::resolved(
+            rossi::Style::default(),
+            &rossi::StyleOverrides {
+                max_line_width: 120,
+                ..rossi::StyleOverrides::default()
+            },
+        );
+        assert_eq!(lsp, expected);
+
+        // The wrap width is the ONLY deliberate delta from the library
+        // default (which stays flat for XML/canonical output).
         let library = rossi::PrettyPrinter::default();
-        assert_eq!(format!("{lsp:?}"), format!("{library:?}"));
+        let flattened = FormatConfig {
+            max_line_width: 0,
+            ..FormatConfig::default()
+        }
+        .printer();
+        assert_eq!(flattened, library);
     }
 
     #[test]

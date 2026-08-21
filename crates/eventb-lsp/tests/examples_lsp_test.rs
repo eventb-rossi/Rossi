@@ -105,7 +105,13 @@ fn load_model(zip_name: &str) -> Vec<ModelFile> {
             let name = named.component.name().to_string();
             ModelFile {
                 uri: Url::parse(&format!("file:///{model}/{name}.eventb")).unwrap(),
-                text: rossi::to_string(&named.component),
+                // Render with the LSP default printer (not the flat
+                // library default) so the converted text is exactly what
+                // formatting would produce — the identity premise of
+                // all_models_formatting_identity, wrapping included.
+                text: FormatConfig::default()
+                    .printer()
+                    .print_component(&named.component),
                 component: named.component,
                 name,
                 start_line: 0,
