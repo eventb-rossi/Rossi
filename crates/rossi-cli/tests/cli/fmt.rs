@@ -577,3 +577,36 @@ fn fmt_check_respects_the_selected_style() {
 
     std::fs::remove_dir_all(&tmp).ok();
 }
+
+#[test]
+fn fmt_output_ends_with_exactly_one_newline() {
+    let output = run_cli_with_stdin(&["fmt", "-"], "CONTEXT c END\n");
+    assert!(output.status.success());
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(
+        stdout.ends_with("END\n") && !stdout.ends_with("\n\n"),
+        "stdout must end with exactly one newline, got {stdout:?}"
+    );
+
+    // The canonical file form is a fixpoint: format in place, then --check.
+    let tmp = tempdir_unique("rossi-cli-fmt-newline");
+    let file = tmp.join("c.eventb");
+    std::fs::write(&file, "CONTEXT c END\n").unwrap();
+    let formatted = rossi_command()
+        .args(["fmt", "-i", file.to_str().unwrap()])
+        .output()
+        .expect("Failed to execute command");
+    assert!(formatted.status.success());
+    let text = std::fs::read_to_string(&file).unwrap();
+    assert!(
+        text.ends_with("END\n") && !text.ends_with("\n\n"),
+        "file must end with exactly one newline, got {text:?}"
+    );
+    let check = rossi_command()
+        .args(["fmt", "--check", file.to_str().unwrap()])
+        .output()
+        .expect("Failed to execute command");
+    assert!(check.status.success(), "formatted file must pass --check");
+
+    std::fs::remove_dir_all(&tmp).ok();
+}

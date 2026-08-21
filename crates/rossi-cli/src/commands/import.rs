@@ -366,10 +366,11 @@ fn render_merged(printer: &PrettyPrinter, components: &[NamedComponent]) -> Stri
     let mut out = String::new();
     for (i, named) in components.iter().enumerate() {
         if i > 0 {
+            // One blank line between components — the separator
+            // `print_components` (and therefore `rossi fmt`) uses.
             out.push('\n');
         }
         out.push_str(&printer.print_component(&named.component));
-        out.push('\n');
     }
     out
 }
@@ -383,8 +384,8 @@ fn write_component_files(
 ) -> CmdResult<()> {
     for named in components {
         let path = dir.join(format!("{}.eventb", named.component.name()));
-        let text = printer.print_component(&named.component);
-        fs::write(&path, format!("{text}\n"))?;
+        // `print_component` output already ends with exactly one newline.
+        fs::write(&path, printer.print_component(&named.component))?;
         if verbose {
             eprintln!("  Wrote {}", path.display());
         }
