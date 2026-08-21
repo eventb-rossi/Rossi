@@ -509,6 +509,7 @@ mod rodin_lens {
         let (_id, result) = response.into_parts();
         let capabilities = &result.expect("initialize succeeds")["capabilities"];
         assert_eq!(capabilities["codeLensProvider"]["resolveProvider"], false);
+        assert_eq!(capabilities["inlayHintProvider"], true);
         assert_eq!(
             capabilities["executeCommandProvider"]["commands"],
             json!([
@@ -678,6 +679,100 @@ mod rodin_lens {
             .expect("executeCommand responds");
         let (_id, result) = response.into_parts();
         assert!(result.is_err(), "unknown commands must be rejected");
+    }
+}
+
+mod inlay_hints {
+    //! Wire-level tests for `textDocument/inlayHint`: the declaration type
+    //! hint round-trip, and `rossi.inlayHints.enabled=false` arriving over
+    //! `workspace/didChangeConfiguration` turning the response into null.
+
+    use super::notification;
+    use eventb_lsp::server::RossiLanguageServer;
+    use futures::StreamExt;
+    use serde_json::json;
+    use tower::{Service, ServiceExt};
+    use tower_lsp::LspService;
+    use tower_lsp::jsonrpc::Request;
+
+    const SOURCE: &str = "CONTEXT wire_ctx\nCONSTANTS\n    lo\nAXIOMS\n    @axm1 lo ∈ ℤ\nEND\n";
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn serves_declaration_type_hints_until_disabled() {
+        let (mut service, mut socket) = LspService::build(RossiLanguageServer::new).finish();
+        tokio::spawn(async move { while socket.next().await.is_some() {} });
+
+        let init = Request::build("initialize")
+            .id(1)
+            .params(json!({ "capabilities": {} }))
+            .finish();
+        service.ready().await.unwrap().call(init).await.unwrap();
+
+        let uri = "file:///wire-hints.eventb";
+        let open = notification(
+            "textDocument/didOpen",
+            json!({
+                "textDocument": {
+                    "uri": uri,
+                    "languageId": "eventb",
+                    "version": 1,
+                    "text": SOURCE
+                }
+            }),
+        );
+        service.ready().await.unwrap().call(open).await.unwrap();
+
+        let hint_request = |id: i64| {
+            Request::build("textDocument/inlayHint")
+                .id(id)
+                .params(json!({
+                    "textDocument": { "uri": uri },
+                    "range": {
+                        "start": { "line": 0, "character": 0 },
+                        "end": { "line": 99, "character": 0 }
+                    }
+                }))
+                .finish()
+        };
+
+        let response = service
+            .ready()
+            .await
+            .unwrap()
+            .call(hint_request(2))
+            .await
+            .unwrap()
+            .expect("inlayHint responds");
+        let (_id, result) = response.into_parts();
+        let hints = result.expect("inlayHint succeeds");
+        // The constant `lo` is declared on line 2, columns 4-6.
+        assert_eq!(
+            hints,
+            json!([{
+                "position": { "line": 2, "character": 6 },
+                "label": ": ℤ",
+                "kind": 1
+            }]),
+        );
+
+        let disable = notification(
+            "workspace/didChangeConfiguration",
+            json!({
+                "settings": { "rossi": { "inlayHints": { "enabled": false } } }
+            }),
+        );
+        service.ready().await.unwrap().call(disable).await.unwrap();
+
+        let response = service
+            .ready()
+            .await
+            .unwrap()
+            .call(hint_request(3))
+            .await
+            .unwrap()
+            .expect("inlayHint responds");
+        let (_id, result) = response.into_parts();
+        assert_eq!(result.expect("inlayHint succeeds"), json!(null));
     }
 }
 

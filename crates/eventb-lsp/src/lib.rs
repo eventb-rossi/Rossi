@@ -29,6 +29,7 @@ pub mod formatting;
 pub mod formula_walk;
 pub mod hover;
 pub mod identifier_utils;
+pub mod inlay_hints;
 pub mod position;
 pub(crate) mod progress;
 pub mod references;

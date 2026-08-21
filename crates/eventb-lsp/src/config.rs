@@ -33,6 +33,10 @@ pub struct RossiConfig {
     /// eventb-animate integration configuration
     #[serde(default)]
     pub animate: AnimateConfig,
+
+    /// Inlay hints configuration
+    #[serde(default)]
+    pub inlay_hints: InlayHintsConfig,
 }
 
 impl RossiConfig {
@@ -155,19 +159,26 @@ fn default_max_line_width() -> u32 {
     rossi::DEFAULT_MAX_LINE_WIDTH as u32
 }
 
-/// Tolerant deserializer for `maxLineWidth`: like the string style fields,
-/// an out-of-range or mistyped value (negative, fractional, string — some
-/// clients enforce no schema) falls back to the default instead of failing
+/// Tolerant `u32` deserialization: like the string style fields, an
+/// out-of-range or mistyped value (negative, fractional, string — some
+/// clients enforce no schema) falls back to `default` instead of failing
 /// the all-or-nothing `from_client_settings` parse.
-fn tolerant_max_line_width<'de, D>(deserializer: D) -> Result<u32, D::Error>
+fn tolerant_u32<'de, D>(deserializer: D, default: fn() -> u32) -> Result<u32, D::Error>
 where
     D: serde::Deserializer<'de>,
 {
     let value = Value::deserialize(deserializer)?;
     Ok(value
         .as_u64()
-        .and_then(|width| u32::try_from(width).ok())
-        .unwrap_or_else(default_max_line_width))
+        .and_then(|number| u32::try_from(number).ok())
+        .unwrap_or_else(default))
+}
+
+fn tolerant_max_line_width<'de, D>(deserializer: D) -> Result<u32, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    tolerant_u32(deserializer, default_max_line_width)
 }
 
 /// Tolerant deserializer for `blankBetweenClauses`: any non-boolean value
@@ -353,6 +364,48 @@ fn default_disprove_timeout_ms() -> u32 {
     1000
 }
 
+/// Inlay hints configuration
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct InlayHintsConfig {
+    /// Enable inlay hints (inferred declaration types)
+    #[serde(default = "default_inlay_hints_enabled")]
+    pub enabled: bool,
+
+    /// Maximum rendered length of a type label in characters; longer labels
+    /// are truncated with '…' and carry the full type as their tooltip.
+    /// `0` disables truncation
+    #[serde(
+        default = "default_inlay_hints_max_length",
+        deserialize_with = "tolerant_inlay_hints_max_length"
+    )]
+    pub max_length: u32,
+}
+
+impl Default for InlayHintsConfig {
+    fn default() -> Self {
+        Self {
+            enabled: default_inlay_hints_enabled(),
+            max_length: default_inlay_hints_max_length(),
+        }
+    }
+}
+
+fn default_inlay_hints_enabled() -> bool {
+    true
+}
+
+fn default_inlay_hints_max_length() -> u32 {
+    32
+}
+
+fn tolerant_inlay_hints_max_length<'de, D>(deserializer: D) -> Result<u32, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    tolerant_u32(deserializer, default_inlay_hints_max_length)
+}
+
 /// Configuration manager that holds the current configuration
 pub struct ConfigManager {
     config: RwLock<Arc<RossiConfig>>,
@@ -403,6 +456,40 @@ mod tests {
 
         assert!(config.rodin.sync);
         assert!(config.rodin.mirror_proofs);
+
+        assert!(config.inlay_hints.enabled);
+        assert_eq!(config.inlay_hints.max_length, 32);
+    }
+
+    #[test]
+    fn test_inlay_hints_settings_parse_nested() {
+        let settings = serde_json::json!({
+            "rossi": { "inlayHints": { "enabled": false, "maxLength": 0 } }
+        });
+        let config = RossiConfig::from_client_settings(&settings).unwrap();
+        assert!(!config.inlay_hints.enabled);
+        assert_eq!(config.inlay_hints.max_length, 0);
+    }
+
+    #[test]
+    fn test_inlay_hints_invalid_max_length_keeps_whole_config() {
+        // Same all-or-nothing rationale as `maxLineWidth`: a mistyped value
+        // falls back to the default and the sibling settings survive.
+        for bad_length in [
+            serde_json::json!(-1),
+            serde_json::json!(32.5),
+            serde_json::json!("32"),
+        ] {
+            let settings = serde_json::json!({
+                "rossi": {
+                    "inlayHints": { "maxLength": bad_length, "enabled": false }
+                }
+            });
+            let config = RossiConfig::from_client_settings(&settings)
+                .unwrap_or_else(|e| panic!("config discarded for {bad_length}: {e}"));
+            assert_eq!(config.inlay_hints.max_length, 32, "for {bad_length}");
+            assert!(!config.inlay_hints.enabled);
+        }
     }
 
     #[test]

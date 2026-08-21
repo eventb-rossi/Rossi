@@ -164,6 +164,10 @@ impl DocumentManager {
         document.write().open = false;
         self.documents
             .remove_if(uri, |_, current| Arc::ptr_eq(current, &document));
+        // Closing changes closure inputs too: readers of this buffer's overlay
+        // fall back to disk afterwards, so caches stamped by `change_counter`
+        // must not keep validating results derived from the discarded buffer.
+        self.next_revision();
     }
 
     /// The recovered parse of `uri` (text + components + errors), if the
@@ -256,6 +260,13 @@ impl DocumentManager {
 
     fn next_revision(&self) -> u64 {
         self.next_revision.fetch_add(1, Ordering::Relaxed)
+    }
+
+    /// Monotone counter advanced by every open/change/close of any document —
+    /// the cheap "did any buffer change since?" stamp for caches whose inputs
+    /// span a whole dependency closure rather than one document.
+    pub(crate) fn change_counter(&self) -> u64 {
+        self.next_revision.load(Ordering::Relaxed)
     }
 
     fn document(&self, uri: &Url) -> Option<Arc<RwLock<Document>>> {

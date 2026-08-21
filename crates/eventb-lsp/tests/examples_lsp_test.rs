@@ -29,6 +29,7 @@ use eventb_lsp::folding::FoldingRangeProvider;
 use eventb_lsp::formatting;
 use eventb_lsp::hover::HoverProvider;
 use eventb_lsp::identifier_utils::{WordBoundary, find_whole_word_locations, position_to_offset};
+use eventb_lsp::inlay_hints::InlayHintsProvider;
 use eventb_lsp::lsp_types::*;
 use eventb_lsp::references::ReferenceProvider;
 use eventb_lsp::rename::RenameProvider;
@@ -1047,6 +1048,46 @@ fn all_models_document_links() {
                 linked, expected,
                 "{zip_name}/{name}: document links must cover the clause targets exactly"
             );
+        }
+    }
+}
+
+#[test]
+fn all_models_inlay_hints_invariants() {
+    let config = Arc::new(eventb_lsp::config::RossiConfig::default());
+    let full_range = Range::new(Position::new(0, 0), Position::new(u32::MAX, u32::MAX));
+    for &(zip_name, _) in ALL_MODELS {
+        let ws = Workspace::open(zip_name);
+        let provider = InlayHintsProvider::new(Arc::clone(&ws.dm), Arc::clone(&ws.crm));
+        for file in &ws.files {
+            let name = &file.name;
+            let hints = provider
+                .inlay_hints(&file.uri, full_range, &config)
+                .unwrap_or_else(|| panic!("{zip_name}/{name}: document is open"));
+
+            let line_count = file.text.lines().count();
+            for hint in &hints {
+                assert!(
+                    (hint.position.line as usize) < line_count,
+                    "{zip_name}/{name}: hint line {} out of bounds",
+                    hint.position.line
+                );
+            }
+            assert!(
+                hints.windows(2).all(|w| w[0].position <= w[1].position),
+                "{zip_name}/{name}: hints must be in document order"
+            );
+
+            // The corpus is Rodin-validated: every declared variable has a
+            // typing invariant, so a machine declaring variables must hint.
+            if let rossi::Component::Machine(machine) = &file.component
+                && !machine.variables.is_empty()
+            {
+                assert!(
+                    !hints.is_empty(),
+                    "{zip_name}/{name}: machine declares variables but got no hints"
+                );
+            }
         }
     }
 }

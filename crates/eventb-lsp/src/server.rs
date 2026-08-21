@@ -22,6 +22,7 @@ use crate::document::{DocumentManager, ParsedDocument};
 use crate::document_links::DocumentLinkProvider;
 use crate::folding::FoldingRangeProvider;
 use crate::hover::HoverProvider;
+use crate::inlay_hints::InlayHintsProvider;
 use crate::references::ReferenceProvider;
 use crate::rename::RenameProvider;
 use crate::selection_range::SelectionRangeProvider;
@@ -451,6 +452,8 @@ pub struct RossiLanguageServer {
     code_actions_provider: Arc<CodeActionProvider>,
     /// Folding range provider
     folding_range_provider: Arc<FoldingRangeProvider>,
+    /// Inlay hints provider
+    inlay_hints_provider: Arc<InlayHintsProvider>,
     /// Selection range provider (smart expand/shrink selection)
     selection_range_provider: Arc<SelectionRangeProvider>,
     /// Signature help provider
@@ -472,6 +475,8 @@ pub struct RossiLanguageServer {
     animate_in_flight: SingleFlight,
     /// Whether the client advertised `window.workDoneProgress` support.
     supports_work_done_progress: std::sync::atomic::AtomicBool,
+    /// Whether the client advertised `workspace.inlayHint.refreshSupport`.
+    supports_inlay_hint_refresh: std::sync::atomic::AtomicBool,
     /// Watcher over the shared Rodin workspace, started lazily once such a
     /// workspace exists; dropped (stopped) on shutdown. `Arc`'d because the
     /// slow watcher creation completes on a detached thread.
@@ -610,6 +615,11 @@ impl RossiLanguageServer {
             client: client.clone(),
         };
 
+        let inlay_hints_provider = Arc::new(InlayHintsProvider::new(
+            Arc::clone(&document_manager),
+            Arc::clone(&cross_reference_manager),
+        ));
+
         Self {
             client,
             config_manager,
@@ -626,12 +636,14 @@ impl RossiLanguageServer {
             document_links_provider: Arc::new(document_links_provider),
             code_actions_provider: Arc::new(CodeActionProvider::new()),
             folding_range_provider: Arc::new(FoldingRangeProvider::new()),
+            inlay_hints_provider,
             selection_range_provider: Arc::new(SelectionRangeProvider::new()),
             signature_help_provider: Arc::new(SignatureHelpProvider::new()),
             analyzer,
             rodin_open_in_flight: SingleFlight::default(),
             animate_in_flight: SingleFlight::default(),
             supports_work_done_progress: std::sync::atomic::AtomicBool::new(false),
+            supports_inlay_hint_refresh: std::sync::atomic::AtomicBool::new(false),
             rodin_sync: Arc::new(parking_lot::Mutex::new(RodinSyncState::Off)),
             rodin_written: Arc::new(crate::rodin::sync::WriteRegistry::default()),
             rodin_rebuild_generations: Arc::new(parking_lot::Mutex::new(
@@ -1019,6 +1031,17 @@ impl LanguageServer for RossiLanguageServer {
             std::sync::atomic::Ordering::Relaxed,
         );
 
+        self.supports_inlay_hint_refresh.store(
+            params
+                .capabilities
+                .workspace
+                .as_ref()
+                .and_then(|workspace| workspace.inlay_hint.as_ref())
+                .and_then(|inlay_hint| inlay_hint.refresh_support)
+                .unwrap_or(false),
+            std::sync::atomic::Ordering::Relaxed,
+        );
+
         if let Some(settings) = params.initialization_options.as_ref() {
             match RossiConfig::from_client_settings(settings) {
                 Ok(config) => {
@@ -1113,6 +1136,7 @@ impl LanguageServer for RossiLanguageServer {
                     work_done_progress_options: WorkDoneProgressOptions::default(),
                 }),
                 folding_range_provider: Some(FoldingRangeProviderCapability::Simple(true)),
+                inlay_hint_provider: Some(OneOf::Left(true)),
                 selection_range_provider: Some(SelectionRangeProviderCapability::Simple(true)),
                 signature_help_provider: Some(SignatureHelpOptions {
                     trigger_characters: Some(signature_trigger_characters()),
@@ -1170,6 +1194,17 @@ impl LanguageServer for RossiLanguageServer {
                 // watcher, or proof status and model-edit merges keep coming
                 // from the abandoned directory. No-ops when unchanged.
                 self.ensure_rodin_sync_for_existing_workspace();
+
+                // Hints depend on the configuration (enabled state, label
+                // rendering); ask clients that support it to re-request them
+                // under the new settings.
+                if self
+                    .supports_inlay_hint_refresh
+                    .load(std::sync::atomic::Ordering::Relaxed)
+                    && let Err(error) = self.client.inlay_hint_refresh().await
+                {
+                    info!("Inlay hint refresh failed: {error}");
+                }
 
                 self.client
                     .log_message(MessageType::INFO, "Configuration updated successfully")
@@ -1263,6 +1298,9 @@ impl LanguageServer for RossiLanguageServer {
         // still pending for this URI finds no matching revision at wake-up and
         // bows out.
         self.document_manager.close(&uri);
+
+        // Drop the closed document's cached inlay hints.
+        self.inlay_hints_provider.evict(&uri);
 
         // Restore the disk graph after discarding any unsaved open overlay.
         let manager = Arc::clone(&self.cross_reference_manager);
@@ -1756,6 +1794,30 @@ impl LanguageServer for RossiLanguageServer {
         debug!(
             "Folding ranges returned: {}",
             response.as_ref().map_or(0, |ranges| ranges.len())
+        );
+
+        Ok(response)
+    }
+
+    async fn inlay_hint(&self, params: InlayHintParams) -> Result<Option<Vec<InlayHint>>> {
+        let uri = params.text_document.uri;
+        debug!("Inlay hint request for: {}", uri);
+
+        let config = self.config_manager.get();
+        if !config.inlay_hints.enabled {
+            return Ok(None);
+        }
+
+        // Type inference over the document's dependency closure runs on the
+        // blocking pool; repeated requests at an unchanged buffer state are
+        // served from the provider's cache.
+        let provider = Arc::clone(&self.inlay_hints_provider);
+        let range = params.range;
+        let response = run_blocking(move || provider.inlay_hints(&uri, range, &config)).await?;
+
+        debug!(
+            "Inlay hints returned: {}",
+            response.as_ref().map_or(0, |hints| hints.len())
         );
 
         Ok(response)
