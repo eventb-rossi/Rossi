@@ -13,8 +13,12 @@ let client: LanguageClient;
 
 interface RossiConfiguration {
     format: {
+        style: string;
         useUnicode: boolean;
         indentation: string;
+        keywordCase: string;
+        declLists: string;
+        blankBetweenClauses: boolean | null;
     };
     diagnostics: {
         enabled: boolean;
@@ -40,8 +44,12 @@ function getRossiConfiguration(): RossiConfiguration {
     const config = workspace.getConfiguration('rossi');
     return {
         format: {
+            style: config.get<string>('format.style', ''),
             useUnicode: config.get<boolean>('format.useUnicode', true),
-            indentation: config.get<string>('format.indentation', '    '),
+            indentation: config.get<string>('format.indentation', ''),
+            keywordCase: config.get<string>('format.keywordCase', ''),
+            declLists: config.get<string>('format.declLists', ''),
+            blankBetweenClauses: config.get<boolean | null>('format.blankBetweenClauses', null),
         },
         diagnostics: {
             enabled: config.get<boolean>('diagnostics.enabled', true),

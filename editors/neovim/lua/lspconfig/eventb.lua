@@ -90,10 +90,12 @@ return {
       rossi = {
         -- Formatting configuration
         format = {
+          -- Style preset: "camille" or "rossi"; "" follows the server default
+          style = "",
           -- Use Unicode operators (∧, ∨, ⇒, ∈) instead of ASCII (/\, \/, =>, :)
           useUnicode = true,
-          -- Indentation string (spaces or tabs)
-          indentation = "    ",
+          -- Indentation string (spaces or tabs); "" follows the style preset
+          indentation = "",
         },
 
         -- Diagnostics configuration
@@ -192,8 +194,9 @@ require('lspconfig').eventb.setup{
   settings = {
     rossi = {
       format = {
+        style = "camille",
         useUnicode = true,
-        indentation = "    ",
+        indentation = "  ",
       },
       diagnostics = {
         enabled = true,

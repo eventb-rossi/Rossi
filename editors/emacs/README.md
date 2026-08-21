@@ -85,8 +85,9 @@ Add to your Emacs configuration (`~/.emacs.d/init.el` or `~/.config/emacs/init.e
   :hook (eventb-mode . lsp-deferred)
   :config
   ;; Configure Event-B settings
+  (setq lsp-rossi-format-style "camille")
   (setq lsp-rossi-format-use-unicode t)
-  (setq lsp-rossi-format-indentation "    "))
+  (setq lsp-rossi-format-indentation "  "))
 ```
 
 **Option B: Manual Configuration**

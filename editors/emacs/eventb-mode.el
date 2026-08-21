@@ -51,8 +51,9 @@
 ;; Configuration:
 ;;
 ;; Customize the language server settings via lsp-mode:
+;;   (setq lsp-rossi-format-style "camille")
 ;;   (setq lsp-rossi-format-use-unicode t)
-;;   (setq lsp-rossi-format-indentation "    ")
+;;   (setq lsp-rossi-format-indentation "  ")
 ;;   (setq lsp-rossi-diagnostics-enabled t)
 
 ;;; Code:
@@ -206,13 +207,20 @@ must stay nil so the exact-case math words (dom, card, POW, …) do not fold.")
 
 ;;; LSP integration
 
+(defcustom lsp-rossi-format-style ""
+  "Formatting style preset: \"camille\" or \"rossi\".
+Empty follows the language server's default preset."
+  :type 'string
+  :group 'eventb)
+
 (defcustom lsp-rossi-format-use-unicode t
   "Use Unicode operators (∧, ∨, ⇒, ∈) instead of ASCII (/\\, \\/, =>, :)."
   :type 'boolean
   :group 'eventb)
 
-(defcustom lsp-rossi-format-indentation "    "
-  "Indentation string (spaces or tabs) for Event-B formatting."
+(defcustom lsp-rossi-format-indentation ""
+  "Indentation string (spaces or tabs) for Event-B formatting.
+Empty follows the style preset (2 spaces camille, 4 spaces rossi)."
   :type 'string
   :group 'eventb)
 
@@ -277,7 +285,8 @@ deleted in Rodin is deleted next to the sources too)."
     :priority 0
     :initialization-options
     (lambda ()
-      `(:rossi (:format (:useUnicode ,lsp-rossi-format-use-unicode
+      `(:rossi (:format (:style ,lsp-rossi-format-style
+                          :useUnicode ,lsp-rossi-format-use-unicode
                           :indentation ,lsp-rossi-format-indentation)
                  :diagnostics (:enabled ,lsp-rossi-diagnostics-enabled
                                :debounceMs ,lsp-rossi-diagnostics-debounce-ms)
