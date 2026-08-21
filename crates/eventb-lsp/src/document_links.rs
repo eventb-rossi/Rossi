@@ -78,6 +78,7 @@ impl DocumentLinkProvider {
         cross_ref_manager: &CrossReferenceManager,
     ) -> Vec<DocumentLink> {
         let mut links = Vec::new();
+        let source_lines: Vec<&str> = source.lines().collect();
 
         for token in clause_identifier_tokens(text, clause_keyword) {
             if let Some(target_uri) = cross_ref_manager.find_component_uri(&token.name) {
@@ -85,7 +86,7 @@ impl DocumentLinkProvider {
                     // `token.start`/`end` are char columns from the scanner;
                     // route them through the single UTF-16 converter against the
                     // real source line.
-                    let line_text = source.lines().nth(token.line).unwrap_or("");
+                    let line_text = source_lines.get(token.line).copied().unwrap_or("");
                     let range = crate::position::line_run_to_range(
                         line_text,
                         token.line as u32,
