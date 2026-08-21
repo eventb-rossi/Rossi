@@ -326,6 +326,22 @@
           "default": 120,
           "description": "Maximum line width when formatting, in characters (a tab counts as one); long formulas wrap onto operator-leading continuation lines. 0 disables wrapping."
         },
+        "rossi.inlayHints.enabled": {
+          "type": "boolean",
+          "default": true,
+          "description": "Show inferred declaration types as inlay hints after machine variables, event parameters, and context constants. Rendering also honours VS Code's editor.inlayHints.enabled master switch."
+        },
+        "rossi.inlayHints.wellDefinedness": {
+          "type": "boolean",
+          "default": true,
+          "description": "Mark formulas carrying a non-trivial well-definedness condition (function application, division, card, min/max, …) with a WD inlay hint whose tooltip shows the condition."
+        },
+        "rossi.inlayHints.maxLength": {
+          "type": "integer",
+          "minimum": 0,
+          "default": 32,
+          "description": "Maximum rendered length of a type hint in characters; longer types are truncated with '…' and shown in full in the hint tooltip. 0 disables truncation."
+        },
         "rossi.diagnostics.enabled": {
           "type": "boolean",
           "default": true,

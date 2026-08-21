@@ -214,6 +214,13 @@ settings = {
     completion = {
       enabled = true,           -- Enable/disable completion
     },
+
+    -- Inlay hint options (shown via vim.lsp.inlay_hint, Neovim 0.10+)
+    inlayHints = {
+      enabled = true,           -- Inferred declaration types (": ℤ")
+      wellDefinedness = true,   -- "WD" markers with the condition as tooltip
+      maxLength = 32,           -- Truncate longer type hints; 0 disables
+    },
   },
 }
 ```

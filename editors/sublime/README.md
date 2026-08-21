@@ -77,6 +77,13 @@ Code **folding** and **smart selection expand/shrink** are available via the
 Command Palette as `LSP: Expand Selection` and `LSP: Shrink Selection`; the
 editor's native fold UI also uses the server's folding ranges.
 
+**Inlay hints** — inferred declaration types after machine variables, event
+parameters, and context constants, plus `WD` markers on formulas with a
+non-trivial well-definedness condition — render when `"show_inlay_hints": true`
+is set in the LSP package settings. Which hints the server emits is configured
+under `rossi.inlayHints` (`enabled`, `wellDefinedness`, `maxLength`) in the
+`settings` block above.
+
 An **Open in Rodin** code lens appears on MACHINE/CONTEXT declarations (set
 `"show_code_lens": "annotation"` in the LSP package settings if lenses don't
 render). Running it builds the file's directory into a persistent Rodin

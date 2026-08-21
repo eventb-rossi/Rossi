@@ -71,7 +71,8 @@ Add to your Zed `settings.json` (per-language keys live under
       "tab_size": 4,
       "semantic_tokens": "combined",
       "document_symbols": "on",
-      "document_folding_ranges": "on"
+      "document_folding_ranges": "on",
+      "inlay_hints": { "enabled": true }
     }
   },
   "lsp": {
@@ -81,6 +82,7 @@ Add to your Zed `settings.json` (per-language keys live under
           "format": { "style": "camille", "useUnicode": true, "maxLineWidth": 120 },
           "diagnostics": { "enabled": true },
           "completion": { "enabled": true },
+          "inlayHints": { "enabled": true, "wellDefinedness": true, "maxLength": 32 },
           "rodin": { "path": "", "workspace": "" }
         }
       }
@@ -96,6 +98,7 @@ What each per-language key buys you (all default to `"off"` in Zed):
 | `semantic_tokens` | `"combined"` overlays the server's semantic tokens on the tree-sitter base; `"full"` uses the server's tokens exclusively. |
 | `document_symbols` | `"on"` sources the outline and breadcrumbs from the server's `textDocument/documentSymbol` (the grammar ships no `outline.scm`). |
 | `document_folding_ranges` | `"on"` uses the server's folding ranges instead of indentation/tree-sitter. |
+| `inlay_hints` | `{ "enabled": true }` renders the server's inlay hints: inferred declaration types and `WD` well-definedness markers (which hints the server emits is set under `rossi.inlayHints`). |
 
 ### Server binary and settings
 
@@ -105,8 +108,8 @@ What each per-language key buys you (all default to `"off"` in Zed):
   `binary.arguments`).
 - **Server options.** Everything under `lsp."eventb-language-server".settings`
   is forwarded to the server. Nest options under `rossi` as shown above; the
-  available options (`format`, `diagnostics`, `completion`, `rodin`, `trace`)
-  and their defaults match the Neovim integration
+  available options (`format`, `diagnostics`, `completion`, `inlayHints`,
+  `rodin`, `trace`) and their defaults match the Neovim integration
   (`editors/neovim/lua/lspconfig/eventb.lua`).
 
 ## ASCII → Unicode input

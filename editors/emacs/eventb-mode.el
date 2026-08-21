@@ -246,6 +246,28 @@ disables wrapping."
   :type 'boolean
   :group 'eventb)
 
+(defcustom lsp-rossi-inlay-hints-enabled t
+  "Show inferred declaration types as inlay hints.
+Machine variables, event parameters, and context constants get their
+inferred type rendered after the name.  Rendering also requires
+`lsp-inlay-hint-enable', which `eventb-mode' pins on."
+  :type 'boolean
+  :group 'eventb)
+
+(defcustom lsp-rossi-inlay-hints-well-definedness t
+  "Mark formulas carrying a non-trivial well-definedness condition.
+Such formulas (function application, division, card, min/max, ...) get
+a \"WD\" inlay hint whose tooltip shows the condition."
+  :type 'boolean
+  :group 'eventb)
+
+(defcustom lsp-rossi-inlay-hints-max-length 32
+  "Maximum rendered length of a type inlay hint in characters.
+Longer types are truncated with an ellipsis and shown in full in the
+hint tooltip; 0 disables truncation."
+  :type 'integer
+  :group 'eventb)
+
 (defcustom lsp-rossi-rodin-path ""
   "Rodin IDE executable, macOS .app bundle, or app name for Open in Rodin.
 Empty selects the platform default (/Applications/Rodin.app, rodin.exe,
@@ -299,6 +321,9 @@ deleted in Rodin is deleted next to the sources too)."
                  :diagnostics (:enabled ,lsp-rossi-diagnostics-enabled
                                :debounceMs ,lsp-rossi-diagnostics-debounce-ms)
                  :completion (:enabled ,lsp-rossi-completion-enabled)
+                 :inlayHints (:enabled ,(if lsp-rossi-inlay-hints-enabled t :json-false)
+                              :wellDefinedness ,(if lsp-rossi-inlay-hints-well-definedness t :json-false)
+                              :maxLength ,lsp-rossi-inlay-hints-max-length)
                  :rodin (:path ,lsp-rossi-rodin-path
                          :workspace ,lsp-rossi-rodin-workspace
                          :sync ,(if lsp-rossi-rodin-sync t :json-false)
@@ -396,11 +421,13 @@ used in safety-critical systems and formal verification.
   (setq-local indent-tabs-mode nil)
 
   ;; Pin opinionated LSP defaults for Event-B buffers.  Semantic tokens give
-  ;; richer, server-driven highlighting and code lenses surface the
-  ;; selection-range / refinement affordances; both are off by default in
+  ;; richer, server-driven highlighting, code lenses surface the
+  ;; selection-range / refinement affordances, and inlay hints show the
+  ;; server's inferred declaration types; all are off by default in
   ;; lsp-mode, so enable them buffer-locally here.
   (setq-local lsp-semantic-tokens-enable t)
   (setq-local lsp-lens-enable t)
+  (setq-local lsp-inlay-hint-enable t)
 
   ;; Activate the Unicode input method by default (respecting the toggle).
   ;; Downgrade any failure (e.g. a not-yet-loadable input package) to a

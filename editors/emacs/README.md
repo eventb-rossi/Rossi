@@ -172,6 +172,12 @@ All settings can be customized via Emacs customization interface (`M-x customize
 ;; Completion options
 (setq lsp-rossi-completion-enabled t)        ; Enable/disable completion
 
+;; Inlay hint options (shown when lsp-inlay-hint-enable is on;
+;; eventb-mode already sets it buffer-locally)
+(setq lsp-rossi-inlay-hints-enabled t)           ; Inferred declaration types (": ℤ")
+(setq lsp-rossi-inlay-hints-well-definedness t)  ; "WD" markers with the condition as tooltip
+(setq lsp-rossi-inlay-hints-max-length 32)       ; Truncate longer type hints; 0 disables
+
 ;; Rodin integration ("Open in Rodin" code lens)
 (setq lsp-rossi-rodin-path "")               ; "" = platform default Rodin install
 (setq lsp-rossi-rodin-workspace "")          ; "" = <root>/.rossi/rodin
@@ -186,6 +192,7 @@ capabilities the server already provides:
 ```elisp
 (setq lsp-semantic-tokens-enable t)  ; Server-driven semantic highlighting
 (setq lsp-lens-enable t)             ; Show the "Open in Rodin" code lens
+(setq lsp-inlay-hint-enable t)       ; Show inferred-type / WD inlay hints
 (setq lsp-extend-selection t)        ; Enable smart expand/shrink selection
 ```
 

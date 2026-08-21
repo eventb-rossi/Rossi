@@ -28,6 +28,11 @@ interface RossiConfiguration {
     completion: {
         enabled: boolean;
     };
+    inlayHints: {
+        enabled: boolean;
+        wellDefinedness: boolean;
+        maxLength: number;
+    };
     rodin: {
         path: string;
         workspace: string;
@@ -59,6 +64,11 @@ function getRossiConfiguration(): RossiConfiguration {
         },
         completion: {
             enabled: config.get<boolean>('completion.enabled', true),
+        },
+        inlayHints: {
+            enabled: config.get<boolean>('inlayHints.enabled', true),
+            wellDefinedness: config.get<boolean>('inlayHints.wellDefinedness', true),
+            maxLength: config.get<number>('inlayHints.maxLength', 32),
         },
         rodin: {
             path: config.get<string>('rodin.path', ''),

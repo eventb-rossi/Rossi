@@ -27,6 +27,13 @@ local function default_on_attach(client, bufnr)
     vim.lsp.codelens.refresh({ bufnr = bufnr })
   end
 
+  -- Show the server's inlay hints (inferred declaration types, WD markers).
+  -- vim.lsp.inlay_hint ships with Neovim 0.10+; older versions simply skip
+  -- this, like the selection_range fallback below.
+  if client.server_capabilities.inlayHintProvider and vim.lsp.inlay_hint then
+    vim.lsp.inlay_hint.enable(true, { bufnr = bufnr })
+  end
+
   local opts = { noremap = true, silent = true, buffer = bufnr }
 
   -- Run the CodeLens under the cursor (e.g. open the model in Rodin).
@@ -114,6 +121,16 @@ return {
           enabled = true,
         },
 
+        -- Inlay hints configuration
+        inlayHints = {
+          -- Show inferred declaration types after variables/parameters/constants
+          enabled = true,
+          -- Mark formulas with a non-trivial well-definedness condition ("WD")
+          wellDefinedness = true,
+          -- Truncate type hints longer than this many characters; 0 disables
+          maxLength = 32,
+        },
+
         -- Rodin integration ("Open in Rodin" code lens)
         rodin = {
           -- Rodin executable, macOS .app bundle, or app name; "" = platform default
@@ -149,6 +166,7 @@ Rossi Language Server provides language support for Event-B formal modeling:
 - Folding ranges
 - Selection range (smart expand/shrink, `<leader>v`)
 - Semantic tokens
+- Inlay hints (inferred declaration types, well-definedness markers)
 - "Open in Rodin" code lens (builds into a persistent `.rossi/rodin` Rodin
   workspace and launches the Rodin IDE; proofs made there survive rebuilds)
 
@@ -159,6 +177,8 @@ When this config is set up, every Event-B buffer automatically gets:
   server advertising codeLensProvider, plus `<leader>cl` to run the lens under
   the cursor (e.g. open the model in Rodin).
 - `<leader>v` to expand the LSP selection range (textDocument/selectionRange).
+- Inlay hints enabled (vim.lsp.inlay_hint, Neovim 0.10+), guarded on the
+  server advertising inlayHintProvider.
 - The :Rossi* user commands (from lua/eventb/commands.lua) and `<leader>ru` /
   `<leader>ra` / `<leader>rv` for convert-to-unicode / convert-to-ascii /
   validate.
