@@ -4,14 +4,32 @@ use rossi::formula::{Assignment, Expression, Predicate, PredicateKind};
 use rossi::pretty::PrettyPrinter;
 
 use crate::sc_model::{EventDecl, ScModel};
-use crate::{Diagnostic, Project, RuleId};
+use crate::{Diagnostic, Project, ProjectComponent, RuleId};
 
-/// Emit one EB010 INFO diagnostic for every successfully checked formula with
-/// a non-trivial well-definedness lemma.
-pub fn run(project: &Project, model: &ScModel) -> Vec<Diagnostic> {
-    let mut diagnostics = Vec::new();
+/// One non-trivial well-definedness condition of a checked formula.
+pub struct WdCondition {
+    /// `"{component}.{label}"` for axioms, invariants, and variants;
+    /// `"{component}.{event}/{label}"` for guards, actions, and witnesses —
+    /// the same origin spelling the EB010 diagnostics use.
+    pub origin: String,
+    /// The type-checked WD lemma; never the trivial `⊤`.
+    pub lemma: Predicate,
+    /// Byte span of the source formula in its component's text
+    /// (textual sources only).
+    pub span: Option<rossi::ast::Span>,
+}
 
-    for component in &project.components {
+/// Collect the non-trivial well-definedness condition of every successfully
+/// checked formula of `components`. [`run`] renders these as EB010
+/// diagnostics; IDE tooling reads them structured (typically passing only the
+/// components it annotates), so the two surfaces can never disagree.
+pub fn conditions<'a>(
+    components: impl IntoIterator<Item = &'a ProjectComponent>,
+    model: &ScModel,
+) -> Vec<WdCondition> {
+    let mut conditions = Vec::new();
+
+    for component in components {
         let name = component.component.name();
         match &component.component {
             rossi::Component::Context(_) => {
@@ -20,8 +38,8 @@ pub fn run(project: &Project, model: &ScModel) -> Vec<Diagnostic> {
                 };
                 for axiom in &context.record.axioms {
                     push_predicate(
-                        &mut diagnostics,
-                        format!("{name}.{}", axiom.label),
+                        &mut conditions,
+                        || format!("{name}.{}", axiom.label),
                         &axiom.typed,
                     );
                 }
@@ -32,61 +50,91 @@ pub fn run(project: &Project, model: &ScModel) -> Vec<Diagnostic> {
                 };
                 for invariant in &machine.record.invariants {
                     push_predicate(
-                        &mut diagnostics,
-                        format!("{name}.{}", invariant.label),
+                        &mut conditions,
+                        || format!("{name}.{}", invariant.label),
                         &invariant.typed,
                     );
                 }
                 for variant in &machine.record.variants {
                     if let Some(typed) = &variant.typed {
                         push_expression(
-                            &mut diagnostics,
-                            format!("{name}.{}", variant.label),
+                            &mut conditions,
+                            || format!("{name}.{}", variant.label),
                             typed,
                         );
                     }
                 }
                 for event in &machine.record.events {
-                    push_event(&mut diagnostics, name, event);
+                    push_event(&mut conditions, name, event);
                 }
             }
         }
     }
 
-    diagnostics
+    conditions
 }
 
-fn push_event(diagnostics: &mut Vec<Diagnostic>, machine: &str, event: &EventDecl) {
+/// Emit one EB010 INFO diagnostic for every successfully checked formula with
+/// a non-trivial well-definedness lemma.
+pub fn run(project: &Project, model: &ScModel) -> Vec<Diagnostic> {
+    conditions(&project.components, model)
+        .into_iter()
+        .map(|condition| Diagnostic {
+            severity: RuleId::WellDefinedness.default_severity(),
+            origin: condition.origin,
+            message: format!(
+                "Well-definedness condition: {}",
+                render_lemma(&condition.lemma)
+            ),
+            rule_id: Some(RuleId::WellDefinedness),
+            span: condition.span,
+        })
+        .collect()
+}
+
+fn push_event(conditions: &mut Vec<WdCondition>, machine: &str, event: &EventDecl) {
     let origin = |label: &str| format!("{machine}.{}/{label}", event.label);
 
     for guard in &event.guards {
-        push_predicate(diagnostics, origin(&guard.label), &guard.typed);
+        push_predicate(conditions, || origin(&guard.label), &guard.typed);
     }
     for action in event.own_actions() {
         if let Some(typed) = &action.typed {
-            push_assignment(diagnostics, origin(&action.label), typed);
+            push_assignment(conditions, || origin(&action.label), typed);
         }
     }
     for witness in &event.witnesses {
-        push_predicate(diagnostics, origin(&witness.label), &witness.typed);
+        push_predicate(conditions, || origin(&witness.label), &witness.typed);
     }
 }
 
-fn push_predicate(diagnostics: &mut Vec<Diagnostic>, origin: String, formula: &Predicate) {
-    push_lemma(diagnostics, origin, formula.wd_lemma(), formula.span());
+fn push_predicate(
+    conditions: &mut Vec<WdCondition>,
+    origin: impl FnOnce() -> String,
+    formula: &Predicate,
+) {
+    push_lemma(conditions, origin, formula.wd_lemma(), formula.span());
 }
 
-fn push_expression(diagnostics: &mut Vec<Diagnostic>, origin: String, formula: &Expression) {
-    push_lemma(diagnostics, origin, formula.wd_lemma(), formula.span());
+fn push_expression(
+    conditions: &mut Vec<WdCondition>,
+    origin: impl FnOnce() -> String,
+    formula: &Expression,
+) {
+    push_lemma(conditions, origin, formula.wd_lemma(), formula.span());
 }
 
-fn push_assignment(diagnostics: &mut Vec<Diagnostic>, origin: String, formula: &Assignment) {
-    push_lemma(diagnostics, origin, formula.wd_lemma(), formula.span());
+fn push_assignment(
+    conditions: &mut Vec<WdCondition>,
+    origin: impl FnOnce() -> String,
+    formula: &Assignment,
+) {
+    push_lemma(conditions, origin, formula.wd_lemma(), formula.span());
 }
 
 fn push_lemma(
-    diagnostics: &mut Vec<Diagnostic>,
-    origin: String,
+    conditions: &mut Vec<WdCondition>,
+    origin: impl FnOnce() -> String,
     lemma: Predicate,
     span: Option<rossi::ast::Span>,
 ) {
@@ -97,11 +145,11 @@ fn push_lemma(
         return;
     }
 
-    diagnostics.push(Diagnostic {
-        severity: RuleId::WellDefinedness.default_severity(),
-        origin,
-        message: format!("Well-definedness condition: {}", render_lemma(&lemma)),
-        rule_id: Some(RuleId::WellDefinedness),
+    // The origin is formatted only for surviving lemmas — the trivial (⊤)
+    // majority returns above without allocating.
+    conditions.push(WdCondition {
+        origin: origin(),
+        lemma,
         span,
     });
 }

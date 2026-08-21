@@ -268,3 +268,40 @@ fn rendering_uses_mathematical_minus_like_formula_to_string() {
         "Well-definedness condition: finite({−1})"
     );
 }
+
+#[test]
+fn conditions_and_diagnostics_agree() {
+    // `run` is a rendering of `conditions`: same formulas, same origins,
+    // same spans, in the same order.
+    let machine = ProjectComponent::from_xml(
+        "M.bum",
+        r#"<?xml version="1.0"?>
+<org.eventb.core.machineFile version="5" org.eventb.core.configuration="org.eventb.core.fwd">
+<org.eventb.core.variable name="_x" org.eventb.core.identifier="x"/>
+<org.eventb.core.invariant name="_type" org.eventb.core.label="type" org.eventb.core.predicate="x ∈ ℤ"/>
+<org.eventb.core.invariant name="_wd" org.eventb.core.label="inv" org.eventb.core.predicate="10 ÷ x &gt; 0"/>
+<org.eventb.core.variant name="_variant" org.eventb.core.expression="10 ÷ x" org.eventb.core.label="vrn1"/>
+<org.eventb.core.event name="_init" org.eventb.core.convergence="0" org.eventb.core.extended="false" org.eventb.core.label="INITIALISATION">
+<org.eventb.core.action name="_init_a" org.eventb.core.assignment="x ≔ 1" org.eventb.core.label="act1"/>
+</org.eventb.core.event>
+<org.eventb.core.event name="_event" org.eventb.core.convergence="1" org.eventb.core.extended="false" org.eventb.core.label="E">
+<org.eventb.core.guard name="_guard" org.eventb.core.label="grd" org.eventb.core.predicate="10 ÷ x &gt; 0"/>
+<org.eventb.core.action name="_action" org.eventb.core.assignment="x ≔ 10 ÷ x" org.eventb.core.label="act"/>
+</org.eventb.core.event>
+</org.eventb.core.machineFile>"#,
+    )
+    .unwrap();
+    let project = project(vec![machine]);
+
+    let (build, model) = build_with_model(&project);
+    assert!(build.is_ok(), "build diagnostics: {:?}", build.diagnostics);
+    let conditions = wd::conditions(&project.components, &model);
+    let diagnostics = wd::run(&project, &model);
+
+    assert_eq!(conditions.len(), diagnostics.len());
+    assert!(!conditions.is_empty());
+    for (condition, diagnostic) in conditions.iter().zip(&diagnostics) {
+        assert_eq!(condition.origin, diagnostic.origin);
+        assert_eq!(condition.span, diagnostic.span);
+    }
+}
