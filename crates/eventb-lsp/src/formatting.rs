@@ -54,6 +54,7 @@ mod tests {
         let config = FormatConfig {
             use_unicode: true,
             indentation: "    ".to_string(),
+            ..FormatConfig::default()
         };
 
         let source = r#"
@@ -77,6 +78,7 @@ mod tests {
         let config = FormatConfig {
             use_unicode: false,
             indentation: "    ".to_string(),
+            ..FormatConfig::default()
         };
 
         let source = r#"
@@ -97,10 +99,26 @@ mod tests {
     }
 
     #[test]
+    fn test_format_with_camille_style() {
+        let config = FormatConfig {
+            style: "camille".to_string(),
+            ..FormatConfig::default()
+        };
+
+        let source = "CONTEXT test SETS STATUS END";
+        let formatted = format(source, &config).unwrap()[0].new_text.clone();
+        assert!(
+            formatted.starts_with("context test\n\nsets STATUS\n"),
+            "expected camille-style output, got:\n{formatted}"
+        );
+    }
+
+    #[test]
     fn test_format_with_custom_indentation() {
         let config = FormatConfig {
             use_unicode: true,
             indentation: "    ".to_string(),
+            ..FormatConfig::default()
         };
 
         let source = r#"
