@@ -12,6 +12,7 @@ mod commands {
     pub mod import;
     pub mod proofs;
     pub mod sarif;
+    pub mod style;
     pub mod validate;
 }
 

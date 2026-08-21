@@ -88,6 +88,23 @@ fn fmt_indent_option_changes_indentation() {
 }
 
 #[test]
+fn fmt_explicit_empty_indent_is_honored() {
+    // `--indent=""` means no indentation, not "follow the preset".
+    let source = "CONTEXT c\nAXIOMS\n@axm1 1 = 1\nEND\n";
+    let output = run_cli_with_stdin(&["fmt", "--indent=", "-"], source);
+    assert!(
+        output.status.success(),
+        "fmt --indent= stderr={}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(
+        stdout.contains("\n@axm1"),
+        "expected un-indented axiom in: {stdout}"
+    );
+}
+
+#[test]
 fn fmt_check_then_in_place() {
     let tmp = tempdir_unique("rossi-cli-fmt-check");
     let file = tmp.join("c.eventb");
@@ -420,6 +437,142 @@ fn fmt_raw_copies_non_component_entries() {
     assert_eq!(
         zip_entry_snapshot(&output, "project/proofs/M.bpr"),
         zip_entry_snapshot(&input, "project/proofs/M.bpr")
+    );
+
+    std::fs::remove_dir_all(&tmp).ok();
+}
+
+// =========================================================================
+// Style preset and toggles
+// =========================================================================
+
+const STYLE_MACHINE: &str = "MACHINE m REFINES m0\nVARIABLES x y\nINVARIANTS\n@inv1 x : NAT\nEVENTS\nEVENT e ANY p WHERE @g p > 0 THEN skip END\nEND\n";
+
+#[test]
+fn fmt_style_camille_prints_camille_layout() {
+    let output = run_cli_with_stdin(&["fmt", "--style", "camille", "-"], STYLE_MACHINE);
+    assert!(
+        output.status.success(),
+        "fmt --style camille stderr={}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let expected = "machine m refines m0\n\
+                    \n\
+                    variables x y\n\
+                    \n\
+                    invariants\n\
+                    \x20\x20@inv1 x ∈ ℕ\n\
+                    \n\
+                    events\n\
+                    \x20\x20event e\n\
+                    \x20\x20\x20\x20any p\n\
+                    \x20\x20\x20\x20where\n\
+                    \x20\x20\x20\x20\x20\x20@g p > 0\n\
+                    \x20\x20\x20\x20then\n\
+                    \x20\x20\x20\x20\x20\x20skip\n\
+                    \x20\x20end\n\
+                    end";
+    assert_eq!(stdout.trim_end_matches('\n'), expected, "got:\n{stdout}");
+}
+
+#[test]
+fn fmt_style_rossi_matches_the_default() {
+    let styled = run_cli_with_stdin(&["fmt", "--style", "rossi", "-"], STYLE_MACHINE);
+    let default = run_cli_with_stdin(&["fmt", "-"], STYLE_MACHINE);
+    assert!(styled.status.success() && default.status.success());
+    assert_eq!(
+        styled.stdout, default.stdout,
+        "--style rossi must match the current default output"
+    );
+    let stdout = String::from_utf8_lossy(&styled.stdout);
+    assert!(
+        stdout.starts_with("MACHINE m\nREFINES\n    m0\nVARIABLES\n"),
+        "got:\n{stdout}"
+    );
+}
+
+#[test]
+fn fmt_style_toggles_override_the_preset() {
+    let output = run_cli_with_stdin(
+        &["fmt", "--style", "camille", "--keyword-case", "upper", "-"],
+        STYLE_MACHINE,
+    );
+    assert!(output.status.success());
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(
+        stdout.starts_with("MACHINE m REFINES m0\n"),
+        "keyword-case override, got:\n{stdout}"
+    );
+
+    let output = run_cli_with_stdin(
+        &[
+            "fmt",
+            "--style",
+            "camille",
+            "--blank-between-clauses",
+            "false",
+            "-",
+        ],
+        STYLE_MACHINE,
+    );
+    assert!(output.status.success());
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(
+        stdout.starts_with("machine m refines m0\nvariables x y\ninvariants\n"),
+        "blank-between-clauses override, got:\n{stdout}"
+    );
+
+    let output = run_cli_with_stdin(
+        &["fmt", "--style", "rossi", "--decl-lists", "inline", "-"],
+        STYLE_MACHINE,
+    );
+    assert!(output.status.success());
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(
+        stdout.contains("\nVARIABLES x y\n"),
+        "decl-lists override, got:\n{stdout}"
+    );
+}
+
+#[test]
+fn fmt_check_respects_the_selected_style() {
+    let tmp = tempdir_unique("rossi-cli-fmt-style-check");
+    let file = tmp.join("m.eventb");
+    std::fs::write(&file, STYLE_MACHINE).unwrap();
+
+    let formatted = rossi_command()
+        .args(["fmt", "--style", "camille", "-i", file.to_str().unwrap()])
+        .output()
+        .expect("Failed to execute command");
+    assert!(
+        formatted.status.success(),
+        "fmt --style camille -i stderr={}",
+        String::from_utf8_lossy(&formatted.stderr)
+    );
+
+    let camille_check = rossi_command()
+        .args([
+            "fmt",
+            "--style",
+            "camille",
+            "--check",
+            file.to_str().unwrap(),
+        ])
+        .output()
+        .expect("Failed to execute command");
+    assert!(
+        camille_check.status.success(),
+        "a camille-formatted file passes --check --style camille"
+    );
+
+    let default_check = rossi_command()
+        .args(["fmt", "--check", file.to_str().unwrap()])
+        .output()
+        .expect("Failed to execute command");
+    assert!(
+        !default_check.status.success(),
+        "a camille-formatted file fails --check under the rossi default"
     );
 
     std::fs::remove_dir_all(&tmp).ok();

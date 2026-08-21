@@ -604,3 +604,34 @@ fn import_then_export_proofs_round_trips_bpr() {
 
     std::fs::remove_dir_all(&tmp).ok();
 }
+
+#[test]
+fn import_style_camille_writes_camille_text() {
+    let tmp = tempdir_unique("rossi-cli-import-style");
+    let out_dir = tmp.join("out");
+
+    let output = rossi_command()
+        .args([
+            "import",
+            "--style",
+            "camille",
+            "../rossi/examples/counter_ctx.buc",
+            "-o",
+            out_dir.to_str().unwrap(),
+        ])
+        .output()
+        .expect("Failed to execute command");
+
+    assert!(
+        output.status.success(),
+        "import --style camille stderr={}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let text = std::fs::read_to_string(out_dir.join("counter_ctx.eventb")).unwrap();
+    assert!(
+        text.starts_with("context counter_ctx"),
+        "expected camille-style output, got:\n{text}"
+    );
+
+    std::fs::remove_dir_all(&tmp).ok();
+}
