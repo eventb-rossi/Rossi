@@ -182,10 +182,11 @@ impl InlayHintsProvider {
         let (_result, model) = rossi_build::check_with_model(&project);
 
         let index = PositionIndex::new(doc.text());
-        // One wrap-free, style-resolved printer for every label and tooltip:
-        // inlay hints render on a single line whatever the format width says.
-        let mut printer = config.format.printer();
-        printer.max_line_width = 0;
+        // One style-resolved printer for every label and tooltip. Labels stay
+        // single-line regardless of the width — they render through the
+        // always-flat print_formula_* API — while the WD tooltip alone opts
+        // into wrapping at the configured width.
+        let printer = config.format.printer();
         let max_length = config.inlay_hints.max_length as usize;
         let mut hints = Vec::new();
         for component in doc.components() {
@@ -310,7 +311,7 @@ fn push_well_definedness_hints(
                 kind: MarkupKind::Markdown,
                 value: format!(
                     "Well-definedness condition:\n```\n{}\n```",
-                    printer.print_formula_predicate(&condition.lemma)
+                    printer.print_formula_predicate_wrapped(&condition.lemma)
                 ),
             })),
             padding_left: Some(true),

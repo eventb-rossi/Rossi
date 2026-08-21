@@ -328,6 +328,47 @@ fn well_definedness_tooltips_respect_the_ascii_configuration() {
 }
 
 #[test]
+fn long_well_definedness_tooltips_wrap_at_the_configured_width() {
+    let fixture = Fixture::new();
+    // Three applications of the partial `f` give a multi-conjunct lemma
+    // well past 40 characters.
+    let text = "MACHINE m\nVARIABLES\n    f\n    x\nINVARIANTS\n    @inv1 f ∈ ℤ ⇸ ℤ\n    @inv2 x ∈ ℤ\n    @inv3 f(x) + f(x + 1) + f(x + 2) > 0\nEVENTS\n    EVENT INITIALISATION\n    THEN\n        @act1 f := ∅\n        @act2 x := 0\n    END\nEND\n";
+    let uri = fixture.open("file:///m.eventb", text);
+
+    let lemma_lines = |config| {
+        let hints = fixture.hints(&uri, &config);
+        let wd = hints
+            .iter()
+            .find(|hint| label_text(hint) == "WD")
+            .expect("a WD hint");
+        let Some(InlayHintTooltip::MarkupContent(tooltip)) = &wd.tooltip else {
+            panic!("markup tooltip expected: {:?}", wd.tooltip);
+        };
+        let lines: Vec<String> = tooltip
+            .value
+            .lines()
+            .skip(2)
+            .take_while(|line| *line != "```")
+            .map(str::to_string)
+            .collect();
+        assert!(!lines.is_empty(), "no lemma in tooltip: {}", tooltip.value);
+        lines
+    };
+
+    let wrapped = lemma_lines(config_with(|c| c.format.max_line_width = 40));
+    assert!(wrapped.len() > 1, "expected a wrapped lemma: {wrapped:?}");
+    for line in &wrapped {
+        assert!(
+            line.chars().count() <= 40,
+            "line exceeds 40 chars: {line:?}"
+        );
+    }
+
+    let flat = lemma_lines(config_with(|c| c.format.max_line_width = 0));
+    assert_eq!(flat.len(), 1, "width 0 must keep the lemma flat: {flat:?}");
+}
+
+#[test]
 fn well_definedness_markers_can_be_disabled() {
     let fixture = Fixture::new();
     let text = WD_MACHINE;
