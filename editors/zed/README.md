@@ -78,7 +78,7 @@ Add to your Zed `settings.json` (per-language keys live under
     "eventb-language-server": {
       "settings": {
         "rossi": {
-          "format": { "useUnicode": true, "indentation": "    " },
+          "format": { "style": "camille", "useUnicode": true, "indentation": "  " },
           "diagnostics": { "enabled": true },
           "completion": { "enabled": true },
           "rodin": { "path": "", "workspace": "" }

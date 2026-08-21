@@ -141,8 +141,12 @@ This extension contributes the following settings:
 - `rossi.rodin.workspace`: Directory used as the shared Rodin workspace by the `Open in Rodin` code lens; proofs made in Rodin persist there (default: `.rossi/rodin` inside the workspace folder)
 - `rossi.rodin.sync`: Mutual live synchronization with a running Rodin — saves rebuild the project while Rodin is open, and edits saved in Rodin flow back into the sources (default: `true`)
 - `rossi.rodin.mirrorProofs`: Bridge proof files (`.bpr`/`.bps`/`.bpo`) between the checkout and the Rodin workspace at `Open in Rodin` session boundaries — seed the project from files next to the sources when the lens runs, mirror the project's files back when Rodin exits (default: `true`)
+- `rossi.format.style`: Formatting style preset — `"camille"` (lowercase keywords, inline declaration lists, 2-space indent) or `"rossi"` (uppercase keywords, one-per-line lists, 4-space indent); empty follows the language server's default preset (default: `""`)
 - `rossi.format.useUnicode`: Use Unicode operators (∧, ∨, ⇒, ∈) instead of ASCII (/\, \/, =>, :) when formatting (default: `true`)
-- `rossi.format.indentation`: Indentation string (spaces or tabs) to use when formatting (default: `"    "` - 4 spaces)
+- `rossi.format.indentation`: Indentation string (spaces or tabs) to use when formatting; empty follows the style preset (default: `""`)
+- `rossi.format.keywordCase`: Keyword-case override — `"lower"` or `"upper"`; empty follows the style preset (default: `""`)
+- `rossi.format.declLists`: Declaration-list layout override — `"inline"` or `"one-per-line"`; empty follows the style preset (default: `""`)
+- `rossi.format.blankBetweenClauses`: Blank line before each top-level clause keyword; unset follows the style preset (default: `null`)
 - `rossi.diagnostics.enabled`: Enable real-time diagnostics for syntax errors (default: `true`)
 - `rossi.diagnostics.debounceMs`: Reserved for future diagnostic debouncing; diagnostics currently run immediately after typing (default: `500`)
 - `rossi.completion.enabled`: Enable Event-B code completion (default: `true`)
@@ -159,8 +163,8 @@ Add to your `.vscode/settings.json`:
   "rossi.languageServer.path": "/path/to/eventb-language-server", // only if not in PATH
   "rossi.tool.path": "/path/to/rossi", // only if not in PATH
   "rossi.rodin.path": "/Applications/Rodin.app", // only if Rodin isn't at the platform default
+  "rossi.format.style": "camille",
   "rossi.format.useUnicode": true,
-  "rossi.format.indentation": "    ",
   "rossi.diagnostics.enabled": true,
   "rossi.diagnostics.debounceMs": 500,
   "rossi.completion.enabled": true,
