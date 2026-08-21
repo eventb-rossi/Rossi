@@ -310,6 +310,22 @@ Unicode), and indentation (`--indent`, default the preset's). The preset's
 keyword case, declaration-list layout, and blank-line policy can be overridden
 individually (`--keyword-case`, `--decl-lists`, `--blank-between-clauses`).
 
+Lines longer than `--max-width` (default 120 characters, `0` disables) wrap at
+the outermost operator, one operand per line, operator-leading, with
+continuation lines hanging-aligned under the formula's start; argument lists
+fill greedily after commas. Comment text is never wrapped:
+
+```eventb
+machine m
+
+invariants
+  @inv1 request ∈ dom(pending)
+        ∧ status(request) = active
+        ∧ (owner(request) = user
+           ∨ user ∈ admins)
+end
+```
+
 ```bash
 # Convert ASCII-operator text to Unicode (default), printing to stdout
 rossi fmt model.eventb
@@ -318,8 +334,12 @@ rossi fmt model.eventb
 rossi fmt -i ./project --ascii
 rossi fmt -i model.eventb --indent="  "
 
-# The original uppercase 4-space layout
+# The original uppercase 4-space layout; add --max-width 0 to reproduce
+# the old default output byte-for-byte (wrapping is on in every style)
 rossi fmt -i model.eventb --style rossi
+
+# Wrap at 100 columns instead of 120; 0 disables wrapping
+rossi fmt -i model.eventb --max-width 100
 
 # CI gate: exit non-zero if anything is not already formatted
 rossi fmt --check ./project
