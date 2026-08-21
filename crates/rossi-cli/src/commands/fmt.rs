@@ -16,7 +16,7 @@
 //! writes elsewhere. With none of these, a single text input is printed to stdout.
 
 use clap::Args;
-use rossi::{FormulaSpacing, PrettyPrinter, format_str, parse_xml, to_xml};
+use rossi::{PrettyPrinter, Style, format_str, parse_xml, to_xml};
 use std::collections::{HashMap, hash_map::Entry};
 use std::fs;
 use std::io::{Read, Write};
@@ -100,10 +100,9 @@ fn run_inner(cli: &FmtArgs) -> CmdResult<ExitCode> {
     let printer = PrettyPrinter {
         use_unicode: !cli.ascii,
         indent: cli.indent.clone().unwrap_or_else(|| "    ".to_string()),
-        // Emitted text stays portable: never the private-use glyphs.
-        private_use_glyphs: false,
-        formula_spacing: FormulaSpacing::Readable,
-        typed_decls: false,
+        // The remaining fields keep the preset's deliberate pins: portable
+        // text (no private-use glyphs), readable formula spacing.
+        ..PrettyPrinter::styled(Style::Rossi)
     };
 
     // `-` reads one Event-B text stream from stdin (the lone input). It has no

@@ -77,8 +77,8 @@ pub use parser::{
     parse_predicate_str, parse_with_recovery,
 };
 pub use pretty::{
-    FormulaSpacing, PrettyPrinter, components_to_string, components_to_string_ascii, format_str,
-    to_string, to_string_ascii,
+    DeclListLayout, FormulaSpacing, KeywordCase, PrettyPrinter, Style, StyleOverrides,
+    components_to_string, components_to_string_ascii, format_str, to_string, to_string_ascii,
 };
 pub use selection::{
     SyntaxAtOffset, SyntaxConstruct, SyntaxParameter, enclosing_spans, enclosing_spans_batch,

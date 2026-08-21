@@ -70,6 +70,57 @@ fn renders_comment(comment: Option<&str>) -> bool {
     comment.and_then(comments::normalize_comment).is_some()
 }
 
+/// Structural layout preset for Event-B text output.
+///
+/// The preset drives the axes that are not individually togglable — inline
+/// vs block header clauses (`refines`/`sees`/`extends`), variant layout,
+/// the event indentation ladder, and the blank-line shape inside `events`
+/// — and supplies the defaults for the togglable axes via
+/// [`PrettyPrinter::styled`].
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
+pub enum Style {
+    /// The layout Rodin's Camille text editor prints: lowercase keywords,
+    /// header clauses and declaration lists inline, a blank line between
+    /// clauses and events, 2-space indent.
+    Camille,
+    /// rossi's original layout: uppercase keywords, every clause payload
+    /// broken onto indented lines, no blank lines between clauses,
+    /// 4-space indent.
+    #[default]
+    Rossi,
+}
+
+/// Casing of structural keywords (`MACHINE` vs `machine`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum KeywordCase {
+    Lower,
+    Upper,
+}
+
+/// Layout of identifier declaration lists
+/// (`variables`/`sets`/`constants`/`any`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DeclListLayout {
+    /// Names space-separated on the keyword line, continuation lines
+    /// hanging-aligned under the first name (Camille).
+    Inline,
+    /// Keyword alone on its line, one name per line at one indent.
+    OnePerLine,
+}
+
+/// Explicit overrides applied on top of a [`Style`] preset by
+/// [`PrettyPrinter::resolved`]. `None` fields follow the preset.
+#[derive(Debug, Clone, Default)]
+pub struct StyleOverrides {
+    pub keyword_case: Option<KeywordCase>,
+    pub decl_lists: Option<DeclListLayout>,
+    pub blank_between_clauses: Option<bool>,
+    /// `None` keeps the preset's indent; `Some("")` is an explicit empty
+    /// indent.
+    pub indent: Option<String>,
+    pub use_unicode: Option<bool>,
+}
+
 /// Whitespace convention for formulas emitted by [`PrettyPrinter`].
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
 pub enum FormulaSpacing {
@@ -92,7 +143,7 @@ enum FormulaContext {
 }
 
 /// Configuration for the pretty printer
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct PrettyPrinter {
     /// Use Unicode operators (true) or ASCII (false)
     pub use_unicode: bool,
@@ -111,17 +162,19 @@ pub struct PrettyPrinter {
     /// types (`x⦂ℤ`) instead of only their source annotations — what
     /// canonical static-checker text uses.
     pub typed_decls: bool,
+    /// Structural layout preset (see [`Style`]).
+    pub style: Style,
+    /// Casing of structural keywords.
+    pub keyword_case: KeywordCase,
+    /// Layout of identifier declaration lists.
+    pub decl_lists: DeclListLayout,
+    /// Emit one blank line before each top-level clause keyword.
+    pub blank_between_clauses: bool,
 }
 
 impl Default for PrettyPrinter {
     fn default() -> Self {
-        Self {
-            use_unicode: true,
-            indent: "    ".to_string(),
-            private_use_glyphs: false,
-            formula_spacing: FormulaSpacing::Readable,
-            typed_decls: false,
-        }
+        Self::styled(Style::default())
     }
 }
 
@@ -129,6 +182,54 @@ impl PrettyPrinter {
     /// Create a new pretty printer with default settings
     pub fn new() -> Self {
         Self::default()
+    }
+
+    /// A printer for the given style preset, every axis (including the
+    /// indent) at the preset's default.
+    pub fn styled(style: Style) -> Self {
+        let (indent, keyword_case, decl_lists, blank_between_clauses) = match style {
+            Style::Camille => ("  ", KeywordCase::Lower, DeclListLayout::Inline, true),
+            Style::Rossi => (
+                "    ",
+                KeywordCase::Upper,
+                DeclListLayout::OnePerLine,
+                false,
+            ),
+        };
+        Self {
+            use_unicode: true,
+            indent: indent.to_string(),
+            private_use_glyphs: false,
+            formula_spacing: FormulaSpacing::Readable,
+            typed_decls: false,
+            style,
+            keyword_case,
+            decl_lists,
+            blank_between_clauses,
+        }
+    }
+
+    /// The preset + override resolution every user-facing formatter path
+    /// (CLI `fmt`/`import`, LSP formatting, Rodin model sync) builds its
+    /// printer through, so they can never disagree on what a style means.
+    pub fn resolved(style: Style, overrides: &StyleOverrides) -> Self {
+        let mut printer = Self::styled(style);
+        if let Some(keyword_case) = overrides.keyword_case {
+            printer.keyword_case = keyword_case;
+        }
+        if let Some(decl_lists) = overrides.decl_lists {
+            printer.decl_lists = decl_lists;
+        }
+        if let Some(blank) = overrides.blank_between_clauses {
+            printer.blank_between_clauses = blank;
+        }
+        if let Some(indent) = &overrides.indent {
+            printer.indent = indent.clone();
+        }
+        if let Some(use_unicode) = overrides.use_unicode {
+            printer.use_unicode = use_unicode;
+        }
+        printer
     }
 
     /// Create a pretty printer that uses ASCII operators
@@ -240,20 +341,92 @@ impl PrettyPrinter {
         writeln!(output, " */").unwrap();
     }
 
+    /// The structural keyword in the configured case.
+    #[inline]
+    fn kw(&self, upper: &'static str, lower: &'static str) -> &'static str {
+        match self.keyword_case {
+            KeywordCase::Upper => upper,
+            KeywordCase::Lower => lower,
+        }
+    }
+
+    /// Blank line before a top-level clause keyword, when the style asks
+    /// for one. Never emitted before the closing END.
+    #[inline]
+    fn clause_gap(&self, output: &mut String) {
+        if self.blank_between_clauses {
+            output.push('\n');
+        }
+    }
+
+    /// Indentation ladder inside EVENTS per style: (event header, event
+    /// body keyword, body item). Camille indents the body keywords one
+    /// level below the event header; the original layout keeps them level.
+    fn event_ladder(&self) -> (String, String, String) {
+        match self.style {
+            Style::Camille => (
+                self.indent.clone(),
+                self.indent.repeat(2),
+                self.indent.repeat(3),
+            ),
+            Style::Rossi => (
+                self.indent.clone(),
+                self.indent.clone(),
+                self.indent.repeat(2),
+            ),
+        }
+    }
+
+    /// Print an identifier list inline on the keyword line, Camille style:
+    /// names space-separated, continuation lines hanging-aligned under the
+    /// first name (in characters, like Camille). A commented name always
+    /// ends its physical line, so its trailing `//` (or following block)
+    /// re-attaches to that name on reparse; the remaining names continue
+    /// on the next hanging line.
+    fn print_inline_name_list(
+        &self,
+        output: &mut String,
+        keyword: &str,
+        clause_indent: &str,
+        items: &[NamedElement],
+    ) {
+        let head = format!("{clause_indent}{keyword}");
+        let hang = " ".repeat(head.chars().count());
+        let mut line = head;
+        let mut pending = false;
+        for item in items {
+            write!(line, " {}", item.name).unwrap();
+            pending = true;
+            if renders_comment(item.comment.as_deref()) {
+                self.writeln_commented(output, &line, item.comment.as_deref(), &hang);
+                line.clear();
+                line.push_str(&hang);
+                pending = false;
+            }
+        }
+        if pending {
+            writeln!(output, "{line}").unwrap();
+        }
+    }
+
     /// Convert a Context to formatted text
     pub fn print_context(&self, context: &Context) -> String {
         let mut output = String::new();
 
         debug_assert_component_name(&context.name, "context name");
-        self.writeln_commented(
-            &mut output,
-            &format!("CONTEXT {}", context.name),
-            context.comment.as_deref(),
-            "",
-        );
+        let mut header = format!("{} {}", self.kw("CONTEXT", "context"), context.name);
+        if self.style == Style::Camille && !context.extends.is_empty() {
+            write!(header, " {}", self.kw("EXTENDS", "extends")).unwrap();
+            for ext in &context.extends {
+                debug_assert_component_name(ext, "extends target");
+                write!(header, " {ext}").unwrap();
+            }
+        }
+        self.writeln_commented(&mut output, &header, context.comment.as_deref(), "");
 
-        if !context.extends.is_empty() {
-            writeln!(output, "EXTENDS").unwrap();
+        if self.style == Style::Rossi && !context.extends.is_empty() {
+            self.clause_gap(&mut output);
+            writeln!(output, "{}", self.kw("EXTENDS", "extends")).unwrap();
             for ext in &context.extends {
                 debug_assert_component_name(ext, "extends target");
                 writeln!(output, "{}{}", self.indent, ext).unwrap();
@@ -261,38 +434,48 @@ impl PrettyPrinter {
         }
 
         if !context.sets.is_empty() {
-            writeln!(output, "SETS").unwrap();
-            for set in &context.sets {
-                self.writeln_commented(
-                    &mut output,
-                    &format!("{}{}", self.indent, set.name),
-                    set.comment.as_deref(),
-                    &self.indent,
-                );
-            }
+            self.clause_gap(&mut output);
+            self.print_decl_list(&mut output, self.kw("SETS", "sets"), &context.sets);
         }
 
         if !context.constants.is_empty() {
-            writeln!(output, "CONSTANTS").unwrap();
-            for constant in &context.constants {
-                self.writeln_commented(
-                    &mut output,
-                    &format!("{}{}", self.indent, constant.name),
-                    constant.comment.as_deref(),
-                    &self.indent,
-                );
-            }
+            self.clause_gap(&mut output);
+            self.print_decl_list(
+                &mut output,
+                self.kw("CONSTANTS", "constants"),
+                &context.constants,
+            );
         }
 
         if !context.axioms.is_empty() {
-            writeln!(output, "AXIOMS").unwrap();
+            self.clause_gap(&mut output);
+            writeln!(output, "{}", self.kw("AXIOMS", "axioms")).unwrap();
             for axiom in &context.axioms {
                 self.print_labeled_predicate(&mut output, axiom, &self.indent);
             }
         }
 
-        writeln!(output, "END").unwrap();
+        writeln!(output, "{}", self.kw("END", "end")).unwrap();
         output
+    }
+
+    /// Print a top-level declaration list (`sets`/`constants`/`variables`)
+    /// in the configured [`DeclListLayout`].
+    fn print_decl_list(&self, output: &mut String, keyword: &str, items: &[NamedElement]) {
+        match self.decl_lists {
+            DeclListLayout::Inline => self.print_inline_name_list(output, keyword, "", items),
+            DeclListLayout::OnePerLine => {
+                writeln!(output, "{keyword}").unwrap();
+                for item in items {
+                    self.writeln_commented(
+                        output,
+                        &format!("{}{}", self.indent, item.name),
+                        item.comment.as_deref(),
+                        &self.indent,
+                    );
+                }
+            }
+        }
     }
 
     /// Convert a Machine to formatted text
@@ -300,82 +483,128 @@ impl PrettyPrinter {
         let mut output = String::new();
 
         debug_assert_component_name(&machine.name, "machine name");
-        self.writeln_commented(
-            &mut output,
-            &format!("MACHINE {}", machine.name),
-            machine.comment.as_deref(),
-            "",
-        );
-
-        if let Some(ref refines) = machine.refines {
-            debug_assert_component_name(refines, "refines target");
-            writeln!(output, "REFINES").unwrap();
-            writeln!(output, "{}{}", self.indent, refines).unwrap();
+        let mut header = format!("{} {}", self.kw("MACHINE", "machine"), machine.name);
+        if self.style == Style::Camille {
+            if let Some(ref refines) = machine.refines {
+                debug_assert_component_name(refines, "refines target");
+                write!(header, " {} {refines}", self.kw("REFINES", "refines")).unwrap();
+            }
+            if !machine.sees.is_empty() {
+                write!(header, " {}", self.kw("SEES", "sees")).unwrap();
+                for sees in &machine.sees {
+                    debug_assert_component_name(sees, "sees target");
+                    write!(header, " {sees}").unwrap();
+                }
+            }
         }
+        self.writeln_commented(&mut output, &header, machine.comment.as_deref(), "");
 
-        if !machine.sees.is_empty() {
-            writeln!(output, "SEES").unwrap();
-            for sees in &machine.sees {
-                debug_assert_component_name(sees, "sees target");
-                writeln!(output, "{}{}", self.indent, sees).unwrap();
+        if self.style == Style::Rossi {
+            if let Some(ref refines) = machine.refines {
+                debug_assert_component_name(refines, "refines target");
+                self.clause_gap(&mut output);
+                writeln!(output, "{}", self.kw("REFINES", "refines")).unwrap();
+                writeln!(output, "{}{}", self.indent, refines).unwrap();
+            }
+
+            if !machine.sees.is_empty() {
+                self.clause_gap(&mut output);
+                writeln!(output, "{}", self.kw("SEES", "sees")).unwrap();
+                for sees in &machine.sees {
+                    debug_assert_component_name(sees, "sees target");
+                    writeln!(output, "{}{}", self.indent, sees).unwrap();
+                }
             }
         }
 
         if !machine.variables.is_empty() {
-            writeln!(output, "VARIABLES").unwrap();
-            for var in &machine.variables {
-                self.writeln_commented(
-                    &mut output,
-                    &format!("{}{}", self.indent, var.name),
-                    var.comment.as_deref(),
-                    &self.indent,
-                );
-            }
+            self.clause_gap(&mut output);
+            self.print_decl_list(
+                &mut output,
+                self.kw("VARIABLES", "variables"),
+                &machine.variables,
+            );
         }
 
         if !machine.invariants.is_empty() {
-            writeln!(output, "INVARIANTS").unwrap();
+            self.clause_gap(&mut output);
+            writeln!(output, "{}", self.kw("INVARIANTS", "invariants")).unwrap();
             for inv in &machine.invariants {
                 self.print_labeled_predicate(&mut output, inv, &self.indent);
             }
         }
 
         if !machine.variants.is_empty() {
-            writeln!(output, "VARIANT").unwrap();
-            for (i, variant) in machine.variants.iter().enumerate() {
-                let expr = self.print_formula_expression(&variant.expression);
-                match &variant.label {
-                    Some(label) => {
-                        writeln!(output, "{}@{label} {expr}", self.indent).unwrap();
+            self.clause_gap(&mut output);
+            let keyword = self.kw("VARIANT", "variant");
+            match self.style {
+                Style::Camille => {
+                    // The first variant sits inline on the keyword line.
+                    for (i, variant) in machine.variants.iter().enumerate() {
+                        let expr = self.print_formula_expression(&variant.expression);
+                        match &variant.label {
+                            Some(label) if i == 0 => {
+                                writeln!(output, "{keyword} @{label} {expr}").unwrap();
+                            }
+                            None if i == 0 => {
+                                writeln!(output, "{keyword} {expr}").unwrap();
+                            }
+                            // Later variants need their `@label` sigil to
+                            // delimit the expressions.
+                            _ => {
+                                let label = variant.effective_label();
+                                writeln!(output, "{}@{label} {expr}", self.indent).unwrap();
+                            }
+                        }
                     }
-                    // The grammar only allows a bare expression in first
-                    // position; spell out the default label elsewhere so
-                    // the output stays parseable.
-                    None if i == 0 => {
-                        writeln!(output, "{}{expr}", self.indent).unwrap();
-                    }
-                    None => {
-                        let label = crate::ast::DEFAULT_VARIANT_LABEL;
-                        writeln!(output, "{}@{label} {expr}", self.indent).unwrap();
+                }
+                Style::Rossi => {
+                    writeln!(output, "{keyword}").unwrap();
+                    for (i, variant) in machine.variants.iter().enumerate() {
+                        let expr = self.print_formula_expression(&variant.expression);
+                        match &variant.label {
+                            Some(label) => {
+                                writeln!(output, "{}@{label} {expr}", self.indent).unwrap();
+                            }
+                            // The grammar only allows a bare expression in first
+                            // position; spell out the default label elsewhere so
+                            // the output stays parseable.
+                            None if i == 0 => {
+                                writeln!(output, "{}{expr}", self.indent).unwrap();
+                            }
+                            None => {
+                                let label = crate::ast::DEFAULT_VARIANT_LABEL;
+                                writeln!(output, "{}@{label} {expr}", self.indent).unwrap();
+                            }
+                        }
                     }
                 }
             }
         }
 
         if machine.initialisation.is_some() || !machine.events.is_empty() {
-            writeln!(output, "EVENTS").unwrap();
+            self.clause_gap(&mut output);
+            writeln!(output, "{}", self.kw("EVENTS", "events")).unwrap();
 
+            // Camille: no blank line before the first item, one blank line
+            // between successive items. Rossi: a blank line before every
+            // non-INITIALISATION event.
+            let blank_before_first_event = match self.style {
+                Style::Camille => machine.initialisation.is_some(),
+                Style::Rossi => true,
+            };
             if let Some(init) = &machine.initialisation {
                 self.print_initialisation(&mut output, init);
             }
-
-            for event in &machine.events {
-                writeln!(output).unwrap();
+            for (i, event) in machine.events.iter().enumerate() {
+                if i > 0 || blank_before_first_event {
+                    writeln!(output).unwrap();
+                }
                 self.print_event(&mut output, event);
             }
         }
 
-        writeln!(output, "END").unwrap();
+        writeln!(output, "{}", self.kw("END", "end")).unwrap();
         output
     }
 
@@ -431,23 +660,24 @@ impl PrettyPrinter {
 
     /// Print an initialisation event
     fn print_initialisation(&self, output: &mut String, init: &InitialisationEvent) {
-        let double_indent = format!("{}{}", self.indent, self.indent);
+        let (event_indent, kw_indent, item_indent) = self.event_ladder();
+        let event_kw = self.kw("EVENT", "event");
         let header = if init.extended {
-            format!("{}EVENT INITIALISATION extends INITIALISATION", self.indent)
+            format!("{event_indent}{event_kw} INITIALISATION extends INITIALISATION")
         } else {
-            format!("{}EVENT INITIALISATION", self.indent)
+            format!("{event_indent}{event_kw} INITIALISATION")
         };
-        self.writeln_commented(output, &header, init.comment.as_deref(), &self.indent);
+        self.writeln_commented(output, &header, init.comment.as_deref(), &event_indent);
         if !init.actions.is_empty() {
-            writeln!(output, "{}THEN", self.indent).unwrap();
-            self.print_action_list(output, &init.actions, &double_indent);
+            writeln!(output, "{kw_indent}{}", self.kw("THEN", "then")).unwrap();
+            self.print_action_list(output, &init.actions, &item_indent);
         }
-        writeln!(output, "{}END", self.indent).unwrap();
+        writeln!(output, "{event_indent}{}", self.kw("END", "end")).unwrap();
     }
 
     /// Print an event
     fn print_event(&self, output: &mut String, event: &Event) {
-        let double_indent = format!("{}{}", self.indent, self.indent);
+        let (event_indent, kw_indent, item_indent) = self.event_ladder();
 
         debug_assert_component_name(&event.name, "event name");
         for target in &event.refines {
@@ -464,76 +694,92 @@ impl PrettyPrinter {
 
         // When `extended` is true and there is a refines target, use
         // `EVENT name extends parent` syntax (Rodin extension mechanism).
-        let header = match event.refines.first() {
+        let event_kw = self.kw("EVENT", "event");
+        let mut header = match event.refines.first() {
             Some(parent) if event.extended => format!(
-                "{}{}EVENT {} extends {}",
-                self.indent, status_prefix, event.name, parent.name
+                "{event_indent}{status_prefix}{event_kw} {} extends {}",
+                event.name, parent.name
             ),
-            _ => format!("{}{}EVENT {}", self.indent, status_prefix, event.name),
+            _ => format!("{event_indent}{status_prefix}{event_kw} {}", event.name),
         };
-        self.writeln_commented(output, &header, event.comment.as_deref(), &self.indent);
-
-        // Print REFINES clause when not extended, one target per line
-        if !event.extended && !event.refines.is_empty() {
-            writeln!(output, "{}REFINES", self.indent).unwrap();
+        if self.style == Style::Camille && !event.extended && !event.refines.is_empty() {
+            write!(header, " {}", self.kw("REFINES", "refines")).unwrap();
             for target in &event.refines {
-                writeln!(output, "{}{}", double_indent, target.name).unwrap();
+                write!(header, " {}", target.name).unwrap();
+            }
+        }
+        self.writeln_commented(output, &header, event.comment.as_deref(), &event_indent);
+
+        // Print REFINES as a block clause when not extended, one target per
+        // line (Camille inlines the targets on the header line instead).
+        if self.style == Style::Rossi && !event.extended && !event.refines.is_empty() {
+            writeln!(output, "{kw_indent}{}", self.kw("REFINES", "refines")).unwrap();
+            for target in &event.refines {
+                writeln!(output, "{item_indent}{}", target.name).unwrap();
             }
         }
 
         if !event.parameters.is_empty() {
-            writeln!(output, "{}ANY", self.indent).unwrap();
-            if event
-                .parameters
-                .iter()
-                .any(|p| renders_comment(p.comment.as_deref()))
-            {
-                // A commented parameter needs its own line for the trailing
-                // comment to re-attach to it on reparse.
-                for param in &event.parameters {
-                    self.writeln_commented(
-                        output,
-                        &format!("{}{}", double_indent, param.name),
-                        param.comment.as_deref(),
-                        &double_indent,
-                    );
+            let any_kw = self.kw("ANY", "any");
+            match self.decl_lists {
+                DeclListLayout::Inline => {
+                    self.print_inline_name_list(output, any_kw, &kw_indent, &event.parameters);
                 }
-            } else {
-                let param_names: Vec<&str> =
-                    event.parameters.iter().map(|p| p.name.as_str()).collect();
-                // Parameters are whitespace-separated, not comma-separated, so
-                // the line reparses under the structural-list grammar.
-                writeln!(output, "{}{}", double_indent, param_names.join(" ")).unwrap();
+                DeclListLayout::OnePerLine => {
+                    writeln!(output, "{kw_indent}{any_kw}").unwrap();
+                    if event
+                        .parameters
+                        .iter()
+                        .any(|p| renders_comment(p.comment.as_deref()))
+                    {
+                        // A commented parameter needs its own line for the trailing
+                        // comment to re-attach to it on reparse.
+                        for param in &event.parameters {
+                            self.writeln_commented(
+                                output,
+                                &format!("{item_indent}{}", param.name),
+                                param.comment.as_deref(),
+                                &item_indent,
+                            );
+                        }
+                    } else {
+                        let param_names: Vec<&str> =
+                            event.parameters.iter().map(|p| p.name.as_str()).collect();
+                        // Parameters are whitespace-separated, not comma-separated, so
+                        // the line reparses under the structural-list grammar.
+                        writeln!(output, "{item_indent}{}", param_names.join(" ")).unwrap();
+                    }
+                }
             }
         }
 
         if !event.guards.is_empty() {
-            writeln!(output, "{}WHERE", self.indent).unwrap();
+            writeln!(output, "{kw_indent}{}", self.kw("WHERE", "where")).unwrap();
             for guard in &event.guards {
-                self.print_labeled_predicate(output, guard, &double_indent);
+                self.print_labeled_predicate(output, guard, &item_indent);
             }
         }
 
         if !event.with.is_empty() {
-            writeln!(output, "{}WITH", self.indent).unwrap();
+            writeln!(output, "{kw_indent}{}", self.kw("WITH", "with")).unwrap();
             for lp in &event.with {
-                self.print_labeled_predicate(output, lp, &double_indent);
+                self.print_labeled_predicate(output, lp, &item_indent);
             }
         }
 
         if !event.witnesses.is_empty() {
-            writeln!(output, "{}WITNESS", self.indent).unwrap();
+            writeln!(output, "{kw_indent}{}", self.kw("WITNESS", "witness")).unwrap();
             for lp in &event.witnesses {
-                self.print_labeled_predicate(output, lp, &double_indent);
+                self.print_labeled_predicate(output, lp, &item_indent);
             }
         }
 
         if !event.actions.is_empty() {
-            writeln!(output, "{}THEN", self.indent).unwrap();
-            self.print_action_list(output, &event.actions, &double_indent);
+            writeln!(output, "{kw_indent}{}", self.kw("THEN", "then")).unwrap();
+            self.print_action_list(output, &event.actions, &item_indent);
         }
 
-        writeln!(output, "{}END", self.indent).unwrap();
+        writeln!(output, "{event_indent}{}", self.kw("END", "end")).unwrap();
     }
 
     #[inline]
