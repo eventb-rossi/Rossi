@@ -389,6 +389,9 @@ IDE features for Event-B development:
 - **Formatting & semantic highlighting** — Unicode/ASCII operators, AST-based tokens
 - **Code actions** — Unicode/ASCII conversion, extract constant, sort clauses
 - **Code folding, smart selection, signature help, and document links**
+- **Inlay hints** — inferred declaration types after variables, event
+  parameters, and constants, plus `WD` markers on formulas carrying a
+  non-trivial well-definedness condition (switchable via `rossi.inlayHints.*`)
 - **Cross-file resolution** — transitive SEES / REFINES / EXTENDS traversal
 
 ## Development
