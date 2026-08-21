@@ -131,7 +131,7 @@ the `rossi-build` static checker, and the language server:
 | `validate` | Validate `.eventb` files, Rodin `.zip` archives, or unzipped Rodin project directories. |
 | `import`   | Import Rodin `.zip`/`.buc`/`.bum`/dir into `.eventb` text. |
 | `export`   | Export `.eventb`/`.txt`/dir into a Rodin `.zip` archive. |
-| `fmt`      | Reformat Event-B in place (operator convention, indentation). |
+| `fmt`      | Reformat Event-B in place (style, operator convention, indentation). |
 | `build`    | Static-check a Rodin project and emit `.bcc` / `.bcm` checked XML. |
 | `lsp`      | Run the Rossi language server over stdio (equivalent to the `eventb-language-server` binary). |
 | `completions` | Print a shell completion script to stdout (run `rossi completions --help` for the supported shells). |
@@ -303,8 +303,12 @@ previous output.
 ### Format (`fmt`)
 
 `fmt` reformats Event-B *without* crossing the Rodin↔text boundary: it
-normalizes the operator convention (`--ascii`/`--unicode`, default Unicode) and
-indentation (`--indent`).
+normalizes the layout (`--style camille|rossi`, default `camille` — the style
+Rodin's Camille editor prints: lowercase keywords, inline declaration lists,
+2-space indent), the operator convention (`--ascii`/`--unicode`, default
+Unicode), and indentation (`--indent`, default the preset's). The preset's
+keyword case, declaration-list layout, and blank-line policy can be overridden
+individually (`--keyword-case`, `--decl-lists`, `--blank-between-clauses`).
 
 ```bash
 # Convert ASCII-operator text to Unicode (default), printing to stdout
@@ -313,6 +317,9 @@ rossi fmt model.eventb
 # Reformat files in place; pick the operator convention explicitly
 rossi fmt -i ./project --ascii
 rossi fmt -i model.eventb --indent="  "
+
+# The original uppercase 4-space layout
+rossi fmt -i model.eventb --style rossi
 
 # CI gate: exit non-zero if anything is not already formatted
 rossi fmt --check ./project
