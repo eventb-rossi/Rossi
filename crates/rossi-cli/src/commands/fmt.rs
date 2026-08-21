@@ -232,8 +232,9 @@ fn fmt_stdin(cli: &FmtArgs, printer: &PrettyPrinter, mode: &Mode) -> CmdResult<E
         Mode::Stdout | Mode::Output(_) => {}
     }
     let src = eventb_io::read_stdin_to_string()?;
-    let body = format_str(&src, printer).map_err(|e| format!("Failed to parse <stdin>: {e}"))?;
-    let formatted = format!("{body}\n");
+    // `format_str` output already ends with exactly one newline.
+    let formatted =
+        format_str(&src, printer).map_err(|e| format!("Failed to parse <stdin>: {e}"))?;
     match mode {
         Mode::Output(out) => {
             Formatted::Text(formatted).write_to(out)?;
@@ -252,10 +253,10 @@ fn render(path: &Path, kind: InputKind, printer: &PrettyPrinter) -> CmdResult<(F
     match kind {
         InputKind::Text => {
             let src = fs::read_to_string(path)?;
-            let body = format_str(&src, printer)
+            // `format_str` output already ends with exactly one newline —
+            // the same text the LSP formatter produces.
+            let formatted = format_str(&src, printer)
                 .map_err(|e| format!("Failed to parse {}: {}", path.display(), e))?;
-            // Keep the trailing newline convention used elsewhere for .eventb files.
-            let formatted = format!("{body}\n");
             let changed = formatted != src;
             Ok((Formatted::Text(formatted), changed))
         }

@@ -635,3 +635,41 @@ fn import_style_camille_writes_camille_text() {
 
     std::fs::remove_dir_all(&tmp).ok();
 }
+
+#[test]
+fn import_merge_output_passes_fmt_check() {
+    // Merged import writes fmt's canonical text form: one blank line
+    // between components and exactly one trailing newline, so the file is
+    // a `fmt --check` fixpoint.
+    let tmp = tempdir_unique("rossi-cli-import-merge-check");
+    let merged = tmp.join("merged.eventb");
+
+    let output = rossi_command()
+        .args([
+            "import",
+            "--merge",
+            "../rossi/examples/counter_ctx.buc",
+            "../rossi/examples/counter.bum",
+            "-o",
+            merged.to_str().unwrap(),
+        ])
+        .output()
+        .expect("Failed to execute command");
+    assert!(
+        output.status.success(),
+        "import --merge stderr={}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+
+    let check = rossi_command()
+        .args(["fmt", "--check", merged.to_str().unwrap()])
+        .output()
+        .expect("Failed to execute command");
+    assert!(
+        check.status.success(),
+        "merged import must pass fmt --check; stdout={}",
+        String::from_utf8_lossy(&check.stdout)
+    );
+
+    std::fs::remove_dir_all(&tmp).ok();
+}
