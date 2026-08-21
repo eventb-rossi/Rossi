@@ -7,7 +7,7 @@ use rossi::{DeclListLayout, KeywordCase, PrettyPrinter, Style, StyleOverrides};
 #[derive(Args)]
 pub struct StyleArgs {
     /// Formatting style preset for Event-B text output
-    #[arg(long, value_enum, default_value_t = StylePreset::Rossi, value_name = "STYLE")]
+    #[arg(long, value_enum, default_value_t = StylePreset::Camille, value_name = "STYLE")]
     style: StylePreset,
 
     /// Override the preset's keyword case

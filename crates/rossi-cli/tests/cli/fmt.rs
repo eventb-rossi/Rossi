@@ -477,15 +477,19 @@ fn fmt_style_camille_prints_camille_layout() {
 }
 
 #[test]
-fn fmt_style_rossi_matches_the_default() {
-    let styled = run_cli_with_stdin(&["fmt", "--style", "rossi", "-"], STYLE_MACHINE);
+fn fmt_style_camille_matches_the_default() {
+    let styled = run_cli_with_stdin(&["fmt", "--style", "camille", "-"], STYLE_MACHINE);
     let default = run_cli_with_stdin(&["fmt", "-"], STYLE_MACHINE);
     assert!(styled.status.success() && default.status.success());
     assert_eq!(
         styled.stdout, default.stdout,
-        "--style rossi must match the current default output"
+        "--style camille must match the default output"
     );
-    let stdout = String::from_utf8_lossy(&styled.stdout);
+
+    // The legacy layout stays reachable as --style rossi.
+    let rossi = run_cli_with_stdin(&["fmt", "--style", "rossi", "-"], STYLE_MACHINE);
+    assert!(rossi.status.success());
+    let stdout = String::from_utf8_lossy(&rossi.stdout);
     assert!(
         stdout.starts_with("MACHINE m\nREFINES\n    m0\nVARIABLES\n"),
         "got:\n{stdout}"
@@ -551,28 +555,22 @@ fn fmt_check_respects_the_selected_style() {
         String::from_utf8_lossy(&formatted.stderr)
     );
 
-    let camille_check = rossi_command()
-        .args([
-            "fmt",
-            "--style",
-            "camille",
-            "--check",
-            file.to_str().unwrap(),
-        ])
-        .output()
-        .expect("Failed to execute command");
-    assert!(
-        camille_check.status.success(),
-        "a camille-formatted file passes --check --style camille"
-    );
-
     let default_check = rossi_command()
         .args(["fmt", "--check", file.to_str().unwrap()])
         .output()
         .expect("Failed to execute command");
     assert!(
-        !default_check.status.success(),
-        "a camille-formatted file fails --check under the rossi default"
+        default_check.status.success(),
+        "a camille-formatted file passes --check under the camille default"
+    );
+
+    let rossi_check = rossi_command()
+        .args(["fmt", "--style", "rossi", "--check", file.to_str().unwrap()])
+        .output()
+        .expect("Failed to execute command");
+    assert!(
+        !rossi_check.status.success(),
+        "a camille-formatted file fails --check under --style rossi"
     );
 
     std::fs::remove_dir_all(&tmp).ok();
@@ -584,7 +582,7 @@ fn fmt_output_ends_with_exactly_one_newline() {
     assert!(output.status.success());
     let stdout = String::from_utf8_lossy(&output.stdout);
     assert!(
-        stdout.ends_with("END\n") && !stdout.ends_with("\n\n"),
+        stdout.ends_with("end\n") && !stdout.ends_with("\n\n"),
         "stdout must end with exactly one newline, got {stdout:?}"
     );
 
@@ -599,7 +597,7 @@ fn fmt_output_ends_with_exactly_one_newline() {
     assert!(formatted.status.success());
     let text = std::fs::read_to_string(&file).unwrap();
     assert!(
-        text.ends_with("END\n") && !text.ends_with("\n\n"),
+        text.ends_with("end\n") && !text.ends_with("\n\n"),
         "file must end with exactly one newline, got {text:?}"
     );
     let check = rossi_command()

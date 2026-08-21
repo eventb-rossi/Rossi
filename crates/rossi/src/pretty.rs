@@ -2,12 +2,14 @@
 //!
 //! This module provides functionality to convert parsed AST structures
 //! back into formatted Event-B text. It supports both Unicode and ASCII
-//! operators, customizable indentation, and produces output that can be
-//! parsed back into the same AST (roundtrip support).
+//! operators, customizable indentation, a choice of structural layout
+//! ([`Style`]), and produces output that can be parsed back into the same
+//! AST (roundtrip support).
 //!
 //! # Examples
 //!
-//! Basic usage with default settings (Unicode operators, 4-space indentation):
+//! Basic usage with default settings (the Camille style: Unicode
+//! operators, lowercase keywords, 2-space indentation):
 //!
 //! ```
 //! use rossi::{parse, to_string};
@@ -15,7 +17,7 @@
 //! let source = "CONTEXT test\nSETS\n    STATUS\nEND\n";
 //! let component = parse(source).unwrap();
 //! let output = to_string(&component);
-//! println!("{}", output);
+//! assert_eq!(output, "context test\n\nsets STATUS\nend\n");
 //! ```
 //!
 //! Using ASCII operators:
@@ -31,13 +33,13 @@
 //! Custom configuration:
 //!
 //! ```
-//! use rossi::{parse, PrettyPrinter};
+//! use rossi::{parse, PrettyPrinter, Style};
 //!
 //! let source = "CONTEXT test\nEND\n";
 //! let component = parse(source).unwrap();
 //!
-//! let printer = PrettyPrinter::new()
-//!     .with_indent("  ".to_string()); // 2-space indentation
+//! // The original uppercase layout with 2-space indentation.
+//! let printer = PrettyPrinter::styled(Style::Rossi).with_indent("  ".to_string());
 //! let output = printer.print_component(&component);
 //! ```
 
@@ -82,11 +84,11 @@ pub enum Style {
     /// The layout Rodin's Camille text editor prints: lowercase keywords,
     /// header clauses and declaration lists inline, a blank line between
     /// clauses and events, 2-space indent.
+    #[default]
     Camille,
     /// rossi's original layout: uppercase keywords, every clause payload
     /// broken onto indented lines, no blank lines between clauses,
     /// 4-space indent.
-    #[default]
     Rossi,
 }
 
@@ -147,7 +149,8 @@ enum FormulaContext {
 pub struct PrettyPrinter {
     /// Use Unicode operators (true) or ASCII (false)
     pub use_unicode: bool,
-    /// Indentation string (default: 4 spaces)
+    /// Indentation string (default: the style preset's — 2 spaces camille,
+    /// 4 spaces rossi)
     pub indent: String,
     /// Emit the raw Rodin private-use-area glyphs (U+E100..E103) for the
     /// relation/override operators instead of their ASCII spelling. Off by
