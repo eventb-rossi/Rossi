@@ -38,7 +38,8 @@ impl StyleArgs {
                 decl_lists: self.decl_lists.map(Into::into),
                 blank_between_clauses: self.blank_between_clauses,
                 indent: indent.map(str::to_string),
-                use_unicode: Some(use_unicode),
+                use_unicode,
+                max_line_width: 0,
             },
         )
     }

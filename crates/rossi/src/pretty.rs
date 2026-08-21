@@ -99,6 +99,17 @@ pub enum KeywordCase {
     Upper,
 }
 
+/// Layout of header clauses (`extends`/`refines`/`sees`), resolved from
+/// the [`Style`] preset so a new preset is forced to choose one.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum HeaderClauseLayout {
+    /// Inline on the component/event header line (Camille), moved onto
+    /// continuation lines at the configured width.
+    Inline,
+    /// A block clause: keyword on its own line, one target per line.
+    Block,
+}
+
 /// Layout of identifier declaration lists
 /// (`variables`/`sets`/`constants`/`any`).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -110,9 +121,18 @@ pub enum DeclListLayout {
     OnePerLine,
 }
 
+/// Default maximum line width, in characters, for the user-facing
+/// formatter paths (CLI `fmt`/`import`, LSP formatting). The presets
+/// themselves never wrap; the user-facing paths opt in with this width
+/// unless overridden.
+pub const DEFAULT_MAX_LINE_WIDTH: usize = 120;
+
 /// Explicit overrides applied on top of a [`Style`] preset by
-/// [`PrettyPrinter::resolved`]. `None` fields follow the preset.
-#[derive(Debug, Clone, Default)]
+/// [`PrettyPrinter::resolved`]. `None` fields follow the preset;
+/// `use_unicode` and `max_line_width` are plain values because every
+/// preset agrees on them (Unicode on, wrapping off), so "follow the
+/// preset" and the default coincide.
+#[derive(Debug, Clone)]
 pub struct StyleOverrides {
     pub keyword_case: Option<KeywordCase>,
     pub decl_lists: Option<DeclListLayout>,
@@ -120,7 +140,22 @@ pub struct StyleOverrides {
     /// `None` keeps the preset's indent; `Some("")` is an explicit empty
     /// indent.
     pub indent: Option<String>,
-    pub use_unicode: Option<bool>,
+    pub use_unicode: bool,
+    /// `0` disables wrapping.
+    pub max_line_width: usize,
+}
+
+impl Default for StyleOverrides {
+    fn default() -> Self {
+        Self {
+            keyword_case: None,
+            decl_lists: None,
+            blank_between_clauses: None,
+            indent: None,
+            use_unicode: true,
+            max_line_width: 0,
+        }
+    }
 }
 
 /// Whitespace convention for formulas emitted by [`PrettyPrinter`].
@@ -169,10 +204,23 @@ pub struct PrettyPrinter {
     pub style: Style,
     /// Casing of structural keywords.
     pub keyword_case: KeywordCase,
+    /// Layout of header clauses (`extends`/`refines`/`sees`).
+    pub header_clauses: HeaderClauseLayout,
     /// Layout of identifier declaration lists.
     pub decl_lists: DeclListLayout,
     /// Emit one blank line before each top-level clause keyword.
     pub blank_between_clauses: bool,
+    /// Maximum output line width in characters (a tab counts as one);
+    /// `0` disables wrapping. Off in every preset — only the user-facing
+    /// formatter paths (CLI `fmt`/`import`, LSP formatting) opt in via
+    /// [`StyleOverrides`] — so Rodin-canonical strings and XML attribute
+    /// values can never gain newlines. Long formulas wrap onto
+    /// operator-leading continuation lines hanging-aligned under the
+    /// formula's start column; comment text is never wrapped, so a
+    /// trailing `//` comment may exceed the width. A wrapped element in
+    /// an entirely unlabelled clause slightly degrades the recovery
+    /// parser's per-line blame when the file already has errors.
+    pub max_line_width: usize,
 }
 
 impl Default for PrettyPrinter {
@@ -190,11 +238,19 @@ impl PrettyPrinter {
     /// A printer for the given style preset, every axis (including the
     /// indent) at the preset's default.
     pub fn styled(style: Style) -> Self {
-        let (indent, keyword_case, decl_lists, blank_between_clauses) = match style {
-            Style::Camille => ("  ", KeywordCase::Lower, DeclListLayout::Inline, true),
+        let (indent, keyword_case, header_clauses, decl_lists, blank_between_clauses) = match style
+        {
+            Style::Camille => (
+                "  ",
+                KeywordCase::Lower,
+                HeaderClauseLayout::Inline,
+                DeclListLayout::Inline,
+                true,
+            ),
             Style::Rossi => (
                 "    ",
                 KeywordCase::Upper,
+                HeaderClauseLayout::Block,
                 DeclListLayout::OnePerLine,
                 false,
             ),
@@ -207,8 +263,10 @@ impl PrettyPrinter {
             typed_decls: false,
             style,
             keyword_case,
+            header_clauses,
             decl_lists,
             blank_between_clauses,
+            max_line_width: 0,
         }
     }
 
@@ -229,10 +287,15 @@ impl PrettyPrinter {
         if let Some(indent) = &overrides.indent {
             printer.indent = indent.clone();
         }
-        if let Some(use_unicode) = overrides.use_unicode {
-            printer.use_unicode = use_unicode;
-        }
+        printer.use_unicode = overrides.use_unicode;
+        printer.max_line_width = overrides.max_line_width;
         printer
+    }
+
+    /// Set the maximum line width (`0` disables wrapping).
+    pub fn with_max_line_width(mut self, width: usize) -> Self {
+        self.max_line_width = width;
+        self
     }
 
     /// Create a pretty printer that uses ASCII operators
@@ -362,6 +425,46 @@ impl PrettyPrinter {
         }
     }
 
+    /// Append an inline header clause segment (`refines m0`, `sees c1 c2`),
+    /// moving the whole segment onto a continuation line at `cont_indent`
+    /// when the current physical line would exceed the configured width,
+    /// and filling the segment's own words across continuation lines when
+    /// even a line of its own is not wide enough (a long `sees` list).
+    /// Breaking before a clause keyword or between names is safe —
+    /// newlines are ordinary whitespace in the grammar.
+    fn push_header_segment(&self, header: &mut String, segment: &str, cont_indent: &str) {
+        let line_width = end_col(0, header);
+        let segment_width = segment.chars().count();
+        if self.max_line_width == 0 || line_width + 1 + segment_width <= self.max_line_width {
+            header.push(' ');
+            header.push_str(segment);
+            return;
+        }
+        header.push('\n');
+        header.push_str(cont_indent);
+        let cont_width = cont_indent.chars().count();
+        if cont_width + segment_width <= self.max_line_width {
+            header.push_str(segment);
+            return;
+        }
+        let mut cur = cont_width;
+        for (i, word) in segment.split(' ').enumerate() {
+            let w = word.chars().count();
+            if i > 0 {
+                if cur + 1 + w <= self.max_line_width {
+                    header.push(' ');
+                    cur += 1;
+                } else {
+                    header.push('\n');
+                    header.push_str(cont_indent);
+                    cur = cont_width;
+                }
+            }
+            header.push_str(word);
+            cur += w;
+        }
+    }
+
     /// Indentation ladder inside EVENTS per style: (event header, event
     /// body keyword, body item). Camille indents the body keywords one
     /// level below the event header; the original layout keeps them level.
@@ -398,6 +501,17 @@ impl PrettyPrinter {
         let mut line = head;
         let mut pending = false;
         for item in items {
+            // Wrap to the hanging column when the next name would exceed
+            // the width — but never break between the keyword (or a fresh
+            // hanging line) and its first name.
+            if pending
+                && self.max_line_width > 0
+                && line.chars().count() + 1 + item.name.chars().count() > self.max_line_width
+            {
+                writeln!(output, "{line}").unwrap();
+                line.clear();
+                line.push_str(&hang);
+            }
             write!(line, " {}", item.name).unwrap();
             pending = true;
             if renders_comment(item.comment.as_deref()) {
@@ -418,16 +532,17 @@ impl PrettyPrinter {
 
         debug_assert_component_name(&context.name, "context name");
         let mut header = format!("{} {}", self.kw("CONTEXT", "context"), context.name);
-        if self.style == Style::Camille && !context.extends.is_empty() {
-            write!(header, " {}", self.kw("EXTENDS", "extends")).unwrap();
+        if self.header_clauses == HeaderClauseLayout::Inline && !context.extends.is_empty() {
+            let mut segment = self.kw("EXTENDS", "extends").to_string();
             for ext in &context.extends {
                 debug_assert_component_name(ext, "extends target");
-                write!(header, " {ext}").unwrap();
+                write!(segment, " {ext}").unwrap();
             }
+            self.push_header_segment(&mut header, &segment, &self.indent);
         }
         self.writeln_commented(&mut output, &header, context.comment.as_deref(), "");
 
-        if self.style == Style::Rossi && !context.extends.is_empty() {
+        if self.header_clauses == HeaderClauseLayout::Block && !context.extends.is_empty() {
             self.clause_gap(&mut output);
             writeln!(output, "{}", self.kw("EXTENDS", "extends")).unwrap();
             for ext in &context.extends {
@@ -487,22 +602,24 @@ impl PrettyPrinter {
 
         debug_assert_component_name(&machine.name, "machine name");
         let mut header = format!("{} {}", self.kw("MACHINE", "machine"), machine.name);
-        if self.style == Style::Camille {
+        if self.header_clauses == HeaderClauseLayout::Inline {
             if let Some(ref refines) = machine.refines {
                 debug_assert_component_name(refines, "refines target");
-                write!(header, " {} {refines}", self.kw("REFINES", "refines")).unwrap();
+                let segment = format!("{} {refines}", self.kw("REFINES", "refines"));
+                self.push_header_segment(&mut header, &segment, &self.indent);
             }
             if !machine.sees.is_empty() {
-                write!(header, " {}", self.kw("SEES", "sees")).unwrap();
+                let mut segment = self.kw("SEES", "sees").to_string();
                 for sees in &machine.sees {
                     debug_assert_component_name(sees, "sees target");
-                    write!(header, " {sees}").unwrap();
+                    write!(segment, " {sees}").unwrap();
                 }
+                self.push_header_segment(&mut header, &segment, &self.indent);
             }
         }
         self.writeln_commented(&mut output, &header, machine.comment.as_deref(), "");
 
-        if self.style == Style::Rossi {
+        if self.header_clauses == HeaderClauseLayout::Block {
             if let Some(ref refines) = machine.refines {
                 debug_assert_component_name(refines, "refines target");
                 self.clause_gap(&mut output);
@@ -542,44 +659,43 @@ impl PrettyPrinter {
             let keyword = self.kw("VARIANT", "variant");
             match self.style {
                 Style::Camille => {
-                    // The first variant sits inline on the keyword line.
+                    // The first variant sits inline on the keyword line;
+                    // later variants need their `@label` sigil to delimit
+                    // the expressions.
                     for (i, variant) in machine.variants.iter().enumerate() {
-                        let expr = self.print_formula_expression(&variant.expression);
-                        match &variant.label {
-                            Some(label) if i == 0 => {
-                                writeln!(output, "{keyword} @{label} {expr}").unwrap();
-                            }
-                            None if i == 0 => {
-                                writeln!(output, "{keyword} {expr}").unwrap();
-                            }
-                            // Later variants need their `@label` sigil to
-                            // delimit the expressions.
-                            _ => {
-                                let label = variant.effective_label();
-                                writeln!(output, "{}@{label} {expr}", self.indent).unwrap();
-                            }
-                        }
+                        let head = match &variant.label {
+                            Some(label) if i == 0 => format!("{keyword} @{label} "),
+                            None if i == 0 => format!("{keyword} "),
+                            _ => format!("{}@{} ", self.indent, variant.effective_label()),
+                        };
+                        let base = if i == 0 { "" } else { self.indent.as_str() };
+                        let expr = self.print_expression_at(
+                            &variant.expression,
+                            head.chars().count(),
+                            base.chars().count(),
+                        );
+                        writeln!(output, "{head}{expr}").unwrap();
                     }
                 }
                 Style::Rossi => {
                     writeln!(output, "{keyword}").unwrap();
                     for (i, variant) in machine.variants.iter().enumerate() {
-                        let expr = self.print_formula_expression(&variant.expression);
-                        match &variant.label {
-                            Some(label) => {
-                                writeln!(output, "{}@{label} {expr}", self.indent).unwrap();
-                            }
-                            // The grammar only allows a bare expression in first
-                            // position; spell out the default label elsewhere so
-                            // the output stays parseable.
-                            None if i == 0 => {
-                                writeln!(output, "{}{expr}", self.indent).unwrap();
-                            }
+                        // The grammar only allows a bare expression in first
+                        // position; spell out the default label elsewhere so
+                        // the output stays parseable.
+                        let head = match &variant.label {
+                            Some(label) => format!("{}@{label} ", self.indent),
+                            None if i == 0 => self.indent.clone(),
                             None => {
-                                let label = crate::ast::DEFAULT_VARIANT_LABEL;
-                                writeln!(output, "{}@{label} {expr}", self.indent).unwrap();
+                                format!("{}@{} ", self.indent, crate::ast::DEFAULT_VARIANT_LABEL)
                             }
-                        }
+                        };
+                        let expr = self.print_expression_at(
+                            &variant.expression,
+                            head.chars().count(),
+                            self.indent.chars().count(),
+                        );
+                        writeln!(output, "{head}{expr}").unwrap();
                     }
                 }
             }
@@ -620,37 +736,25 @@ impl PrettyPrinter {
     /// Parsing a `THEOREMS` section is therefore normalized to inline on output.
     fn print_labeled_predicate(&self, output: &mut String, lp: &LabeledPredicate, indent: &str) {
         let theorem_str = if lp.is_theorem { "theorem " } else { "" };
-        let line = if let Some(label) = &lp.label {
-            format!(
-                "{}{}@{} {}",
-                indent,
-                theorem_str,
-                label,
-                self.print_formula_predicate(&lp.predicate)
-            )
-        } else {
-            format!(
-                "{}{}{}",
-                indent,
-                theorem_str,
-                self.print_formula_predicate(&lp.predicate)
-            )
+        let head = match &lp.label {
+            Some(label) => format!("{indent}{theorem_str}@{label} "),
+            None => format!("{indent}{theorem_str}"),
         };
+        let rendered =
+            self.print_predicate_at(&lp.predicate, head.chars().count(), indent.chars().count());
+        let line = format!("{head}{rendered}");
         self.writeln_commented(output, &line, lp.comment.as_deref(), indent);
     }
 
     /// Print a labeled action
     fn print_labeled_action(&self, output: &mut String, la: &LabeledAction, indent: &str) {
-        let line = if let Some(label) = &la.label {
-            format!(
-                "{}@{} {}",
-                indent,
-                label,
-                self.print_action_body(&la.action)
-            )
-        } else {
-            format!("{}{}", indent, self.print_action_body(&la.action))
+        let head = match &la.label {
+            Some(label) => format!("{indent}@{label} "),
+            None => indent.to_string(),
         };
+        let rendered =
+            self.print_action_at(&la.action, head.chars().count(), indent.chars().count());
+        let line = format!("{head}{rendered}");
         self.writeln_commented(output, &line, la.comment.as_deref(), indent);
     }
 
@@ -705,17 +809,24 @@ impl PrettyPrinter {
             ),
             _ => format!("{event_indent}{status_prefix}{event_kw} {}", event.name),
         };
-        if self.style == Style::Camille && !event.extended && !event.refines.is_empty() {
-            write!(header, " {}", self.kw("REFINES", "refines")).unwrap();
+        if self.header_clauses == HeaderClauseLayout::Inline
+            && !event.extended
+            && !event.refines.is_empty()
+        {
+            let mut segment = self.kw("REFINES", "refines").to_string();
             for target in &event.refines {
-                write!(header, " {}", target.name).unwrap();
+                write!(segment, " {}", target.name).unwrap();
             }
+            self.push_header_segment(&mut header, &segment, &kw_indent);
         }
         self.writeln_commented(output, &header, event.comment.as_deref(), &event_indent);
 
         // Print REFINES as a block clause when not extended, one target per
         // line (Camille inlines the targets on the header line instead).
-        if self.style == Style::Rossi && !event.extended && !event.refines.is_empty() {
+        if self.header_clauses == HeaderClauseLayout::Block
+            && !event.extended
+            && !event.refines.is_empty()
+        {
             writeln!(output, "{kw_indent}{}", self.kw("REFINES", "refines")).unwrap();
             for target in &event.refines {
                 writeln!(output, "{item_indent}{}", target.name).unwrap();
@@ -1063,6 +1174,70 @@ fn fm_above_pair(kind: &FExprKind) -> bool {
     }
 }
 
+/// Threaded, immutable state for width-aware rendering. Columns are char
+/// counts (`.chars().count()`) — the unit the hanging-list layout already
+/// uses; a tab counts as one.
+struct WrapCtx {
+    /// Configured maximum line width (always > 0 here).
+    width: usize,
+    /// Char width of the element's own leading indentation — the anchor
+    /// for the pathological-hang cap.
+    base_col: usize,
+    /// Char width of one indent unit.
+    indent_w: usize,
+}
+
+impl WrapCtx {
+    /// A flat rendering fits when it ends at or before the width.
+    fn fits(&self, col: usize, flat: &str) -> bool {
+        col + flat.chars().count() <= self.width
+    }
+
+    /// Continuation column for a construct that started at `col`: hanging
+    /// alignment, capped so a deep start cannot push every continuation
+    /// past half the width.
+    fn hang(&self, col: usize) -> usize {
+        if col <= self.width / 2 {
+            col
+        } else {
+            self.base_col + 2 * self.indent_w
+        }
+    }
+
+    /// Column for a construct moved onto its own fresh line (quantifier
+    /// bodies, an assignment's own-line right-hand side).
+    fn nest(&self, col: usize) -> usize {
+        self.hang(col) + self.indent_w
+    }
+
+    /// A context whose width is reduced by `n` columns, reserving room for
+    /// the closing delimiter(s) the caller appends after the wrapped
+    /// content's last line — without this, content packed exactly to the
+    /// width would push its `)`/`]`/`}` past it.
+    fn narrowed(&self, n: usize) -> WrapCtx {
+        WrapCtx {
+            width: self.width.saturating_sub(n),
+            base_col: self.base_col,
+            indent_w: self.indent_w,
+        }
+    }
+}
+
+/// A line break followed by `col` spaces of continuation indentation.
+fn cont_line(col: usize) -> String {
+    format!("\n{}", " ".repeat(col))
+}
+
+/// The column after `rendered` when it started at `col`. Continuation
+/// lines carry absolute indentation, so a multi-line rendering ends at
+/// its last line's own width.
+fn end_col(col: usize, rendered: &str) -> usize {
+    match rendered.rfind('\n') {
+        Some(i) => rendered[i + 1..].chars().count(),
+        None => col + rendered.chars().count(),
+    }
+}
+
 impl PrettyPrinter {
     /// Convert a formula-model expression to text.
     pub fn print_formula_expression(&self, expr: &formula::Expression) -> String {
@@ -1240,13 +1415,9 @@ impl PrettyPrinter {
                     .collect::<Vec<_>>()
                     .join(&joint)
             }
-            FExprKind::Unary { op, child } => match op {
-                UnaryExprOp::KCard => self.fm_builtin("card", child, context, names),
-                UnaryExprOp::KMin => self.fm_builtin("min", child, context, names),
-                UnaryExprOp::KMax => self.fm_builtin("max", child, context, names),
-                UnaryExprOp::KUnion => self.fm_builtin("union", child, context, names),
-                UnaryExprOp::KInter => self.fm_builtin("inter", child, context, names),
-                UnaryExprOp::Converse => {
+            FExprKind::Unary { op, child } => match self.unary_head(*op) {
+                Some(head) => format!("{head}({})", self.fm_expr(child, context, names)),
+                None => {
                     let child = self.visible_expr(child);
                     let needs_parens = match child.kind() {
                         FExprKind::FreeIdentifier(_)
@@ -1277,13 +1448,6 @@ impl PrettyPrinter {
                         format!("{operand}{op_str}")
                     }
                 }
-                UnaryExprOp::Pow => self.fm_prefix_unary(UnaryOp::PowerSet, child, context, names),
-                UnaryExprOp::Pow1 => {
-                    self.fm_prefix_unary(UnaryOp::PowerSet1, child, context, names)
-                }
-                UnaryExprOp::KDom => self.fm_prefix_unary(UnaryOp::Domain, child, context, names),
-                UnaryExprOp::KRan => self.fm_prefix_unary(UnaryOp::Range, child, context, names),
-                UnaryExprOp::UnMinus => self.fm_prefix_unary(UnaryOp::Minus, child, context, names),
             },
             FExprKind::Quantified {
                 op,
@@ -1380,14 +1544,23 @@ impl PrettyPrinter {
         }
     }
 
-    fn fm_builtin(
-        &self,
-        name: &str,
-        child: &formula::Expression,
-        context: FormulaContext,
-        names: &mut Vec<String>,
-    ) -> String {
-        format!("{}({})", name, self.fm_expr(child, context, names))
+    /// The prefix head spelling of a unary operator (`card`, `dom`, `ℙ`,
+    /// …); `None` for the postfix converse. Shared by the flat renderer
+    /// and the wrap layer so the spellings cannot drift.
+    fn unary_head(&self, op: UnaryExprOp) -> Option<&'static str> {
+        Some(match op {
+            UnaryExprOp::KCard => "card",
+            UnaryExprOp::KMin => "min",
+            UnaryExprOp::KMax => "max",
+            UnaryExprOp::KUnion => "union",
+            UnaryExprOp::KInter => "inter",
+            UnaryExprOp::Pow => self.op(operators::unary_op_id(UnaryOp::PowerSet)),
+            UnaryExprOp::Pow1 => self.op(operators::unary_op_id(UnaryOp::PowerSet1)),
+            UnaryExprOp::KDom => self.op(operators::unary_op_id(UnaryOp::Domain)),
+            UnaryExprOp::KRan => self.op(operators::unary_op_id(UnaryOp::Range)),
+            UnaryExprOp::UnMinus => self.op(operators::unary_op_id(UnaryOp::Minus)),
+            UnaryExprOp::Converse => return None,
+        })
     }
 
     /// The expression visible in formula-string mode, where source type
@@ -1399,20 +1572,6 @@ impl PrettyPrinter {
             }
         }
         expr
-    }
-
-    fn fm_prefix_unary(
-        &self,
-        op: UnaryOp,
-        child: &formula::Expression,
-        context: FormulaContext,
-        names: &mut Vec<String>,
-    ) -> String {
-        format!(
-            "{}({})",
-            self.op(operators::unary_op_id(op)),
-            self.fm_expr(child, context, names)
-        )
     }
 
     fn fm_binary(
@@ -1439,35 +1598,44 @@ impl PrettyPrinter {
         context: FormulaContext,
         names: &mut Vec<String>,
     ) -> String {
+        if self.fm_expr_child_needs_parens(child, parent_op, is_right) {
+            format!("({})", self.fm_expr(child, context, names))
+        } else {
+            self.fm_expr(child, context, names)
+        }
+    }
+
+    /// The parenthesization decision of [`Self::fm_child_expr`], standalone
+    /// so the wrap layer can learn whether an operand carries a `(` prefix
+    /// before rendering it.
+    fn fm_expr_child_needs_parens(
+        &self,
+        child: &formula::Expression,
+        parent_op: BinaryOp,
+        is_right: bool,
+    ) -> bool {
         let child = self.visible_expr(child);
         if fm_above_pair(child.kind()) {
-            return format!("({})", self.fm_expr(child, context, names));
+            return true;
         }
-        if let Some(child_op) = effective_binary(child.kind()) {
-            let child_prec = op_info::binary_precedence(child_op);
-            let parent_prec = op_info::binary_precedence(parent_op);
-            let needs_parens = if child_prec < parent_prec {
-                true
-            } else if child_prec > parent_prec {
-                false
-            } else {
-                if self.formula_spacing == FormulaSpacing::RodinFormulaString
-                    && !is_right
-                    && child_op == BinaryOp::DomainRestriction
-                    && parent_op == BinaryOp::RangeRestriction
-                {
-                    false
-                } else {
-                    !op_info::binary_ops_compatible(child_op, parent_op)
-                        || op_info::is_non_associative(parent_op)
-                        || is_right
-                }
-            };
-            if needs_parens {
-                return format!("({})", self.fm_expr(child, context, names));
-            }
+        let Some(child_op) = effective_binary(child.kind()) else {
+            return false;
+        };
+        let child_prec = op_info::binary_precedence(child_op);
+        let parent_prec = op_info::binary_precedence(parent_op);
+        if child_prec != parent_prec {
+            return child_prec < parent_prec;
         }
-        self.fm_expr(child, context, names)
+        if self.formula_spacing == FormulaSpacing::RodinFormulaString
+            && !is_right
+            && child_op == BinaryOp::DomainRestriction
+            && parent_op == BinaryOp::RangeRestriction
+        {
+            return false;
+        }
+        !op_info::binary_ops_compatible(child_op, parent_op)
+            || op_info::is_non_associative(parent_op)
+            || is_right
     }
 
     /// Mirror of the relational-image / application head rule: binary
@@ -1666,15 +1834,29 @@ impl PrettyPrinter {
         context: FormulaContext,
         names: &mut Vec<String>,
     ) -> String {
+        if self.fm_pred_child_needs_parens(child, parent_op, is_right) {
+            format!("({})", self.fm_pred(child, context, names))
+        } else {
+            self.fm_pred(child, context, names)
+        }
+    }
+
+    /// The parenthesization decision of [`Self::fm_pred_child`], standalone
+    /// so the wrap layer can learn whether an operand carries a `(` prefix
+    /// before rendering it.
+    fn fm_pred_child_needs_parens(
+        &self,
+        child: &formula::Predicate,
+        parent_op: LogicalOp,
+        is_right: bool,
+    ) -> bool {
         let child_op = match child.kind() {
-            FPredKind::Quantified { .. } => {
-                return format!("({})", self.fm_pred(child, context, names));
-            }
+            FPredKind::Quantified { .. } => return true,
             FPredKind::Associative { op, .. } => Some(legacy_logical(*op)),
             FPredKind::Binary { op, .. } => Some(legacy_binary_pred(*op)),
             _ => None,
         };
-        let needs_parens = match child_op {
+        match child_op {
             Some(child_op) => {
                 let child_prec = op_info::logical_precedence(child_op);
                 let parent_prec = op_info::logical_precedence(parent_op);
@@ -1685,19 +1867,10 @@ impl PrettyPrinter {
                 } else {
                     let child_class = op_info::logical_compat_class(child_op);
                     let parent_class = op_info::logical_compat_class(parent_op);
-                    if child_class == 0 || parent_class == 0 || child_class != parent_class {
-                        true
-                    } else {
-                        is_right
-                    }
+                    child_class == 0 || parent_class == 0 || child_class != parent_class || is_right
                 }
             }
             None => false,
-        };
-        if needs_parens {
-            format!("({})", self.fm_pred(child, context, names))
-        } else {
-            self.fm_pred(child, context, names)
         }
     }
 
@@ -1727,20 +1900,23 @@ impl PrettyPrinter {
     }
 
     /// Convert a formula-model assignment to text.
+    /// The comma-joined left-hand side of an assignment.
+    fn assignment_targets(&self, idents: &[formula::Expression]) -> String {
+        idents
+            .iter()
+            .map(|ident| match ident.kind() {
+                FExprKind::FreeIdentifier(name) => name.clone(),
+                _ => unreachable!("assignment targets are free identifiers"),
+            })
+            .collect::<Vec<_>>()
+            .join(self.comma_separator())
+    }
+
     pub fn print_formula_assignment(&self, assign: &formula::Assignment) -> String {
         use formula::AssignmentKind as K;
         let context = FormulaContext::Action;
         let mut names = Vec::new();
-        let targets = |idents: &[formula::Expression]| -> String {
-            idents
-                .iter()
-                .map(|ident| match ident.kind() {
-                    FExprKind::FreeIdentifier(name) => name.clone(),
-                    _ => unreachable!("assignment targets are free identifiers"),
-                })
-                .collect::<Vec<_>>()
-                .join(self.comma_separator())
-        };
+        let targets = |idents: &[formula::Expression]| self.assignment_targets(idents);
         match assign.kind() {
             K::BecomesEqualTo { idents, values } => {
                 let rendered: Vec<String> = values
@@ -1782,6 +1958,740 @@ impl PrettyPrinter {
                     condition
                 )
             }
+        }
+    }
+
+    // ===== width-aware wrapping ==========================================
+    //
+    // Flat-first, AST-driven: every wrap function first renders its node
+    // with the flat `fm_*` renderer and keeps that when it fits; on
+    // overflow it splits the node's own structure — associative/binary
+    // chains break before each operator (operator-leading continuations,
+    // the only universally reparse-safe break), argument lists break after
+    // commas inside their brackets, quantifiers break after `·` — and
+    // recurses into operands that still overflow. Operand parenthesization
+    // reuses the same `fm_*_needs_parens` decisions the flat renderers
+    // apply, so wrapping can never change a formula's structure, and
+    // recursion always descends into strictly smaller children, so it
+    // terminates at any width. Only labeled-element printing calls in
+    // here; the public `print_formula_*` API stays unconditionally flat,
+    // keeping Rodin-canonical strings and XML attributes newline-free.
+
+    fn wrap_ctx(&self, base_col: usize) -> WrapCtx {
+        debug_assert!(
+            self.formula_spacing == FormulaSpacing::Readable,
+            "wrapping is a readable-mode feature; canonical output must stay flat"
+        );
+        WrapCtx {
+            width: self.max_line_width,
+            base_col,
+            indent_w: self.indent.chars().count().max(1),
+        }
+    }
+
+    /// Render a predicate starting at column `start_col` (the width of
+    /// everything already on its first line), wrapping at the configured
+    /// width; `base_col` is the element's own indentation width. Flat when
+    /// wrapping is off.
+    fn print_predicate_at(
+        &self,
+        pred: &formula::Predicate,
+        start_col: usize,
+        base_col: usize,
+    ) -> String {
+        if self.max_line_width == 0 {
+            return self.print_formula_predicate(pred);
+        }
+        let wc = self.wrap_ctx(base_col);
+        let mut names = Vec::new();
+        self.wrap_pred(pred, start_col, &wc, FormulaContext::Predicate, &mut names)
+    }
+
+    /// [`Self::print_predicate_at`] for expressions.
+    fn print_expression_at(
+        &self,
+        expr: &formula::Expression,
+        start_col: usize,
+        base_col: usize,
+    ) -> String {
+        if self.max_line_width == 0 {
+            return self.print_formula_expression(expr);
+        }
+        let wc = self.wrap_ctx(base_col);
+        let mut names = Vec::new();
+        self.wrap_expr(expr, start_col, &wc, FormulaContext::Expression, &mut names)
+    }
+
+    /// [`Self::print_predicate_at`] for action bodies.
+    fn print_action_at(
+        &self,
+        body: &crate::ast::ActionBody,
+        start_col: usize,
+        base_col: usize,
+    ) -> String {
+        match body {
+            crate::ast::ActionBody::Skip => "skip".to_string(),
+            crate::ast::ActionBody::Assignment(assign) => {
+                if self.max_line_width == 0 {
+                    return self.print_formula_assignment(assign);
+                }
+                let wc = self.wrap_ctx(base_col);
+                self.wrap_assignment(assign, start_col, &wc)
+            }
+        }
+    }
+
+    fn wrap_pred(
+        &self,
+        pred: &formula::Predicate,
+        col: usize,
+        wc: &WrapCtx,
+        context: FormulaContext,
+        names: &mut Vec<String>,
+    ) -> String {
+        let flat = self.fm_pred(pred, context, names);
+        if wc.fits(col, &flat) {
+            return flat;
+        }
+        self.wrap_pred_overflow(pred, flat, col, wc, context, names)
+    }
+
+    /// Operator-leading chain of logical operands: the first at `col`,
+    /// each following operand on a continuation line after the operator.
+    #[allow(clippy::too_many_arguments)]
+    fn wrap_pred_chain(
+        &self,
+        operands: &[&formula::Predicate],
+        old: LogicalOp,
+        col: usize,
+        wc: &WrapCtx,
+        context: FormulaContext,
+        names: &mut Vec<String>,
+    ) -> String {
+        let op_str = self.op(operators::logical_op_id(old));
+        let cont = wc.hang(col);
+        let item_col = cont + op_str.chars().count() + 1;
+        let mut out = self.wrap_pred_operand(operands[0], old, false, col, wc, context, names);
+        for child in &operands[1..] {
+            out.push_str(&cont_line(cont));
+            out.push_str(op_str);
+            out.push(' ');
+            out.push_str(&self.wrap_pred_operand(child, old, true, item_col, wc, context, names));
+        }
+        out
+    }
+
+    /// Split `pred`, already flat-rendered as `flat` and known not to fit
+    /// at `col` — a caller that has probed the flat form skips
+    /// re-rendering it.
+    #[allow(clippy::too_many_arguments)]
+    fn wrap_pred_overflow(
+        &self,
+        pred: &formula::Predicate,
+        flat: String,
+        col: usize,
+        wc: &WrapCtx,
+        context: FormulaContext,
+        names: &mut Vec<String>,
+    ) -> String {
+        match pred.kind() {
+            FPredKind::Associative { op, children } => {
+                let operands: Vec<&formula::Predicate> = children.iter().collect();
+                self.wrap_pred_chain(&operands, legacy_logical(*op), col, wc, context, names)
+            }
+            FPredKind::Binary { op, left, right } => self.wrap_pred_chain(
+                &[left, right],
+                legacy_binary_pred(*op),
+                col,
+                wc,
+                context,
+                names,
+            ),
+            FPredKind::Relational { op, left, right } => {
+                let old = legacy_comparison(*op);
+                let op_str = self.op(operators::comparison_op_id(old));
+                let cont = wc.hang(col);
+                let item_col = cont + op_str.chars().count() + 1;
+                let mut out = self.wrap_pair(left, col, wc, context, names);
+                out.push_str(&cont_line(cont));
+                out.push_str(op_str);
+                out.push(' ');
+                out.push_str(&self.wrap_pair(right, item_col, wc, context, names));
+                out
+            }
+            FPredKind::Not(child) => {
+                // Readable mode always parenthesizes the operand.
+                let not = self.op(OperatorId::Not);
+                let inner_col = col + not.chars().count() + 1;
+                format!(
+                    "{not}({})",
+                    self.wrap_pred(child, inner_col, &wc.narrowed(1), context, names)
+                )
+            }
+            FPredKind::Quantified {
+                op,
+                decls,
+                pred: body,
+            } => {
+                let resolved = self.fm_resolve_decls(
+                    decls,
+                    pred.free_identifiers(),
+                    pred.dangling_bound_indices(),
+                    names,
+                );
+                let quantifier = self.op(match op {
+                    QuantPredOp::Forall => operators::quantifier_id(Quantifier::ForAll),
+                    QuantPredOp::Exists => operators::quantifier_id(Quantifier::Exists),
+                });
+                let mid = self.op(OperatorId::Dot);
+                let ids = {
+                    let parts: Vec<String> = decls
+                        .iter()
+                        .zip(&resolved)
+                        .map(|(decl, name)| self.fm_decl(decl, name, context, names))
+                        .collect();
+                    // The `·` after the declarations shares their last line.
+                    self.fill_parts(&parts, col + quantifier.chars().count(), &wc.narrowed(1))
+                };
+                names.extend(resolved.iter().cloned());
+                let body_col = wc.nest(col);
+                let body_str = self.wrap_pred(body, body_col, wc, context, names);
+                names.truncate(names.len() - decls.len());
+                format!("{quantifier}{ids}{mid}{}{body_str}", cont_line(body_col))
+            }
+            FPredKind::Simple(child) => {
+                let inner_col = col + "finite(".chars().count();
+                format!(
+                    "finite({})",
+                    self.wrap_expr(child, inner_col, &wc.narrowed(1), context, names)
+                )
+            }
+            FPredKind::Multiple(children) => {
+                let inner_col = col + "partition(".chars().count();
+                format!(
+                    "partition({})",
+                    self.wrap_expr_list(
+                        children,
+                        inner_col,
+                        &wc.narrowed(1),
+                        context,
+                        names,
+                        false
+                    )
+                )
+            }
+            FPredKind::Application { function, args, .. } => {
+                let inner_col = col + function.chars().count() + 1;
+                format!(
+                    "{function}({})",
+                    self.wrap_expr_list(args, inner_col, &wc.narrowed(1), context, names, false)
+                )
+            }
+            // Atoms and extension applications stay flat (best-effort).
+            FPredKind::Literal(_)
+            | FPredKind::PredicateVariable(_)
+            | FPredKind::Extended { .. } => flat,
+        }
+    }
+
+    /// One operand of a logical chain: flat when it fits; a still-long
+    /// operand that needs parentheses re-enters one column past its `(`.
+    #[allow(clippy::too_many_arguments)]
+    fn wrap_pred_operand(
+        &self,
+        child: &formula::Predicate,
+        parent_op: LogicalOp,
+        is_right: bool,
+        col: usize,
+        wc: &WrapCtx,
+        context: FormulaContext,
+        names: &mut Vec<String>,
+    ) -> String {
+        let flat = self.fm_pred_child(child, parent_op, is_right, context, names);
+        if wc.fits(col, &flat) {
+            return flat;
+        }
+        if self.fm_pred_child_needs_parens(child, parent_op, is_right) {
+            format!(
+                "({})",
+                self.wrap_pred(child, col + 1, &wc.narrowed(1), context, names)
+            )
+        } else {
+            // Without parens the probe just rendered is exactly `fm_pred`.
+            self.wrap_pred_overflow(child, flat, col, wc, context, names)
+        }
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn wrap_expr_operand(
+        &self,
+        child: &formula::Expression,
+        parent_op: BinaryOp,
+        is_right: bool,
+        col: usize,
+        wc: &WrapCtx,
+        context: FormulaContext,
+        names: &mut Vec<String>,
+    ) -> String {
+        let flat = self.fm_child_expr(child, parent_op, is_right, context, names);
+        if wc.fits(col, &flat) {
+            return flat;
+        }
+        if self.fm_expr_child_needs_parens(child, parent_op, is_right) {
+            format!(
+                "({})",
+                self.wrap_expr(child, col + 1, &wc.narrowed(1), context, names)
+            )
+        } else {
+            // Without parens the probe just rendered is exactly `fm_expr`.
+            self.wrap_expr_overflow(child, flat, col, wc, context, names)
+        }
+    }
+
+    /// A relational operand (pair level), mirroring [`Self::fm_pair`].
+    fn wrap_pair(
+        &self,
+        expr: &formula::Expression,
+        col: usize,
+        wc: &WrapCtx,
+        context: FormulaContext,
+        names: &mut Vec<String>,
+    ) -> String {
+        let flat = self.fm_pair(expr, context, names);
+        if wc.fits(col, &flat) {
+            return flat;
+        }
+        if fm_above_pair(self.visible_expr(expr).kind()) {
+            format!(
+                "({})",
+                self.wrap_expr(expr, col + 1, &wc.narrowed(1), context, names)
+            )
+        } else {
+            // Without parens the probe just rendered is exactly `fm_expr`.
+            self.wrap_expr_overflow(expr, flat, col, wc, context, names)
+        }
+    }
+
+    fn wrap_expr(
+        &self,
+        expr: &formula::Expression,
+        col: usize,
+        wc: &WrapCtx,
+        context: FormulaContext,
+        names: &mut Vec<String>,
+    ) -> String {
+        let flat = self.fm_expr(expr, context, names);
+        if wc.fits(col, &flat) {
+            return flat;
+        }
+        self.wrap_expr_overflow(expr, flat, col, wc, context, names)
+    }
+
+    /// [`Self::wrap_pred_overflow`] for expressions.
+    #[allow(clippy::too_many_arguments)]
+    fn wrap_expr_overflow(
+        &self,
+        expr: &formula::Expression,
+        flat: String,
+        col: usize,
+        wc: &WrapCtx,
+        context: FormulaContext,
+        names: &mut Vec<String>,
+    ) -> String {
+        let expr = self.visible_expr(expr);
+        match expr.kind() {
+            FExprKind::Associative { op, children } => {
+                let operands: Vec<&formula::Expression> = children.iter().collect();
+                self.wrap_expr_chain(&operands, legacy_assoc(*op), col, wc, context, names)
+            }
+            FExprKind::Binary {
+                op: op @ (BinaryExprOp::FunImage | BinaryExprOp::RelImage),
+                left,
+                right,
+            } => {
+                let left = self.visible_expr(left);
+                let mut applied = self.fm_expr(left, context, names);
+                if Self::fm_parens_for_image(left.kind()) {
+                    applied = format!("({applied})");
+                }
+                let inner_col = col + applied.chars().count() + 1;
+                let inner = self.wrap_expr(right, inner_col, &wc.narrowed(1), context, names);
+                if *op == BinaryExprOp::FunImage {
+                    format!("{applied}({inner})")
+                } else {
+                    format!("{applied}[{inner}]")
+                }
+            }
+            FExprKind::Binary { op, left, right } => {
+                self.wrap_expr_chain(&[left, right], legacy_binary(*op), col, wc, context, names)
+            }
+            FExprKind::Ascription {
+                expr: inner,
+                type_expr,
+            } => self.wrap_expr_chain(
+                &[inner, type_expr],
+                BinaryOp::OfType,
+                col,
+                wc,
+                context,
+                names,
+            ),
+            FExprKind::SetExtension(members) => {
+                format!(
+                    "{{{}}}",
+                    self.wrap_expr_list(members, col + 1, &wc.narrowed(1), context, names, false)
+                )
+            }
+            FExprKind::Bool(pred) => {
+                let inner_col = col + "bool(".chars().count();
+                format!(
+                    "bool({})",
+                    self.wrap_pred(pred, inner_col, &wc.narrowed(1), context, names)
+                )
+            }
+            FExprKind::Unary { op, child } => match self.unary_head(*op) {
+                // Postfix converse stays flat (best-effort; rare).
+                None => flat,
+                Some(head) => {
+                    let inner_col = col + head.chars().count() + 1;
+                    format!(
+                        "{head}({})",
+                        self.wrap_expr(child, inner_col, &wc.narrowed(1), context, names)
+                    )
+                }
+            },
+            FExprKind::Quantified { .. } => {
+                self.wrap_quantified_expr(expr, col, wc, context, names)
+            }
+            // Leaves and extension applications stay flat (best-effort).
+            _ => flat,
+        }
+    }
+
+    /// [`Self::wrap_pred_chain`] for expression operands.
+    #[allow(clippy::too_many_arguments)]
+    fn wrap_expr_chain(
+        &self,
+        operands: &[&formula::Expression],
+        old: BinaryOp,
+        col: usize,
+        wc: &WrapCtx,
+        context: FormulaContext,
+        names: &mut Vec<String>,
+    ) -> String {
+        let op_str = self.op(operators::binary_op_id(old));
+        let cont = wc.hang(col);
+        let item_col = cont + op_str.chars().count() + 1;
+        let mut out = self.wrap_expr_operand(operands[0], old, false, col, wc, context, names);
+        for child in &operands[1..] {
+            out.push_str(&cont_line(cont));
+            out.push_str(op_str);
+            out.push(' ');
+            out.push_str(&self.wrap_expr_operand(child, old, true, item_col, wc, context, names));
+        }
+        out
+    }
+
+    /// A quantified expression, breaking after `·` and before `∣`
+    /// (bar-leading, like the operator-leading chain style). Mirrors the
+    /// flat `fm_expr` arm's name threading exactly.
+    fn wrap_quantified_expr(
+        &self,
+        expr: &formula::Expression,
+        col: usize,
+        wc: &WrapCtx,
+        context: FormulaContext,
+        names: &mut Vec<String>,
+    ) -> String {
+        let FExprKind::Quantified {
+            op,
+            decls,
+            pred,
+            expr: value,
+            form,
+        } = expr.kind()
+        else {
+            unreachable!("wrap_quantified_expr takes quantified expressions")
+        };
+        let resolved = self.fm_resolve_decls(
+            decls,
+            expr.free_identifiers(),
+            expr.dangling_bound_indices(),
+            names,
+        );
+        let mid = self.op(OperatorId::Dot);
+        let bar = self.op(OperatorId::Bar);
+        let form = if self.typed_decls && matches!(form, Form::Implicit | Form::IdentList) {
+            &Form::Explicit
+        } else {
+            form
+        };
+        match op {
+            QuantExprOp::CSet => {
+                let inner = wc.hang(col + 1);
+                match form {
+                    Form::Lambda => {
+                        let value = self.visible_expr(value);
+                        let FExprKind::Binary {
+                            op: BinaryExprOp::Mapsto,
+                            left: pattern,
+                            right: body,
+                        } = value.kind()
+                        else {
+                            unreachable!("lambda form implies a maplet expression")
+                        };
+                        let lambda = self.op(OperatorId::Lambda);
+                        let pattern_str =
+                            self.fm_lambda_pattern(pattern, decls, &resolved, context, names);
+                        names.extend(resolved.iter().cloned());
+                        let body_col = wc.nest(col);
+                        let pred_str = self.wrap_pred(pred, body_col, wc, context, names);
+                        let value_col = body_col + bar.chars().count() + 1;
+                        let body_str = self.wrap_expr(body, value_col, wc, context, names);
+                        names.truncate(names.len() - decls.len());
+                        format!(
+                            "{lambda} {pattern_str}{mid}{cont}{pred_str}{cont}{bar} {body_str}",
+                            cont = cont_line(body_col)
+                        )
+                    }
+                    Form::Implicit => {
+                        names.extend(resolved.iter().cloned());
+                        let value_str = self.wrap_expr(value, col + 1, wc, context, names);
+                        let pred_col = inner + bar.chars().count() + 1;
+                        let pred_str =
+                            self.wrap_pred(pred, pred_col, &wc.narrowed(1), context, names);
+                        names.truncate(names.len() - decls.len());
+                        format!(
+                            "{{{value_str}{cont}{bar} {pred_str}}}",
+                            cont = cont_line(inner)
+                        )
+                    }
+                    Form::IdentList => {
+                        let ids = self.fm_decls(decls, &resolved, context, names);
+                        names.extend(resolved.iter().cloned());
+                        let pred_col = inner + bar.chars().count() + 1;
+                        let pred_str =
+                            self.wrap_pred(pred, pred_col, &wc.narrowed(1), context, names);
+                        names.truncate(names.len() - decls.len());
+                        format!("{{{ids}{cont}{bar} {pred_str}}}", cont = cont_line(inner))
+                    }
+                    Form::Explicit => {
+                        let ids = self.fm_decls(decls, &resolved, context, names);
+                        names.extend(resolved.iter().cloned());
+                        let pred_str = self.wrap_pred(pred, inner, wc, context, names);
+                        let value_col = inner + bar.chars().count() + 1;
+                        let value_str =
+                            self.wrap_expr(value, value_col, &wc.narrowed(1), context, names);
+                        names.truncate(names.len() - decls.len());
+                        format!(
+                            "{{{ids}{mid}{cont}{pred_str}{cont}{bar} {value_str}}}",
+                            cont = cont_line(inner)
+                        )
+                    }
+                }
+            }
+            QuantExprOp::QUnion | QuantExprOp::QInter => {
+                let keyword = self.op(match op {
+                    QuantExprOp::QUnion => OperatorId::QuantifiedUnion,
+                    QuantExprOp::QInter => OperatorId::QuantifiedIntersection,
+                    QuantExprOp::CSet => unreachable!(),
+                });
+                let ids = self.fm_decls(decls, &resolved, context, names);
+                names.extend(resolved.iter().cloned());
+                let body_col = wc.nest(col);
+                let pred_str = self.wrap_pred(pred, body_col, wc, context, names);
+                let value_col = body_col + bar.chars().count() + 1;
+                let value_str = self.wrap_expr(value, value_col, wc, context, names);
+                names.truncate(names.len() - decls.len());
+                format!(
+                    "{keyword} {ids}{mid}{cont}{pred_str}{cont}{bar} {value_str}",
+                    cont = cont_line(body_col)
+                )
+            }
+        }
+    }
+
+    /// Greedy comma fill over expressions inside brackets: flat items pack
+    /// onto the line, a break lands after the comma, and an item that
+    /// still overflows a fresh continuation line wraps recursively.
+    /// `guarded` renders items as assignment parts (a bare `;` is
+    /// parenthesized so the list reparses as one action).
+    #[allow(clippy::too_many_arguments)]
+    fn wrap_expr_list(
+        &self,
+        items: &[formula::Expression],
+        col: usize,
+        wc: &WrapCtx,
+        context: FormulaContext,
+        names: &mut Vec<String>,
+        guarded: bool,
+    ) -> String {
+        let cont = wc.hang(col);
+        let mut out = String::new();
+        let mut cur = col;
+        for (i, item) in items.iter().enumerate() {
+            let flat = {
+                let raw = self.fm_expr(item, context, names);
+                if guarded {
+                    Self::guard_action_part(raw)
+                } else {
+                    raw
+                }
+            };
+            let w = flat.chars().count();
+            // A non-final item is followed on its line by at least the
+            // separating comma; hold it one column short so the comma
+            // itself cannot pass the width.
+            let reserve = usize::from(i + 1 < items.len());
+            if i > 0 {
+                if cur + 2 + w + reserve <= wc.width {
+                    out.push_str(", ");
+                    cur += 2;
+                } else {
+                    out.push(',');
+                    out.push_str(&cont_line(cont));
+                    cur = cont;
+                }
+            }
+            if cur + w + reserve <= wc.width {
+                out.push_str(&flat);
+                cur += w;
+            } else {
+                let narrow = wc.narrowed(reserve);
+                let rendered = if guarded {
+                    self.wrap_guarded_expr(item, cur, &narrow, context, names)
+                } else {
+                    // The unguarded probe is exactly `fm_expr` and just
+                    // failed the (equivalent) narrowed fit check.
+                    self.wrap_expr_overflow(item, flat, cur, &narrow, context, names)
+                };
+                cur = end_col(cur, &rendered);
+                out.push_str(&rendered);
+            }
+        }
+        out
+    }
+
+    /// Greedy comma fill over pre-rendered single-line pieces
+    /// (declaration lists).
+    fn fill_parts(&self, parts: &[String], col: usize, wc: &WrapCtx) -> String {
+        let cont = wc.hang(col);
+        let mut out = String::new();
+        let mut cur = col;
+        for (i, part) in parts.iter().enumerate() {
+            let w = part.chars().count();
+            let reserve = usize::from(i + 1 < parts.len());
+            if i > 0 {
+                if cur + 2 + w + reserve <= wc.width {
+                    out.push_str(", ");
+                    cur += 2;
+                } else {
+                    out.push(',');
+                    out.push_str(&cont_line(cont));
+                    cur = cont;
+                }
+            }
+            out.push_str(part);
+            cur += w;
+        }
+        out
+    }
+
+    fn wrap_assignment(&self, assign: &formula::Assignment, col: usize, wc: &WrapCtx) -> String {
+        use formula::AssignmentKind as K;
+        let flat = self.print_formula_assignment(assign);
+        if wc.fits(col, &flat) {
+            return flat;
+        }
+        let context = FormulaContext::Action;
+        let mut names = Vec::new();
+        let targets = |idents: &[formula::Expression]| self.assignment_targets(idents);
+        match assign.kind() {
+            K::BecomesEqualTo { idents, values } => {
+                let head = format!("{} {}", targets(idents), self.op(OperatorId::Assignment));
+                let (out, rhs_col) = self.assign_rhs_position(&head, col, wc);
+                format!(
+                    "{out}{}",
+                    self.wrap_expr_list(values, rhs_col, wc, context, &mut names, true)
+                )
+            }
+            K::BecomesMemberOf { idents, set } => {
+                let head = format!("{} {}", targets(idents), self.op(OperatorId::BecomesIn));
+                let (out, rhs_col) = self.assign_rhs_position(&head, col, wc);
+                format!(
+                    "{out}{}",
+                    self.wrap_guarded_expr(set, rhs_col, wc, context, &mut names)
+                )
+            }
+            K::BecomesSuchThat {
+                idents,
+                primed,
+                pred,
+            } => {
+                let head = format!(
+                    "{} {}",
+                    targets(idents),
+                    self.op(OperatorId::BecomesSuchThat)
+                );
+                let resolved = self.fm_resolve_decls(
+                    primed,
+                    assign.free_identifiers(),
+                    assign.dangling_bound_indices(),
+                    &names,
+                );
+                names.extend(resolved);
+                let (out, rhs_col) = self.assign_rhs_position(&head, col, wc);
+                let flat_pred = self.fm_pred(pred, context, &mut names);
+                let condition = if Self::has_bare_semicolon(&flat_pred) {
+                    format!(
+                        "({})",
+                        self.wrap_pred(pred, rhs_col + 1, &wc.narrowed(1), context, &mut names)
+                    )
+                } else if wc.fits(rhs_col, &flat_pred) {
+                    flat_pred
+                } else {
+                    self.wrap_pred_overflow(pred, flat_pred, rhs_col, wc, context, &mut names)
+                };
+                format!("{out}{condition}")
+            }
+        }
+    }
+
+    /// Where an assignment's right-hand side starts: hanging after the
+    /// operator, or on its own nested line when the head is too deep.
+    /// Returns the emitted prefix (head plus separator) and the column
+    /// the right-hand side starts at.
+    fn assign_rhs_position(&self, head: &str, col: usize, wc: &WrapCtx) -> (String, usize) {
+        let rhs_col = col + head.chars().count() + 1;
+        if rhs_col <= wc.width / 2 {
+            (format!("{head} "), rhs_col)
+        } else {
+            let nest_col = wc.nest(col);
+            (format!("{head}{}", cont_line(nest_col)), nest_col)
+        }
+    }
+
+    /// An assignment part that must stay reparseable as one action: a
+    /// value carrying a bare `;` is parenthesized structurally, with the
+    /// wrapped content one column past the `(`.
+    fn wrap_guarded_expr(
+        &self,
+        value: &formula::Expression,
+        col: usize,
+        wc: &WrapCtx,
+        context: FormulaContext,
+        names: &mut Vec<String>,
+    ) -> String {
+        let flat = self.fm_expr(value, context, names);
+        if Self::has_bare_semicolon(&flat) {
+            format!(
+                "({})",
+                self.wrap_expr(value, col + 1, &wc.narrowed(1), context, names)
+            )
+        } else if wc.fits(col, &flat) {
+            flat
+        } else {
+            self.wrap_expr_overflow(value, flat, col, wc, context, names)
         }
     }
 }

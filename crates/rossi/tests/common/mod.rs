@@ -3,7 +3,8 @@
 #![allow(dead_code)]
 
 use rossi::{
-    Component, Context, Expression, Machine, PredicateKind, parse, to_string, to_string_ascii,
+    Component, Context, Expression, Machine, PredicateKind, PrettyPrinter, format_str, parse,
+    to_string, to_string_ascii,
 };
 
 /// Build an in-memory zip archive from `(entry name, content)` pairs.
@@ -145,6 +146,55 @@ pub fn parse_axiom_rhs(source: &str) -> Expression {
         return right.clone();
     }
     panic!("Expected Context with comparison axiom");
+}
+
+/// Format with `printer`, asserting output hygiene (no trailing
+/// whitespace, exactly one final newline), the width limit on every
+/// comment-free line when the printer wraps, and that the output reparses
+/// to the same AST.
+pub fn format_checked(source: &str, printer: &PrettyPrinter) -> String {
+    let output = format_str(source, printer)
+        .unwrap_or_else(|e| panic!("failed to format: {e}\nsource:\n{source}"));
+    for line in output.lines() {
+        assert_eq!(
+            line.trim_end(),
+            line,
+            "trailing whitespace in output line {line:?}\noutput:\n{output}"
+        );
+    }
+    assert!(
+        output.ends_with('\n') && !output.ends_with("\n\n"),
+        "output must end with exactly one newline, got:\n{output:?}"
+    );
+    if printer.max_line_width > 0 {
+        // Comment text is never wrapped, so only comment-free lines are
+        // held to the width.
+        let masked = rossi::comments::lexical_spans(&output).mask_comments_chars(&output);
+        for (line, masked_line) in output.lines().zip(masked.lines()) {
+            if masked_line == line {
+                assert!(
+                    line.chars().count() <= printer.max_line_width,
+                    "line exceeds width {}: {line:?}\noutput:\n{output}",
+                    printer.max_line_width
+                );
+            }
+        }
+    }
+    assert_reparses_equal(source, &output);
+    output
+}
+
+/// Assert `output` reparses to the same AST as `source` (spans cleared).
+pub fn assert_reparses_equal(source: &str, output: &str) {
+    let mut original = parse(source).unwrap();
+    let mut reparsed =
+        parse(output).unwrap_or_else(|e| panic!("output does not reparse: {e}\noutput:\n{output}"));
+    clear_spans(&mut original);
+    clear_spans(&mut reparsed);
+    assert_eq!(
+        original, reparsed,
+        "reparse mismatch\nsource:\n{source}\noutput:\n{output}"
+    );
 }
 
 /// Parse a Context source and return the LHS expression of the first axiom's comparison.

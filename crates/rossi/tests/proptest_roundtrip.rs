@@ -970,3 +970,31 @@ fn machine_roundtrip_camille_ascii() {
         assert_component_roundtrip(component, &camille_printer(false));
     });
 }
+
+// --- Wrapped roundtrips ---
+//
+// A narrow width forces breaks into nearly every generated formula, so
+// these fuzz the wrap layer's safety rule: any break whose continuation
+// could start a new element shows up as an AST mismatch.
+
+#[test]
+fn context_roundtrip_wrapped() {
+    check_roundtrip_property(200, arb_context, |component| {
+        assert_component_roundtrip(component, &camille_printer(true).with_max_line_width(40));
+    });
+}
+
+#[test]
+fn machine_roundtrip_wrapped() {
+    check_roundtrip_property(200, arb_machine, |component| {
+        assert_component_roundtrip(component, &camille_printer(true).with_max_line_width(40));
+    });
+}
+
+#[test]
+fn machine_roundtrip_wrapped_ascii_tiny() {
+    // Width 12 keeps the hang cap and best-effort overflow paths hot.
+    check_roundtrip_property(200, arb_machine, |component| {
+        assert_component_roundtrip(component, &camille_printer(false).with_max_line_width(12));
+    });
+}
