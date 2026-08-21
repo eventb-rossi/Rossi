@@ -96,6 +96,8 @@ return {
           useUnicode = true,
           -- Indentation string (spaces or tabs); "" follows the style preset
           indentation = "",
+          -- Maximum line width when formatting; 0 disables wrapping
+          maxLineWidth = 120,
         },
 
         -- Diagnostics configuration

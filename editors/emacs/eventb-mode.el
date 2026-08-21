@@ -224,6 +224,13 @@ Empty follows the style preset (2 spaces camille, 4 spaces rossi)."
   :type 'string
   :group 'eventb)
 
+(defcustom lsp-rossi-format-max-line-width 120
+  "Maximum line width when formatting Event-B text.
+Long formulas wrap onto operator-leading continuation lines; 0
+disables wrapping."
+  :type 'integer
+  :group 'eventb)
+
 (defcustom lsp-rossi-diagnostics-enabled t
   "Enable or disable Event-B diagnostics."
   :type 'boolean
@@ -287,7 +294,8 @@ deleted in Rodin is deleted next to the sources too)."
     (lambda ()
       `(:rossi (:format (:style ,lsp-rossi-format-style
                           :useUnicode ,lsp-rossi-format-use-unicode
-                          :indentation ,lsp-rossi-format-indentation)
+                          :indentation ,lsp-rossi-format-indentation
+                          :maxLineWidth ,lsp-rossi-format-max-line-width)
                  :diagnostics (:enabled ,lsp-rossi-diagnostics-enabled
                                :debounceMs ,lsp-rossi-diagnostics-debounce-ms)
                  :completion (:enabled ,lsp-rossi-completion-enabled)
