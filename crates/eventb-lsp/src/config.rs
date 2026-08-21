@@ -48,52 +48,96 @@ impl RossiConfig {
     }
 }
 
-/// Formatting configuration
+/// Formatting configuration.
+///
+/// The style fields are deliberately tolerant strings/options rather than
+/// strict enums: `RossiConfig::from_client_settings` is all-or-nothing, so
+/// a typo in one setting must fall back to the preset default instead of
+/// discarding the user's whole configuration.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct FormatConfig {
+    /// Formatting style preset: "camille" or "rossi". Empty or unknown
+    /// selects the default preset.
+    #[serde(default)]
+    pub style: String,
+
     /// Use Unicode operators (∧, ∨, ⇒) instead of ASCII (/\, \/, =>)
     #[serde(default = "default_use_unicode")]
     pub use_unicode: bool,
 
-    /// Indentation string (e.g., "  " or "    ")
-    #[serde(default = "default_indentation")]
+    /// Indentation string (e.g., "  " or "    "); empty follows the style
+    /// preset (2 spaces camille, 4 spaces rossi)
+    #[serde(default)]
     pub indentation: String,
+
+    /// Keyword-case override: "lower" or "upper"; empty follows the preset
+    #[serde(default)]
+    pub keyword_case: String,
+
+    /// Declaration-list layout override: "inline" or "one-per-line";
+    /// empty follows the preset
+    #[serde(default)]
+    pub decl_lists: String,
+
+    /// Blank line between top-level clauses; unset follows the preset
+    #[serde(default)]
+    pub blank_between_clauses: Option<bool>,
 }
 
 impl FormatConfig {
     /// The pretty-printer this configuration denotes — the single mapping
     /// used everywhere the server renders Event-B text into a user's file
     /// (`textDocument/formatting` and the Rodin model-edit sync), so the two
-    /// can never format the same file differently. Every field is pinned
-    /// deliberately; editor output stays portable (no private-use glyphs).
+    /// can never format the same file differently. Built through
+    /// `PrettyPrinter::resolved`, the same preset + override resolution the
+    /// CLI uses; editor output stays portable (no private-use glyphs).
     pub fn printer(&self) -> rossi::PrettyPrinter {
-        rossi::PrettyPrinter {
-            use_unicode: self.use_unicode,
-            indent: self.indentation.clone(),
-            // The remaining fields keep the preset's deliberate pins:
-            // portable text (no private-use glyphs), readable formula
-            // spacing.
-            ..rossi::PrettyPrinter::styled(rossi::Style::Rossi)
-        }
+        let style = match self.style.to_ascii_lowercase().as_str() {
+            "camille" => rossi::Style::Camille,
+            "rossi" => rossi::Style::Rossi,
+            _ => rossi::Style::default(),
+        };
+        let keyword_case = match self.keyword_case.to_ascii_lowercase().as_str() {
+            "lower" => Some(rossi::KeywordCase::Lower),
+            "upper" => Some(rossi::KeywordCase::Upper),
+            _ => None,
+        };
+        let decl_lists = match self.decl_lists.to_ascii_lowercase().as_str() {
+            "inline" => Some(rossi::DeclListLayout::Inline),
+            "one-per-line" => Some(rossi::DeclListLayout::OnePerLine),
+            _ => None,
+        };
+        rossi::PrettyPrinter::resolved(
+            style,
+            &rossi::StyleOverrides {
+                keyword_case,
+                decl_lists,
+                blank_between_clauses: self.blank_between_clauses,
+                // An empty indentation follows the preset's indent (the
+                // clients' "unset" spelling); `Some` is always an override.
+                indent: (!self.indentation.is_empty()).then(|| self.indentation.clone()),
+                use_unicode: Some(self.use_unicode),
+            },
+        )
     }
 }
 
 impl Default for FormatConfig {
     fn default() -> Self {
         Self {
+            style: String::new(),
             use_unicode: default_use_unicode(),
-            indentation: default_indentation(),
+            indentation: String::new(),
+            keyword_case: String::new(),
+            decl_lists: String::new(),
+            blank_between_clauses: None,
         }
     }
 }
 
 fn default_use_unicode() -> bool {
     true
-}
-
-fn default_indentation() -> String {
-    "    ".to_string()
 }
 
 /// Diagnostics configuration
@@ -308,7 +352,9 @@ mod tests {
         let config = RossiConfig::default();
 
         assert!(config.format.use_unicode);
-        assert_eq!(config.format.indentation, "    ");
+        // Empty follows the style preset.
+        assert_eq!(config.format.style, "");
+        assert_eq!(config.format.indentation, "");
 
         assert!(config.diagnostics.enabled);
         assert_eq!(config.diagnostics.debounce_ms, 500);
@@ -393,10 +439,76 @@ mod tests {
         // Specified value
         assert!(!config.format.use_unicode);
 
-        // Default values
-        assert_eq!(config.format.indentation, "    ");
+        // Default values ("" = follow the style preset)
+        assert_eq!(config.format.indentation, "");
         assert!(config.diagnostics.enabled);
         assert!(config.rodin.mirror_proofs);
+    }
+
+    #[test]
+    fn test_format_style_settings_map_to_printer() {
+        let settings = serde_json::json!({
+            "rossi": { "format": { "style": "camille" } }
+        });
+        let config = RossiConfig::from_client_settings(&settings).unwrap();
+        let printer = config.format.printer();
+        assert_eq!(printer.style, rossi::Style::Camille);
+        assert_eq!(printer.indent, "  ");
+        assert_eq!(printer.keyword_case, rossi::KeywordCase::Lower);
+        assert_eq!(printer.decl_lists, rossi::DeclListLayout::Inline);
+        assert!(printer.blank_between_clauses);
+
+        let settings = serde_json::json!({
+            "rossi": { "format": {
+                "style": "camille",
+                "keywordCase": "upper",
+                "declLists": "one-per-line",
+                "blankBetweenClauses": false,
+                "indentation": "    "
+            } }
+        });
+        let config = RossiConfig::from_client_settings(&settings).unwrap();
+        let printer = config.format.printer();
+        assert_eq!(printer.style, rossi::Style::Camille);
+        assert_eq!(printer.keyword_case, rossi::KeywordCase::Upper);
+        assert_eq!(printer.decl_lists, rossi::DeclListLayout::OnePerLine);
+        assert!(!printer.blank_between_clauses);
+        assert_eq!(printer.indent, "    ");
+    }
+
+    #[test]
+    fn test_format_unknown_style_values_fall_back_to_preset() {
+        // Unknown values must not fail whole-config parsing (it is
+        // all-or-nothing) and fall back to the preset defaults.
+        let settings = serde_json::json!({
+            "rossi": { "format": {
+                "style": "fancy",
+                "keywordCase": "mixed",
+                "declLists": "wat"
+            } }
+        });
+        let config = RossiConfig::from_client_settings(&settings).unwrap();
+        let printer = config.format.printer();
+        let preset = rossi::PrettyPrinter::styled(rossi::Style::default());
+        assert_eq!(printer.style, preset.style);
+        assert_eq!(printer.keyword_case, preset.keyword_case);
+        assert_eq!(printer.decl_lists, preset.decl_lists);
+        assert_eq!(printer.indent, preset.indent);
+    }
+
+    #[test]
+    fn test_format_empty_indentation_follows_preset() {
+        let rossi_style = FormatConfig {
+            style: "rossi".to_string(),
+            ..FormatConfig::default()
+        };
+        assert_eq!(rossi_style.printer().indent, "    ");
+
+        let camille_style = FormatConfig {
+            style: "camille".to_string(),
+            ..FormatConfig::default()
+        };
+        assert_eq!(camille_style.printer().indent, "  ");
     }
 
     #[test]
