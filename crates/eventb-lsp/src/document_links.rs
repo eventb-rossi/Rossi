@@ -142,12 +142,34 @@ fn clause_identifier_tokens(text: &str, clause_keyword: &str) -> Vec<IdentifierT
             continue;
         };
 
+        // A mid-line keyword only counts on a component header line
+        // (camille's `machine M1 refines M0 sees C1`): `sees`, `refines`,
+        // and `extends` are legal ordinary identifiers, so anywhere else
+        // the clause keyword must be the line's own leading word — a
+        // formula such as `@inv1 sees > 0` must not start a clause scan.
+        let at_line_start = line.chars().take(clause_pos).all(char::is_whitespace);
+        if !at_line_start && !is_component_header(line) {
+            continue;
+        }
+
         if matches!(clause_keyword, "REFINES" | "EXTENDS") && is_inside_event(&lines, line_idx) {
             continue;
         }
 
         let start_col = clause_pos + clause_keyword.chars().count();
-        tokens.extend(tokenize_identifier_positions(line, line_idx, start_col));
+        // The clause's own tokens end at the next structural keyword on the
+        // line: an inline header (`machine M1 refines M0 sees C1`) carries
+        // several clauses, and M0 alone belongs to REFINES.
+        let mut line_tokens = tokenize_identifier_positions(line, line_idx, start_col);
+        if let Some(cut) = line_tokens
+            .iter()
+            .position(|token| text_utils::is_clause_boundary_keyword(&token.name))
+        {
+            line_tokens.truncate(cut);
+            tokens.extend(line_tokens);
+            continue;
+        }
+        tokens.extend(line_tokens);
 
         for (next_line_idx, next_line) in lines.iter().enumerate().skip(line_idx + 1) {
             if is_clause_boundary(next_line) {
@@ -160,26 +182,41 @@ fn clause_identifier_tokens(text: &str, clause_keyword: &str) -> Vec<IdentifierT
     tokens
 }
 
+/// Char position of `keyword` as a standalone word anywhere in `line`. The
+/// camille layout prints header clauses inline (`machine M1 refines M0
+/// sees C1`), so the keyword is not necessarily the line's first word. A
+/// match must be delimited on both sides — `@` and `-` also break it, so a
+/// label like `@sees` or a hyphenated name segment never counts.
 fn find_keyword_position(line: &str, keyword: &str) -> Option<usize> {
     let keyword_chars: Vec<char> = keyword.chars().collect();
     let chars: Vec<char> = line.chars().collect();
-    let idx = chars.iter().position(|ch| !ch.is_whitespace())?;
+    let breaks_word = |ch: char| text_utils::is_identifier_char(ch) || ch == '@' || ch == '-';
 
-    if idx + keyword_chars.len() <= chars.len()
-        && chars[idx..idx + keyword_chars.len()]
+    for idx in 0..chars.len().saturating_sub(keyword_chars.len() - 1) {
+        if idx > 0 && breaks_word(chars[idx - 1]) {
+            continue;
+        }
+        if !chars[idx..idx + keyword_chars.len()]
             .iter()
-            .collect::<String>()
-            .eq_ignore_ascii_case(keyword)
-    {
+            .zip(&keyword_chars)
+            .all(|(ch, keyword_ch)| ch.eq_ignore_ascii_case(keyword_ch))
+        {
+            continue;
+        }
         let after_idx = idx + keyword_chars.len();
-        let after_ok =
-            after_idx >= chars.len() || !text_utils::is_identifier_char(chars[after_idx]);
-        if after_ok {
+        if after_idx >= chars.len() || !breaks_word(chars[after_idx]) {
             return Some(idx);
         }
     }
 
     None
+}
+
+/// Whether the line is a component header (`machine M1 …`, `CONTEXT C2`) —
+/// the only lines that legitimately carry clause keywords mid-line.
+fn is_component_header(line: &str) -> bool {
+    text_utils::line_keyword_is(line, KeywordId::Machine)
+        || text_utils::line_keyword_is(line, KeywordId::Context)
 }
 
 fn is_clause_boundary(line: &str) -> bool {
@@ -453,6 +490,52 @@ END";
         assert!(is_inside_event(&lines, 5));
         // Line 7 (the trailing machine END) is past the event's real END.
         assert!(!is_inside_event(&lines, 7));
+    }
+
+    #[test]
+    fn test_document_links_inline_camille_header() {
+        let cross_ref_manager = Arc::new(CrossReferenceManager::new());
+        cross_ref_manager.update_component("file:///M0.eventb".to_string(), "machine M0\nend");
+        cross_ref_manager.update_component("file:///C1.eventb".to_string(), "context C1\nend");
+
+        let machine = "machine M1 refines M0 sees C1\nvariables x\nend\n";
+
+        let mut provider = DocumentLinkProvider::new();
+        provider.set_cross_reference_manager(cross_ref_manager);
+
+        let links = provider
+            .document_links(&make_params("M1.eventb"), machine)
+            .unwrap();
+
+        let mut targets: Vec<_> = links
+            .iter()
+            .map(|link| link.target.as_ref().unwrap().as_str())
+            .collect();
+        targets.sort_unstable();
+        assert_eq!(targets, vec!["file:///C1.eventb", "file:///M0.eventb"]);
+    }
+
+    #[test]
+    fn test_document_links_ignore_keyword_identifier_in_formula() {
+        // `sees` is a legal ordinary identifier. Using it inside a formula
+        // must not start a SEES clause scan that turns identifiers on the
+        // following lines into bogus links.
+        let cross_ref_manager = Arc::new(CrossReferenceManager::new());
+        cross_ref_manager.update_component("file:///ctx1.eventb".to_string(), "CONTEXT ctx1\nEND");
+
+        let machine = "MACHINE test_mch\nSEES ctx1\nVARIABLES\n    sees\nINVARIANTS\n    @inv1 sees > 0\n    @inv2 ctx1 = ctx1\nEND\n";
+
+        let mut provider = DocumentLinkProvider::new();
+        provider.set_cross_reference_manager(cross_ref_manager);
+
+        let links = provider
+            .document_links(&make_params("test_mch.eventb"), machine)
+            .unwrap();
+
+        // Only the genuine `SEES ctx1` reference on line 1 is a link; the
+        // `ctx1` occurrences inside @inv2 are not.
+        assert_eq!(links.len(), 1);
+        assert_eq!(links[0].range.start, crate::lsp_types::Position::new(1, 5));
     }
 
     #[test]

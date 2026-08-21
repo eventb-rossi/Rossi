@@ -497,6 +497,15 @@ mod tests {
     }
 
     #[test]
+    fn test_default_config_printer_matches_library_default() {
+        // An untouched client config denotes exactly the library's default
+        // printer, so LSP formatting and `rossi fmt` agree byte-for-byte.
+        let lsp = FormatConfig::default().printer();
+        let library = rossi::PrettyPrinter::default();
+        assert_eq!(format!("{lsp:?}"), format!("{library:?}"));
+    }
+
+    #[test]
     fn test_format_empty_indentation_follows_preset() {
         let rossi_style = FormatConfig {
             style: "rossi".to_string(),

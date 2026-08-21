@@ -9,7 +9,9 @@
 mod common;
 
 use common::{assert_roundtrip, parse_context, parse_machine};
-use rossi::{Component, PrettyPrinter, format_str, parse, parse_xml, to_string, to_string_ascii};
+use rossi::{
+    Component, PrettyPrinter, Style, format_str, parse, parse_xml, to_string, to_string_ascii,
+};
 
 // =========================================================================
 // Attachment rules
@@ -172,7 +174,7 @@ fn single_line_comment_prints_trailing() {
     let printed = to_string(&parse(src).unwrap());
     assert_eq!(
         printed,
-        "CONTEXT c\nAXIOMS\n    @axm1 1 = 1 // why: base\nEND\n"
+        "context c\n\naxioms\n  @axm1 1 = 1 // why: base\nend\n"
     );
 }
 
@@ -189,7 +191,7 @@ fn multiline_comment_prints_camille_block() {
     let printed = to_string(&Component::Context(ctx));
     assert_eq!(
         printed,
-        "CONTEXT c\nAXIOMS\n    @axm1 1 = 1\n        /* why: invariant base\n           second line */\nEND\n"
+        "context c\n\naxioms\n  @axm1 1 = 1\n    /* why: invariant base\n       second line */\nend\n"
     );
 }
 
@@ -213,14 +215,17 @@ fn ascii_mode_does_not_touch_comment_text() {
 
 #[test]
 fn commented_parameters_print_one_per_line() {
+    // The rossi (one-per-line) layout: a commented parameter forces the
+    // per-line ANY block so the comment re-attaches on reparse.
+    let rossi_style = PrettyPrinter::styled(Style::Rossi);
     let src = "MACHINE m\nEVENTS\n    EVENT e\n    ANY\n        a // first\n        b\n    WHERE\n        @grd1 a > 0 ∧ b > 0\n    THEN\n        @act1 skip\n    END\nEND\n";
-    let printed = to_string(&parse(src).unwrap());
+    let printed = rossi_style.print_component(&parse(src).unwrap());
     assert!(printed.contains("        a // first\n        b\n"));
 
     // Without comments the joined one-line form is preserved (parameters are
     // whitespace-separated — a comma here is a parse error).
     let src2 = "MACHINE m\nEVENTS\n    EVENT e\n    ANY\n        a b\n    WHERE\n        @grd1 a > 0 ∧ b > 0\n    THEN\n        @act1 skip\n    END\nEND\n";
-    let printed2 = to_string(&parse(src2).unwrap());
+    let printed2 = rossi_style.print_component(&parse(src2).unwrap());
     assert!(printed2.contains("        a b\n"));
 }
 
@@ -252,7 +257,7 @@ fn empty_xml_param_comment_does_not_force_multiline() {
     // First print joins the parameters on one line (the blank renders nothing)…
     let text1 = to_string(&component);
     assert!(
-        text1.contains("        a b\n"),
+        text1.contains("    any a b\n"),
         "ANY block should be single-line, got:\n{text1}"
     );
     // …and the text round-trips: reparse + reprint is a fixed point.
@@ -276,8 +281,8 @@ fn real_xml_param_comment_still_prints_per_line_and_roundtrips() {
 
     let text1 = to_string(&parse_xml(xml).expect("xml parses"));
     assert!(
-        text1.contains("        a // why a\n        b\n"),
-        "commented param should be per-line, got:\n{text1}"
+        text1.contains("    any a // why a\n        b\n"),
+        "commented param ends its line; the rest hangs, got:\n{text1}"
     );
     let text2 = to_string(&parse(&text1).expect("reparse"));
     assert_eq!(

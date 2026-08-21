@@ -284,7 +284,10 @@ mod tests {
     use super::*;
     use crate::test_util::TempDir;
 
-    const BASE: &str = "CONTEXT base_ctx\nCONSTANTS\n    lo\nAXIOMS\n    @axm1 lo ∈ ℤ\nEND\n";
+    // The canonical (camille) shape the sync's printer emits, so a Rodin
+    // edit re-rendered over an untouched source differs only where the
+    // model changed.
+    const BASE: &str = "context base_ctx\n\nconstants lo\n\naxioms\n  @axm1 lo ∈ ℤ\nend\n";
 
     /// A workspace with a recorded build of one source file (`model.eventb`
     /// holding `base_ctx`) and the matching project-dir XML.

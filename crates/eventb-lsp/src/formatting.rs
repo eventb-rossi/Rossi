@@ -43,10 +43,9 @@ mod tests {
         assert_eq!(edits.len(), 1);
 
         let formatted = &edits[0].new_text;
-        assert!(formatted.contains("CONTEXT test"));
-        assert!(formatted.contains("SETS"));
-        assert!(formatted.contains("STATUS"));
-        assert!(formatted.contains("END"));
+        assert!(formatted.contains("context test"));
+        assert!(formatted.contains("sets STATUS"));
+        assert!(formatted.ends_with("end\n"));
     }
 
     #[test]
@@ -69,8 +68,8 @@ mod tests {
 
         let formatted = result.unwrap()[0].new_text.clone();
         // Check it formatted successfully
-        assert!(formatted.contains("CONTEXT"));
-        assert!(formatted.contains("AXIOMS"));
+        assert!(formatted.contains("context"));
+        assert!(formatted.contains("axioms"));
     }
 
     #[test]
@@ -92,8 +91,8 @@ mod tests {
         assert!(result.is_ok());
 
         let formatted = result.unwrap()[0].new_text.clone();
-        assert!(formatted.contains("CONTEXT"));
-        assert!(formatted.contains("AXIOMS"));
+        assert!(formatted.contains("context"));
+        assert!(formatted.contains("axioms"));
         // ASCII mode renders the predicate literal ⊤ as lowercase `true`.
         assert!(formatted.contains("true"));
     }
@@ -132,8 +131,9 @@ mod tests {
         assert!(result.is_ok());
 
         let formatted = result.unwrap()[0].new_text.clone();
-        // Should contain 4-space indentation
-        assert!(formatted.contains("    STATUS") || formatted.contains("SETS"));
+        // The explicit 4-space indentation overrides the preset's 2 spaces
+        // for indented items (the camille sets list itself stays inline).
+        assert!(formatted.contains("sets STATUS"), "got:\n{formatted}");
     }
 
     #[test]
@@ -163,10 +163,9 @@ mod tests {
         assert!(result.is_ok());
 
         let formatted = result.unwrap()[0].new_text.clone();
-        assert!(formatted.contains("MACHINE counter"));
-        assert!(formatted.contains("VARIABLES"));
-        assert!(formatted.contains("count"));
-        assert!(formatted.contains("INVARIANTS"));
+        assert!(formatted.contains("machine counter"));
+        assert!(formatted.contains("variables count"));
+        assert!(formatted.contains("invariants"));
         assert!(formatted.contains("INITIALISATION"));
     }
 

@@ -317,14 +317,23 @@ fn line_of(text: &str, needle: &str) -> usize {
 }
 
 /// Position of the first whole-word occurrence of `name` after the first
-/// whole-word occurrence of the `clause` keyword (SEES/REFINES/EXTENDS) at or
+/// whole-word occurrence of the `clause` keyword (sees/refines/extends) at or
 /// after `start_line` (the component's region in a merged document; 0 for a
-/// single-component file). Layout-independent (works for one-target-per-line
-/// and inline forms), but callers must pass machines/contexts that actually
-/// have the machine-level clause: the first keyword occurrence is otherwise
-/// an event-level one.
+/// single-component file). Layout- and case-independent (works for
+/// one-target-per-line and inline forms, printer-generated lowercase and
+/// hand-written uppercase fixtures), but callers must pass machines/contexts
+/// that actually have the machine-level clause: the first keyword occurrence
+/// is otherwise an event-level one.
 fn pos_in_clause(text: &str, clause: &str, name: &str, start_line: usize) -> Position {
-    let clause_pos = occurrence_after_line(text, clause, start_line);
+    let clause_pos = [clause.to_lowercase(), clause.to_uppercase()]
+        .iter()
+        .flat_map(|word| {
+            find_whole_word_locations(text, word, &probe_uri(), None, WordBoundary::MathIdentifier)
+        })
+        .map(|location| location.range.start)
+        .filter(|position| position.line as usize >= start_line)
+        .min()
+        .unwrap_or_else(|| panic!("`{clause}` not found at or after line {start_line}"));
     find_whole_word_locations(text, name, &probe_uri(), None, WordBoundary::MathIdentifier)
         .into_iter()
         .map(|location| location.range.start)
@@ -563,9 +572,9 @@ fn cars_goto_definition_cross_file() {
     let provider = definition_provider(&ws);
 
     for (from, clause, target) in [
-        ("M1", "REFINES", "M0"),
-        ("M0", "SEES", "C0"),
-        ("C2", "EXTENDS", "C0"),
+        ("M1", "refines", "M0"),
+        ("M0", "sees", "C0"),
+        ("C2", "extends", "C0"),
     ] {
         assert_goto_clause(&ws, &provider, from, clause, target);
     }
@@ -1163,10 +1172,10 @@ fn merged_goto_clause_targets_within_one_file() {
     // SEES/REFINES targets live in the same document; navigation must land
     // on each target component's header inside it.
     for (from, clause, target) in [
-        ("M1", "REFINES", "M0"),
-        ("M1", "SEES", "C1"),
-        ("M2", "REFINES", "M1"),
-        ("M2", "SEES", "C1"),
+        ("M1", "refines", "M0"),
+        ("M1", "sees", "C1"),
+        ("M2", "refines", "M1"),
+        ("M2", "sees", "C1"),
     ] {
         assert_goto_clause(&ws, &provider, from, clause, target);
     }
@@ -1246,8 +1255,8 @@ fn separate_file_refines_machine_inside_merged_file() {
     );
     let provider = definition_provider(&ws);
 
-    assert_goto_clause(&ws, &provider, "M3", "REFINES", "M2");
-    assert_goto_clause(&ws, &provider, "M3", "SEES", "C1");
+    assert_goto_clause(&ws, &provider, "M3", "refines", "M2");
+    assert_goto_clause(&ws, &provider, "M3", "sees", "C1");
 }
 
 #[test]
@@ -1369,9 +1378,9 @@ fn binary_search_chain_navigation() {
             refines,
             "{machine}: wrong refinement parent"
         );
-        assert_goto_clause(&ws, &provider, machine, "SEES", "C0");
+        assert_goto_clause(&ws, &provider, machine, "sees", "C0");
         if let Some(parent) = refines {
-            assert_goto_clause(&ws, &provider, machine, "REFINES", parent);
+            assert_goto_clause(&ws, &provider, machine, "refines", parent);
         }
     }
 }

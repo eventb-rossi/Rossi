@@ -70,22 +70,17 @@ END
     let component = parse(source).expect("Failed to parse");
     let output = to_string(&component);
 
-    assert!(output.contains("CONTEXT test_ctx"));
-    assert!(output.contains("EXTENDS"));
-    assert!(output.contains("base_ctx"));
-    assert!(output.contains("SETS"));
-    assert!(output.contains("STATUS"));
-    assert!(output.contains("CONSTANTS"));
-    assert!(output.contains("max_value"));
-    assert!(output.contains("AXIOMS"));
+    assert!(output.contains("context test_ctx extends base_ctx"));
+    assert!(output.contains("sets STATUS"));
+    assert!(output.contains("constants max_value"));
+    assert!(output.contains("axioms"));
     assert!(output.contains("@axm1"));
     assert!(
-        !output.contains("THEOREMS"),
-        "Output should not contain THEOREMS keyword — theorems are inline within AXIOMS"
+        !output.to_lowercase().contains("theorems"),
+        "Output should not contain a THEOREMS keyword — theorems are inline within AXIOMS"
     );
-    assert!(output.contains("@thm1"));
-    assert!(output.contains("theorem"));
-    assert!(output.contains("END"));
+    assert!(output.contains("theorem @thm1"));
+    assert!(output.ends_with("end\n"));
 }
 
 #[test]
@@ -114,9 +109,8 @@ END
     let component = parse(source).expect("Failed to parse");
     let output = to_string(&component);
 
-    assert!(output.contains("VARIANT"));
-    assert!(output.contains("EVENT decrement"));
-    assert!(output.contains("convergent EVENT decrement"));
+    assert!(output.contains("variant x"));
+    assert!(output.contains("convergent event decrement"));
 }
 
 #[test]
@@ -339,16 +333,16 @@ fn rodin_canonical_tightens_comma_separated_formula_lists() {
 #[test]
 fn test_pretty_printer_custom_indent() {
     let source = r#"CONTEXT test
-SETS
-    STATUS
+AXIOMS
+    @axm1 1 = 1
 END
 "#;
 
     let component = parse(source).expect("Failed to parse");
-    let printer = PrettyPrinter::new().with_indent("  ".to_string());
+    let printer = PrettyPrinter::new().with_indent("   ".to_string());
     let output = printer.print_component(&component);
 
-    assert!(output.contains("  STATUS"));
+    assert!(output.contains("\n   @axm1"), "got:\n{output}");
 }
 
 #[test]
@@ -364,14 +358,14 @@ END
     let component = parse(source).expect("Failed to parse");
     let output = to_string(&component);
 
-    assert!(output.contains("MACHINE simple"));
-    assert!(output.contains("VARIABLES"));
-    assert!(output.contains("INVARIANTS"));
+    assert!(output.contains("machine simple"));
+    assert!(output.contains("variables x"));
+    assert!(output.contains("invariants"));
     assert!(
-        !output.contains("EVENTS"),
-        "Output should not contain EVENTS when there are no events"
+        !output.contains("events"),
+        "Output should not contain an events clause when there are no events"
     );
-    assert!(output.contains("END"));
+    assert!(output.ends_with("end\n"));
 }
 
 // ============================================================================
@@ -786,4 +780,56 @@ fn private_use_glyphs_flag_controls_relation_and_override_spelling() {
         glyphs.contains('\u{E100}') && glyphs.contains('\u{E103}'),
         "with_private_use_glyphs(true) should emit the glyphs, got: {glyphs}"
     );
+}
+
+// ============================================================================
+// Legacy (rossi-style) layout regression golden
+// ============================================================================
+
+/// Byte-exact golden for `styled(Style::Rossi)` — the layout that was the
+/// default before camille. `--style rossi` output must never drift.
+#[test]
+fn rossi_style_golden_is_byte_stable() {
+    let source = "MACHINE m1 REFINES m0 SEES c1 c2\n\
+                  VARIABLES a b\n\
+                  INVARIANTS\n@inv1 a : NAT\ntheorem @thm1 a >= 0\n\
+                  VARIANT a\n\
+                  EVENTS\n\
+                  EVENT INITIALISATION THEN @act1 a := 0 END\n\
+                  convergent EVENT step REFINES step ANY p WHERE @grd1 p < a THEN @act1 a := p END\n\
+                  END\n";
+    let expected = "MACHINE m1\n\
+                    REFINES\n\
+                    \x20\x20\x20\x20m0\n\
+                    SEES\n\
+                    \x20\x20\x20\x20c1\n\
+                    \x20\x20\x20\x20c2\n\
+                    VARIABLES\n\
+                    \x20\x20\x20\x20a\n\
+                    \x20\x20\x20\x20b\n\
+                    INVARIANTS\n\
+                    \x20\x20\x20\x20@inv1 a ∈ ℕ\n\
+                    \x20\x20\x20\x20theorem @thm1 a ≥ 0\n\
+                    VARIANT\n\
+                    \x20\x20\x20\x20a\n\
+                    EVENTS\n\
+                    \x20\x20\x20\x20EVENT INITIALISATION\n\
+                    \x20\x20\x20\x20THEN\n\
+                    \x20\x20\x20\x20\x20\x20\x20\x20@act1 a ≔ 0\n\
+                    \x20\x20\x20\x20END\n\
+                    \n\
+                    \x20\x20\x20\x20convergent EVENT step\n\
+                    \x20\x20\x20\x20REFINES\n\
+                    \x20\x20\x20\x20\x20\x20\x20\x20step\n\
+                    \x20\x20\x20\x20ANY\n\
+                    \x20\x20\x20\x20\x20\x20\x20\x20p\n\
+                    \x20\x20\x20\x20WHERE\n\
+                    \x20\x20\x20\x20\x20\x20\x20\x20@grd1 p < a\n\
+                    \x20\x20\x20\x20THEN\n\
+                    \x20\x20\x20\x20\x20\x20\x20\x20@act1 a ≔ p\n\
+                    \x20\x20\x20\x20END\n\
+                    END\n";
+    let printer = PrettyPrinter::styled(Style::Rossi);
+    let output = format_str(source, &printer).expect("format");
+    assert_eq!(output, expected);
 }

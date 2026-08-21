@@ -14,12 +14,12 @@ fn import_rodin_component_file_to_eventb() {
         (
             "../rossi/examples/counter_ctx.buc",
             "counter_ctx.eventb",
-            "CONTEXT counter_ctx",
+            "context counter_ctx",
         ),
         (
             "../rossi/examples/counter.bum",
             "counter.eventb",
-            "MACHINE counter",
+            "machine counter",
         ),
     ] {
         let tmp = tempdir_unique("rossi-cli-import-component");
