@@ -117,7 +117,8 @@ impl FormatConfig {
                 // An empty indentation follows the preset's indent (the
                 // clients' "unset" spelling); `Some` is always an override.
                 indent: (!self.indentation.is_empty()).then(|| self.indentation.clone()),
-                use_unicode: Some(self.use_unicode),
+                use_unicode: self.use_unicode,
+                max_line_width: 0,
             },
         )
     }

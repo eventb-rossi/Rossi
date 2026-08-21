@@ -8,41 +8,11 @@
 
 mod common;
 
-use common::clear_spans;
-use rossi::{DeclListLayout, KeywordCase, PrettyPrinter, Style, StyleOverrides, format_str, parse};
+use common::format_checked;
+use rossi::{DeclListLayout, KeywordCase, PrettyPrinter, Style, StyleOverrides, format_str};
 
 fn camille() -> PrettyPrinter {
     PrettyPrinter::styled(Style::Camille)
-}
-
-/// Format with `printer`, assert hygiene (no trailing whitespace, single
-/// final newline), and assert the output reparses to the same AST.
-fn format_checked(source: &str, printer: &PrettyPrinter) -> String {
-    let output = format_str(source, printer)
-        .unwrap_or_else(|e| panic!("failed to format: {e}\nsource:\n{source}"));
-    for line in output.lines() {
-        assert_eq!(
-            line.trim_end(),
-            line,
-            "trailing whitespace in output line {line:?}\noutput:\n{output}"
-        );
-    }
-    assert!(
-        output.ends_with('\n') && !output.ends_with("\n\n"),
-        "output must end with exactly one newline, got:\n{output:?}"
-    );
-
-    let mut original = parse(source).unwrap();
-    let mut reparsed = parse(&output)
-        .unwrap_or_else(|e| panic!("output does not reparse: {e}\noutput:\n{output}"));
-    clear_spans(&mut original);
-    clear_spans(&mut reparsed);
-    assert_eq!(
-        original, reparsed,
-        "reparse mismatch\nsource:\n{source}\noutput:\n{output}"
-    );
-
-    output
 }
 
 // =========================================================================
@@ -334,6 +304,8 @@ fn resolved_applies_overrides_on_top_of_preset() {
     assert_eq!(defaults.decl_lists, DeclListLayout::Inline);
     assert!(defaults.blank_between_clauses);
     assert!(defaults.use_unicode);
+    // Wrapping is off in every preset; only explicit overrides enable it.
+    assert_eq!(defaults.max_line_width, 0);
 
     let overridden = PrettyPrinter::resolved(
         Style::Camille,
@@ -342,7 +314,8 @@ fn resolved_applies_overrides_on_top_of_preset() {
             decl_lists: Some(DeclListLayout::OnePerLine),
             blank_between_clauses: Some(false),
             indent: Some("    ".to_string()),
-            use_unicode: Some(false),
+            use_unicode: false,
+            max_line_width: 100,
         },
     );
     assert_eq!(overridden.indent, "    ");
@@ -350,6 +323,7 @@ fn resolved_applies_overrides_on_top_of_preset() {
     assert_eq!(overridden.decl_lists, DeclListLayout::OnePerLine);
     assert!(!overridden.blank_between_clauses);
     assert!(!overridden.use_unicode);
+    assert_eq!(overridden.max_line_width, 100);
 
     // An explicit empty indent override is honored (the CLI's
     // `--indent=""`); only `None` follows the preset.
