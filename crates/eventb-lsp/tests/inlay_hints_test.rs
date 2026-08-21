@@ -54,8 +54,22 @@ fn default_config() -> Arc<RossiConfig> {
     Arc::new(RossiConfig::default())
 }
 
-/// The `(position, label)` pairs of `hints`, with positions resolved back
-/// against `text` for readable assertions.
+/// The default configuration with one tweak applied.
+fn config_with(tweak: impl FnOnce(&mut RossiConfig)) -> Arc<RossiConfig> {
+    let mut config = RossiConfig::default();
+    tweak(&mut config);
+    Arc::new(config)
+}
+
+/// A machine with one ℤ-typed variable — the smallest hintable document.
+const INT_MACHINE: &str = "MACHINE m\nVARIABLES\n    x\nINVARIANTS\n    @inv1 x ∈ ℤ\nEVENTS\n    EVENT INITIALISATION\n    THEN\n        @act1 x := 0\n    END\nEND\n";
+
+/// [`INT_MACHINE`] plus an invariant dividing by `x` — one type hint plus
+/// one WD marker.
+const WD_MACHINE: &str = "MACHINE m\nVARIABLES\n    x\nINVARIANTS\n    @inv1 x ∈ ℤ\n    @inv2 10 ÷ x > 0\nEVENTS\n    EVENT INITIALISATION\n    THEN\n        @act1 x := 1\n    END\nEND\n";
+
+/// The labels of every hint anchored right after an occurrence of `name`
+/// in `text`, in occurrence order.
 fn labels_at(hints: &[InlayHint], text: &str, name: &str) -> Vec<String> {
     let mut labels = Vec::new();
     let mut offset = 0;
@@ -93,7 +107,7 @@ fn tooltip_text(hint: &InlayHint) -> Option<&str> {
 #[test]
 fn machine_variables_are_hinted_at_their_declaration() {
     let fixture = Fixture::new();
-    let text = "MACHINE m\nVARIABLES\n    x\nINVARIANTS\n    @inv1 x ∈ ℤ\nEVENTS\n    EVENT INITIALISATION\n    THEN\n        @act1 x := 0\n    END\nEND\n";
+    let text = INT_MACHINE;
     let uri = fixture.open("file:///m.eventb", text);
 
     let hints = fixture.hints(&uri, &default_config());
@@ -183,12 +197,12 @@ fn untypeable_declarations_are_skipped_but_siblings_are_hinted() {
 #[test]
 fn a_broken_sibling_component_does_not_suppress_healthy_hints() {
     let fixture = Fixture::new();
-    let text = "MACHINE m\nVARIABLES\n    x\nINVARIANTS\n    @inv1 x ∈ ℤ\nEVENTS\n    EVENT INITIALISATION\n    THEN\n        @act1 x := 0\n    END\nEND\n\nMACHINE broken\nVARIABLES\n    +\nEND\n";
-    let uri = fixture.open("file:///m.eventb", text);
+    let text = format!("{INT_MACHINE}\nMACHINE broken\nVARIABLES\n    +\nEND\n");
+    let uri = fixture.open("file:///m.eventb", &text);
 
     let hints = fixture.hints(&uri, &default_config());
 
-    assert_eq!(labels_at(&hints, text, "x"), vec![": ℤ"]);
+    assert_eq!(labels_at(&hints, &text, "x"), vec![": ℤ"]);
 }
 
 #[test]
@@ -198,10 +212,7 @@ fn hints_are_clipped_to_the_requested_range() {
     let uri = fixture.open("file:///m.eventb", text);
     let config = default_config();
 
-    let all = fixture
-        .provider
-        .inlay_hints(&uri, full_range(), &config)
-        .unwrap();
+    let all = fixture.hints(&uri, &config);
     assert_eq!(all.len(), 2);
 
     // Only the line declaring `x`.
@@ -224,17 +235,13 @@ fn long_types_truncate_with_the_full_type_as_tooltip() {
     let uri = fixture.open("file:///m.eventb", text);
     let full_type = "ℙ(ℤ×ℙ(ℤ×ℙ(ℤ×ℤ)))";
 
-    let mut truncating = RossiConfig::default();
-    truncating.inlay_hints.max_length = 8;
-    let hints = fixture.hints(&uri, &Arc::new(truncating));
+    let hints = fixture.hints(&uri, &config_with(|c| c.inlay_hints.max_length = 8));
     assert_eq!(hints.len(), 1);
     let expected: String = full_type.chars().take(7).collect();
     assert_eq!(label_text(&hints[0]), format!(": {expected}…"));
     assert_eq!(tooltip_text(&hints[0]), Some(full_type));
 
-    let mut untruncated = RossiConfig::default();
-    untruncated.inlay_hints.max_length = 0;
-    let hints = fixture.hints(&uri, &Arc::new(untruncated));
+    let hints = fixture.hints(&uri, &config_with(|c| c.inlay_hints.max_length = 0));
     assert_eq!(label_text(&hints[0]), format!(": {full_type}"));
     assert_eq!(tooltip_text(&hints[0]), None);
 }
@@ -245,9 +252,7 @@ fn ascii_configuration_renders_ascii_type_spellings() {
     let text = "MACHINE m\nVARIABLES\n    s\nINVARIANTS\n    @inv1 s ⊆ ℤ\nEVENTS\n    EVENT INITIALISATION\n    THEN\n        @act1 s := ∅\n    END\nEND\n";
     let uri = fixture.open("file:///m.eventb", text);
 
-    let mut ascii = RossiConfig::default();
-    ascii.format.use_unicode = false;
-    let hints = fixture.hints(&uri, &Arc::new(ascii));
+    let hints = fixture.hints(&uri, &config_with(|c| c.format.use_unicode = false));
 
     assert_eq!(hints.len(), 1);
     assert_eq!(label_text(&hints[0]), ": POW(INT)");
@@ -256,10 +261,7 @@ fn ascii_configuration_renders_ascii_type_spellings() {
 #[test]
 fn an_edit_invalidates_the_cached_hints() {
     let fixture = Fixture::new();
-    let uri = fixture.open(
-        "file:///m.eventb",
-        "MACHINE m\nVARIABLES\n    x\nINVARIANTS\n    @inv1 x ∈ ℤ\nEVENTS\n    EVENT INITIALISATION\n    THEN\n        @act1 x := 0\n    END\nEND\n",
-    );
+    let uri = fixture.open("file:///m.eventb", INT_MACHINE);
     let config = default_config();
 
     let before = fixture.hints(&uri, &config);
@@ -278,4 +280,154 @@ fn an_edit_invalidates_the_cached_hints() {
 
     let after = fixture.hints(&uri, &config);
     assert_eq!(label_text(&after[0]), ": ℙ(ℤ)");
+}
+
+#[test]
+fn well_definedness_markers_carry_the_lemma_tooltip() {
+    let fixture = Fixture::new();
+    let text = WD_MACHINE;
+    let uri = fixture.open("file:///m.eventb", text);
+
+    let hints = fixture.hints(&uri, &default_config());
+
+    // One type hint on `x`, one WD marker on the dividing invariant.
+    assert_eq!(hints.len(), 2, "{hints:?}");
+    let wd = &hints[1];
+    let formula = "10 ÷ x > 0";
+    let formula_end = offset_to_position(text, text.find(formula).unwrap() + formula.len());
+    assert_eq!(wd.position, formula_end);
+    assert_eq!(label_text(wd), "WD");
+    assert_eq!(wd.kind, None);
+    assert_eq!(wd.padding_left, Some(true));
+    let Some(InlayHintTooltip::MarkupContent(tooltip)) = &wd.tooltip else {
+        panic!("markup tooltip expected: {:?}", wd.tooltip);
+    };
+    assert!(
+        tooltip.value.contains("Well-definedness condition:") && tooltip.value.contains('≠'),
+        "tooltip must show the rendered lemma: {}",
+        tooltip.value
+    );
+}
+
+#[test]
+fn well_definedness_tooltips_respect_the_ascii_configuration() {
+    let fixture = Fixture::new();
+    let text = WD_MACHINE;
+    let uri = fixture.open("file:///m.eventb", text);
+
+    let hints = fixture.hints(&uri, &config_with(|c| c.format.use_unicode = false));
+
+    let Some(InlayHintTooltip::MarkupContent(tooltip)) = &hints[1].tooltip else {
+        panic!("markup tooltip expected");
+    };
+    assert!(
+        tooltip.value.contains("/="),
+        "the lemma must use the ASCII operator spelling: {}",
+        tooltip.value
+    );
+}
+
+#[test]
+fn well_definedness_markers_can_be_disabled() {
+    let fixture = Fixture::new();
+    let text = WD_MACHINE;
+    let uri = fixture.open("file:///m.eventb", text);
+
+    let hints = fixture.hints(
+        &uri,
+        &config_with(|c| c.inlay_hints.well_definedness = false),
+    );
+
+    assert_eq!(hints.len(), 1, "only the type hint remains: {hints:?}");
+    assert_eq!(label_text(&hints[0]), ": ℤ");
+}
+
+#[test]
+fn dependency_wd_conditions_do_not_leak_into_this_file() {
+    let fixture = Fixture::new();
+    let context_text =
+        "CONTEXT c\nCONSTANTS\n    k\nAXIOMS\n    @axm1 k ∈ ℤ\n    @axm2 10 ÷ k > 0\nEND\n";
+    let context_uri = fixture.open("file:///c.eventb", context_text);
+    let machine_text = "MACHINE m\nSEES\n    c\nVARIABLES\n    x\nINVARIANTS\n    @inv1 x ∈ ℤ\nEVENTS\n    EVENT INITIALISATION\n    THEN\n        @act1 x := k\n    END\nEND\n";
+    let machine_uri = fixture.open("file:///m.eventb", machine_text);
+
+    let config = default_config();
+    let machine_hints = fixture.hints(&machine_uri, &config);
+    assert_eq!(
+        machine_hints.len(),
+        1,
+        "the seen context's WD condition must not appear here: {machine_hints:?}"
+    );
+    assert_eq!(label_text(&machine_hints[0]), ": ℤ");
+
+    // The context's own file does carry the marker.
+    let context_hints = fixture.hints(&context_uri, &config);
+    assert_eq!(context_hints.len(), 2, "{context_hints:?}");
+    assert_eq!(label_text(&context_hints[1]), "WD");
+}
+
+#[test]
+fn well_definedness_markers_skip_a_trailing_comment() {
+    let fixture = Fixture::new();
+    let text = WD_MACHINE.replace("> 0\n", "> 0 // may divide\n");
+    let uri = fixture.open("file:///m.eventb", &text);
+
+    let hints = fixture.hints(&uri, &default_config());
+
+    // The formula span swallows the trailing comment; the marker must still
+    // anchor at the formula's last visible character.
+    assert_eq!(hints.len(), 2, "{hints:?}");
+    let formula = "10 ÷ x > 0";
+    let formula_end = offset_to_position(&text, text.find(formula).unwrap() + formula.len());
+    assert_eq!(hints[1].position, formula_end, "{hints:?}");
+    assert_eq!(label_text(&hints[1]), "WD");
+}
+
+#[test]
+fn closing_a_dependency_invalidates_the_cached_hints() {
+    let fixture = Fixture::new();
+    let context_text = "CONTEXT c\nCONSTANTS\n    k\nAXIOMS\n    @axm1 k ∈ ℤ\nEND\n";
+    let context_uri = fixture.open("file:///c.eventb", context_text);
+    let machine_text = "MACHINE m\nSEES\n    c\nVARIABLES\n    x\nINVARIANTS\n    @inv1 x = k\nEVENTS\n    EVENT INITIALISATION\n    THEN\n        @act1 x := k\n    END\nEND\n";
+    let machine_uri = fixture.open("file:///m.eventb", machine_text);
+    let config = default_config();
+
+    // Hints computed while c's open buffer types k as BOOL.
+    fixture.documents.change(
+        &context_uri,
+        2,
+        vec![TextDocumentContentChangeEvent {
+            range: None,
+            range_length: None,
+            text: context_text.replace("k ∈ ℤ", "k ∈ BOOL"),
+        }],
+    );
+    let edited = fixture.hints(&machine_uri, &config);
+    assert_eq!(label_text(&edited[0]), ": BOOL");
+
+    // Closing c discards the buffer (this fixture has no disk fallback), so
+    // the machine can no longer type `x`: hints derived from the discarded
+    // buffer must not keep being served from the cache.
+    fixture.documents.close(&context_uri);
+    let restored = fixture.hints(&machine_uri, &config);
+    assert!(
+        restored.is_empty(),
+        "hints from the closed buffer must not survive: {restored:?}"
+    );
+}
+
+#[test]
+fn duplicate_component_names_get_no_hints() {
+    // Two same-name machines are an EB019 error on the build path; the
+    // second copy must not be silently annotated with the first copy's types.
+    let fixture = Fixture::new();
+    let second_copy = INT_MACHINE
+        .replace("x ∈ ℤ", "x ∈ BOOL")
+        .replace("x := 0", "x := TRUE");
+    let text = format!("{INT_MACHINE}\n{second_copy}");
+    let uri = fixture.open("file:///m.eventb", &text);
+
+    let hints = fixture.hints(&uri, &default_config());
+
+    assert!(hints.is_empty(), "{hints:?}");
 }

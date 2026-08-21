@@ -14,18 +14,22 @@
 use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 
-use rossi::Component;
 use rossi::ast::NamedElement;
 use rossi::deps::kind_and_name;
 use rossi::formula::{FormulaFactory, Type};
+use rossi::{Component, PrettyPrinter};
 
 use crate::component_loader::ComponentLoader;
-use crate::config::{FormatConfig, RossiConfig};
+use crate::config::RossiConfig;
 use crate::cross_references::CrossReferenceManager;
 use crate::document::DocumentManager;
-use crate::lsp_types::{InlayHint, InlayHintKind, InlayHintLabel, InlayHintTooltip, Range, Url};
+use crate::lsp_types::{
+    InlayHint, InlayHintKind, InlayHintLabel, InlayHintTooltip, MarkupContent, MarkupKind, Range,
+    Url,
+};
 use crate::position::PositionIndex;
 use crate::resolved_environment::ResolvedEnvironments;
+use crate::text_utils::line_tight_end;
 
 /// Serves `textDocument/inlayHint` from per-URI cached whole-document lists.
 pub struct InlayHintsProvider {
@@ -36,15 +40,15 @@ pub struct InlayHintsProvider {
 
 /// One cached whole-document hint computation. Valid while no buffer anywhere
 /// has changed (the closure's inputs are open buffers plus disk fallbacks, so
-/// any open/change is the moment inferred types can change) and the request
-/// still runs under the same configuration snapshot.
+/// any open/change/close is the moment inferred types can change) and the
+/// request still runs under the same configuration snapshot.
 struct CachedHints {
     change_counter: u64,
     /// Compared by `Arc::ptr_eq`: the config manager swaps the whole `Arc` on
     /// every update, so pointer identity is exactly "unchanged since".
     config: Arc<RossiConfig>,
-    /// In document order, un-clipped; requests filter by their range.
-    hints: Arc<Vec<InlayHint>>,
+    /// Sorted by position, un-clipped; requests slice out their range.
+    hints: Vec<InlayHint>,
 }
 
 impl InlayHintsProvider {
@@ -59,12 +63,28 @@ impl InlayHintsProvider {
         }
     }
 
-    /// The hints for `uri` clipped to `range`; `None` when the document is not
-    /// open. A cache hit is a lock plus a filter; a miss runs the static check
-    /// over the document's dependency closure. Concurrent misses for one URI
-    /// may compute twice — clients debounce their requests, so a rare
-    /// duplicate is preferred over another lock order to reason about.
-    pub fn inlay_hints(
+    /// The hints for `uri` clipped to `range`, served from the cache alone;
+    /// `None` when there is no valid entry. Cheap enough for the async
+    /// handler thread: a lock, two binary searches, and the response clones.
+    pub fn cached_hints(
+        &self,
+        uri: &Url,
+        range: Range,
+        config: &Arc<RossiConfig>,
+    ) -> Option<Vec<InlayHint>> {
+        let change_counter = self.document_manager.change_counter();
+        let cache = self.cache.lock();
+        let entry = cache.get(uri)?;
+        (entry.change_counter == change_counter && Arc::ptr_eq(&entry.config, config))
+            .then(|| clip(&entry.hints, range))
+    }
+
+    /// Compute, cache, and clip the hints for `uri`; `None` when the document
+    /// is not open. Runs the static check over the document's dependency
+    /// closure — call from the blocking pool. Concurrent computes for one URI
+    /// may run twice — clients debounce their requests, so a rare duplicate
+    /// is preferred over another lock order to reason about.
+    pub fn compute_hints(
         &self,
         uri: &Url,
         range: Range,
@@ -73,26 +93,31 @@ impl InlayHintsProvider {
         // Read the stamp before computing: an edit landing mid-compute then
         // invalidates the entry we store, never the other way around.
         let change_counter = self.document_manager.change_counter();
-        {
-            let cache = self.cache.lock();
-            if let Some(entry) = cache.get(uri)
-                && entry.change_counter == change_counter
-                && Arc::ptr_eq(&entry.config, config)
-            {
-                return Some(clip(&entry.hints, range));
-            }
-        }
-
-        let hints = Arc::new(self.compute(uri, config)?);
+        let hints = self.compute(uri, config)?;
+        let clipped = clip(&hints, range);
         self.cache.lock().insert(
             uri.clone(),
             CachedHints {
                 change_counter,
                 config: Arc::clone(config),
-                hints: Arc::clone(&hints),
+                hints,
             },
         );
-        Some(clip(&hints, range))
+        Some(clipped)
+    }
+
+    /// The hints for `uri` clipped to `range`; `None` when the document is
+    /// not open. Cache-hit-or-compute in one call, for callers indifferent to
+    /// the blocking boundary (the server tries [`Self::cached_hints`] inline
+    /// and moves only a miss to the blocking pool).
+    pub fn inlay_hints(
+        &self,
+        uri: &Url,
+        range: Range,
+        config: &Arc<RossiConfig>,
+    ) -> Option<Vec<InlayHint>> {
+        self.cached_hints(uri, range, config)
+            .or_else(|| self.compute_hints(uri, range, config))
     }
 
     /// Drop the cached hints of a closed document.
@@ -108,17 +133,19 @@ impl InlayHintsProvider {
         let doc = self.document_manager.parse_result(uri)?;
 
         // The loadable closure of every component in this file, the roots
-        // first. Dedup by kind and name: a merged file's machine may SEES a
-        // context sitting right next to it.
+        // first. Dedup dependencies against the roots by kind and name: a
+        // merged file's machine may SEES a context sitting right next to it.
+        // Roots themselves are never deduped — genuine same-name duplicates
+        // must reach the static check so its duplicate-component error empties
+        // the model instead of hints joining every copy to one record.
         let loader =
             ComponentLoader::new(&self.cross_reference_manager, Some(&self.document_manager));
         let mut environments = ResolvedEnvironments::new();
         let mut seen = HashSet::new();
         let mut components = Vec::new();
         for component in doc.components() {
-            if seen.insert(kind_and_name(component)) {
-                components.push(component.clone());
-            }
+            seen.insert(kind_and_name(component));
+            components.push(component.clone());
         }
         for component in doc.components() {
             let environment = environments.resolve(component, &loader);
@@ -141,11 +168,12 @@ impl InlayHintsProvider {
             "lsp-inlay-hints",
             components
                 .into_iter()
-                .map(|component| rossi_build::ProjectComponent {
-                    filename: format!("{}.eventb", component.name()),
-                    component,
-                    rodin_ids: rossi_build::rodin_ids::RodinIds::default(),
-                    source: None,
+                .map(|component| {
+                    rossi_build::ProjectComponent::from_parsed(
+                        format!("{}.eventb", component.name()),
+                        component,
+                        None,
+                    )
                 })
                 .collect(),
         );
@@ -154,6 +182,11 @@ impl InlayHintsProvider {
         let (_result, model) = rossi_build::check_with_model(&project);
 
         let index = PositionIndex::new(doc.text());
+        // One wrap-free, style-resolved printer for every label and tooltip:
+        // inlay hints render on a single line whatever the format width says.
+        let mut printer = config.format.printer();
+        printer.max_line_width = 0;
+        let max_length = config.inlay_hints.max_length as usize;
         let mut hints = Vec::new();
         for component in doc.components() {
             match component {
@@ -161,13 +194,18 @@ impl InlayHintsProvider {
                     let Some(checked) = model.machines.get(&machine.name) else {
                         continue;
                     };
-                    let types: HashMap<&str, &Type> = checked
-                        .record
-                        .variables
-                        .iter()
-                        .map(|variable| (variable.name.as_str(), &variable.ty))
-                        .collect();
-                    push_declaration_hints(&mut hints, &machine.variables, &types, &index, config);
+                    push_declaration_hints(
+                        &mut hints,
+                        &machine.variables,
+                        checked
+                            .record
+                            .variables
+                            .iter()
+                            .map(|variable| (variable.name.as_str(), &variable.ty)),
+                        &index,
+                        &printer,
+                        max_length,
+                    );
 
                     let events: HashMap<&str, _> = checked
                         .record
@@ -179,17 +217,15 @@ impl InlayHintsProvider {
                         let Some(decl) = events.get(event.name.as_str()) else {
                             continue;
                         };
-                        let types: HashMap<&str, &Type> = decl
-                            .parameters
-                            .iter()
-                            .map(|parameter| (parameter.name.as_str(), &parameter.ty))
-                            .collect();
                         push_declaration_hints(
                             &mut hints,
                             &event.parameters,
-                            &types,
+                            decl.parameters
+                                .iter()
+                                .map(|parameter| (parameter.name.as_str(), &parameter.ty)),
                             &index,
-                            config,
+                            &printer,
+                            max_length,
                         );
                     }
                 }
@@ -197,33 +233,108 @@ impl InlayHintsProvider {
                     let Some(checked) = model.contexts.get(&context.name) else {
                         continue;
                     };
-                    let types: HashMap<&str, &Type> = checked
-                        .record
-                        .constants
-                        .iter()
-                        .map(|constant| (constant.name.as_str(), &constant.ty))
-                        .collect();
-                    push_declaration_hints(&mut hints, &context.constants, &types, &index, config);
+                    push_declaration_hints(
+                        &mut hints,
+                        &context.constants,
+                        checked
+                            .record
+                            .constants
+                            .iter()
+                            .map(|constant| (constant.name.as_str(), &constant.ty)),
+                        &index,
+                        &printer,
+                        max_length,
+                    );
                     // Carrier sets are deliberately not hinted: a set S always
                     // types as ℙ(S), so the hint would carry no information.
                 }
             }
         }
+
+        if config.inlay_hints.well_definedness {
+            // The project was assembled roots-first, so this file's
+            // components are exactly the leading `doc.components().len()`
+            // project entries.
+            push_well_definedness_hints(
+                &mut hints,
+                &project.components[..doc.components().len()],
+                doc.text(),
+                &model,
+                &index,
+                &printer,
+            );
+        }
+
         hints.sort_by_key(|hint| hint.position);
         Some(hints)
+    }
+}
+
+/// Append one "WD" marker per formula of `local_components` whose
+/// well-definedness lemma is non-trivial, with the lemma — rendered in the
+/// user's configured style — as the hint tooltip. The lemma is a conjunction
+/// over the whole formula, so there is one marker per formula, at the
+/// formula's end.
+///
+/// `local_components` must be this file's components only: dependency
+/// formulas carry spans into *their* files, and their lemmas would be
+/// computed just to be discarded.
+fn push_well_definedness_hints(
+    hints: &mut Vec<InlayHint>,
+    local_components: &[rossi_build::ProjectComponent],
+    text: &str,
+    model: &rossi_build::sc_model::ScModel,
+    index: &PositionIndex,
+    printer: &PrettyPrinter,
+) {
+    let conditions = rossi_build::wd::conditions(local_components, model);
+    if conditions.is_empty() {
+        return;
+    }
+    // Formula spans swallow the trailing trivia — whitespace and comments —
+    // up to the next token (the grammar's implicit rules); anchor each marker
+    // at its formula's last visible character instead.
+    let masked = rossi::comments::mask_comments(text);
+    for condition in conditions {
+        let Some(span) = condition.span else {
+            continue;
+        };
+        hints.push(InlayHint {
+            position: index.position(line_tight_end(&masked, span)),
+            label: InlayHintLabel::String("WD".to_string()),
+            // Neither of the two protocol kinds (Type, Parameter) applies;
+            // omitted, the client falls back to a reasonable default.
+            kind: None,
+            text_edits: None,
+            tooltip: Some(InlayHintTooltip::MarkupContent(MarkupContent {
+                kind: MarkupKind::Markdown,
+                value: format!(
+                    "Well-definedness condition:\n```\n{}\n```",
+                    printer.print_formula_predicate(&condition.lemma)
+                ),
+            })),
+            padding_left: Some(true),
+            padding_right: None,
+            data: None,
+        });
     }
 }
 
 /// Append one `: τ` hint per declared name that the checker typed and the
 /// textual parser located. Names without a span (Rodin-XML imports) or
 /// without an inferred type (no typing predicate found) are skipped.
-fn push_declaration_hints(
+fn push_declaration_hints<'a>(
     hints: &mut Vec<InlayHint>,
     declarations: &[NamedElement],
-    types: &HashMap<&str, &Type>,
+    typed: impl Iterator<Item = (&'a str, &'a Type)>,
     index: &PositionIndex,
-    config: &RossiConfig,
+    printer: &PrettyPrinter,
+    max_length: usize,
 ) {
+    if declarations.is_empty() {
+        return;
+    }
+    let types: HashMap<&str, &Type> = typed.collect();
     for declaration in declarations {
         let Some(span) = &declaration.span else {
             continue;
@@ -231,13 +342,9 @@ fn push_declaration_hints(
         let Some(ty) = types.get(declaration.name.as_str()) else {
             continue;
         };
-        let rendered = render_type(ty, &config.format);
-        let max_length = config.inlay_hints.max_length as usize;
+        let rendered = render_type(ty, printer);
         let (label, tooltip) = if max_length > 0 && rendered.chars().count() > max_length {
-            let truncated: String = rendered
-                .chars()
-                .take(max_length.saturating_sub(1))
-                .collect();
+            let truncated: String = rendered.chars().take(max_length - 1).collect();
             (
                 format!(": {truncated}…"),
                 Some(InlayHintTooltip::String(rendered)),
@@ -261,29 +368,17 @@ fn push_declaration_hints(
 /// Render a type in the user's configured formatting style. The canonical
 /// Rodin spelling is Unicode; the ASCII spelling goes through the shared
 /// style-resolved printer so operator spellings match formatted output.
-/// Parametric types have no expression form yet and always render canonically.
-fn render_type(ty: &Type, format: &FormatConfig) -> String {
-    if format.use_unicode || contains_parametric(ty) {
+fn render_type(ty: &Type, printer: &PrettyPrinter) -> String {
+    if printer.use_unicode {
         return ty.to_rodin_canonical();
     }
-    let mut printer = format.printer();
-    printer.max_line_width = 0;
     printer.print_formula_expression(&ty.to_expression(&FormulaFactory::default_factory()))
 }
 
-fn contains_parametric(ty: &Type) -> bool {
-    match ty {
-        Type::Bool | Type::Int | Type::Given(_) => false,
-        Type::Pow(inner) => contains_parametric(inner),
-        Type::Prod(left, right) => contains_parametric(left) || contains_parametric(right),
-        Type::Parametric { .. } => true,
-    }
-}
-
+/// The hints intersecting `range` — a contiguous run, since the cached list
+/// is sorted by position.
 fn clip(hints: &[InlayHint], range: Range) -> Vec<InlayHint> {
-    hints
-        .iter()
-        .filter(|hint| hint.position >= range.start && hint.position <= range.end)
-        .cloned()
-        .collect()
+    let start = hints.partition_point(|hint| hint.position < range.start);
+    let end = hints.partition_point(|hint| hint.position <= range.end);
+    hints[start..end].to_vec()
 }

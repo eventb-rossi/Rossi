@@ -1197,7 +1197,9 @@ impl LanguageServer for RossiLanguageServer {
 
                 // Hints depend on the configuration (enabled state, label
                 // rendering); ask clients that support it to re-request them
-                // under the new settings.
+                // under the new settings. The capability guard is protocol
+                // correctness, not error avoidance: a server must not send
+                // requests the client never announced support for.
                 if self
                     .supports_inlay_hint_refresh
                     .load(std::sync::atomic::Ordering::Relaxed)
@@ -1808,12 +1810,18 @@ impl LanguageServer for RossiLanguageServer {
             return Ok(None);
         }
 
-        // Type inference over the document's dependency closure runs on the
-        // blocking pool; repeated requests at an unchanged buffer state are
-        // served from the provider's cache.
-        let provider = Arc::clone(&self.inlay_hints_provider);
+        // The common case — scrolling and re-requests at an unchanged buffer
+        // state — is a cache hit: a lock and two binary searches, served
+        // inline without a blocking-pool round-trip.
         let range = params.range;
-        let response = run_blocking(move || provider.inlay_hints(&uri, range, &config)).await?;
+        if let Some(hints) = self.inlay_hints_provider.cached_hints(&uri, range, &config) {
+            return Ok(Some(hints));
+        }
+
+        // A miss runs type inference over the document's dependency closure
+        // on the blocking pool.
+        let provider = Arc::clone(&self.inlay_hints_provider);
+        let response = run_blocking(move || provider.compute_hints(&uri, range, &config)).await?;
 
         debug!(
             "Inlay hints returned: {}",

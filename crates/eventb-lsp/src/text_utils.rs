@@ -12,6 +12,16 @@ pub fn is_identifier_char(ch: char) -> bool {
     ch.is_alphanumeric() || ch == '_'
 }
 
+/// Offset just past a member's last visible character: `span.end` minus the
+/// trailing trivia the grammar's implicit whitespace/comment rules folded
+/// into the span. `masked` must be the comment-masked text, so a swallowed
+/// trailing comment trims away like the whitespace it is masked to.
+pub(crate) fn line_tight_end(masked: &str, span: rossi::ast::Span) -> usize {
+    masked
+        .get(span.start..span.end)
+        .map_or(span.end, |text| span.start + text.trim_end().len())
+}
+
 /// One `MACHINE`/`CONTEXT` header line found by [`header_lines`].
 #[derive(Debug)]
 pub(crate) struct HeaderLine<'a> {

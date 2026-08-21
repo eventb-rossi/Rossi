@@ -810,9 +810,7 @@ fn member_position(span: rossi::ast::Span, masked: &str, offset: usize) -> Membe
     if offset < span.start {
         return MemberPosition::Before;
     }
-    let end = masked
-        .get(span.start..span.end)
-        .map_or(span.end, |text| span.start + text.trim_end().len());
+    let end = text_utils::line_tight_end(masked, span);
     if offset <= end
         || masked
             .get(end..offset)

@@ -163,7 +163,7 @@ fn default_max_line_width() -> u32 {
 /// out-of-range or mistyped value (negative, fractional, string — some
 /// clients enforce no schema) falls back to `default` instead of failing
 /// the all-or-nothing `from_client_settings` parse.
-fn tolerant_u32<'de, D>(deserializer: D, default: fn() -> u32) -> Result<u32, D::Error>
+fn tolerant_u32<'de, D>(deserializer: D, default: u32) -> Result<u32, D::Error>
 where
     D: serde::Deserializer<'de>,
 {
@@ -171,14 +171,14 @@ where
     Ok(value
         .as_u64()
         .and_then(|number| u32::try_from(number).ok())
-        .unwrap_or_else(default))
+        .unwrap_or(default))
 }
 
 fn tolerant_max_line_width<'de, D>(deserializer: D) -> Result<u32, D::Error>
 where
     D: serde::Deserializer<'de>,
 {
-    tolerant_u32(deserializer, default_max_line_width)
+    tolerant_u32(deserializer, default_max_line_width())
 }
 
 /// Tolerant deserializer for `blankBetweenClauses`: any non-boolean value
@@ -372,6 +372,11 @@ pub struct InlayHintsConfig {
     #[serde(default = "default_inlay_hints_enabled")]
     pub enabled: bool,
 
+    /// Mark formulas carrying a non-trivial well-definedness condition with
+    /// a "WD" hint whose tooltip shows the condition
+    #[serde(default = "default_inlay_hints_well_definedness")]
+    pub well_definedness: bool,
+
     /// Maximum rendered length of a type label in characters; longer labels
     /// are truncated with '…' and carry the full type as their tooltip.
     /// `0` disables truncation
@@ -386,12 +391,17 @@ impl Default for InlayHintsConfig {
     fn default() -> Self {
         Self {
             enabled: default_inlay_hints_enabled(),
+            well_definedness: default_inlay_hints_well_definedness(),
             max_length: default_inlay_hints_max_length(),
         }
     }
 }
 
 fn default_inlay_hints_enabled() -> bool {
+    true
+}
+
+fn default_inlay_hints_well_definedness() -> bool {
     true
 }
 
@@ -403,7 +413,7 @@ fn tolerant_inlay_hints_max_length<'de, D>(deserializer: D) -> Result<u32, D::Er
 where
     D: serde::Deserializer<'de>,
 {
-    tolerant_u32(deserializer, default_inlay_hints_max_length)
+    tolerant_u32(deserializer, default_inlay_hints_max_length())
 }
 
 /// Configuration manager that holds the current configuration
@@ -458,16 +468,24 @@ mod tests {
         assert!(config.rodin.mirror_proofs);
 
         assert!(config.inlay_hints.enabled);
+        assert!(config.inlay_hints.well_definedness);
         assert_eq!(config.inlay_hints.max_length, 32);
     }
 
     #[test]
     fn test_inlay_hints_settings_parse_nested() {
         let settings = serde_json::json!({
-            "rossi": { "inlayHints": { "enabled": false, "maxLength": 0 } }
+            "rossi": {
+                "inlayHints": {
+                    "enabled": false,
+                    "wellDefinedness": false,
+                    "maxLength": 0
+                }
+            }
         });
         let config = RossiConfig::from_client_settings(&settings).unwrap();
         assert!(!config.inlay_hints.enabled);
+        assert!(!config.inlay_hints.well_definedness);
         assert_eq!(config.inlay_hints.max_length, 0);
     }
 
