@@ -71,9 +71,10 @@ impl FormatConfig {
         rossi::PrettyPrinter {
             use_unicode: self.use_unicode,
             indent: self.indentation.clone(),
-            private_use_glyphs: false,
-            formula_spacing: rossi::FormulaSpacing::Readable,
-            typed_decls: false,
+            // The remaining fields keep the preset's deliberate pins:
+            // portable text (no private-use glyphs), readable formula
+            // spacing.
+            ..rossi::PrettyPrinter::styled(rossi::Style::Rossi)
         }
     }
 }

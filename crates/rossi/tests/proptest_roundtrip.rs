@@ -22,7 +22,7 @@ use rossi::formula::{BoundIdentDecl, FormulaFactory};
 use rossi::{
     ActionBody, Assignment, Component, Context, Event, EventStatus, Expression, ExpressionKind,
     Form, InitialisationEvent, LabeledAction, LabeledPredicate, Machine, NamedElement, Predicate,
-    PredicateKind, PrettyPrinter, Variant, parse,
+    PredicateKind, PrettyPrinter, Style, Variant, parse,
 };
 
 fn ff() -> FormulaFactory {
@@ -927,5 +927,46 @@ fn machine_roundtrip_unicode() {
 fn machine_roundtrip_ascii() {
     check_roundtrip_property(200, arb_machine, |component| {
         assert_component_roundtrip(component, &PrettyPrinter::ascii());
+    });
+}
+
+// --- Camille-style roundtrips ---
+//
+// The Camille preset changes the structural layout (inline header clauses,
+// hanging declaration lists, the deeper event ladder), so the component
+// generators re-run against it; formula printing is shared with the
+// default printers above.
+
+fn camille_printer(use_unicode: bool) -> PrettyPrinter {
+    let mut printer = PrettyPrinter::styled(Style::Camille);
+    printer.use_unicode = use_unicode;
+    printer
+}
+
+#[test]
+fn context_roundtrip_camille_unicode() {
+    check_roundtrip_property(200, arb_context, |component| {
+        assert_component_roundtrip(component, &camille_printer(true));
+    });
+}
+
+#[test]
+fn context_roundtrip_camille_ascii() {
+    check_roundtrip_property(200, arb_context, |component| {
+        assert_component_roundtrip(component, &camille_printer(false));
+    });
+}
+
+#[test]
+fn machine_roundtrip_camille_unicode() {
+    check_roundtrip_property(200, arb_machine, |component| {
+        assert_component_roundtrip(component, &camille_printer(true));
+    });
+}
+
+#[test]
+fn machine_roundtrip_camille_ascii() {
+    check_roundtrip_property(200, arb_machine, |component| {
+        assert_component_roundtrip(component, &camille_printer(false));
     });
 }

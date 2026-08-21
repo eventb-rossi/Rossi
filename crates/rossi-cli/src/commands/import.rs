@@ -19,7 +19,7 @@
 //! root, so they contribute no proofs.
 
 use clap::Args;
-use rossi::{FormulaSpacing, NamedComponent, NamedProject, PrettyPrinter};
+use rossi::{NamedComponent, NamedProject, PrettyPrinter, Style};
 use rossi_build::project::discover_projects;
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -91,10 +91,9 @@ fn run_inner(cli: &ImportArgs) -> CmdResult<()> {
     let printer = PrettyPrinter {
         use_unicode: !cli.ascii,
         indent: cli.indent.clone().unwrap_or_else(|| "    ".to_string()),
-        // Emitted text stays portable: never the private-use glyphs.
-        private_use_glyphs: false,
-        formula_spacing: FormulaSpacing::Readable,
-        typed_decls: false,
+        // The remaining fields keep the preset's deliberate pins: portable
+        // text (no private-use glyphs), readable formula spacing.
+        ..PrettyPrinter::styled(Style::Rossi)
     };
 
     // Multiple projects (a multi-project archive, or several inputs) are kept
