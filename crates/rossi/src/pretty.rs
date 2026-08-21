@@ -1973,9 +1973,11 @@ impl PrettyPrinter {
     // reuses the same `fm_*_needs_parens` decisions the flat renderers
     // apply, so wrapping can never change a formula's structure, and
     // recursion always descends into strictly smaller children, so it
-    // terminates at any width. Only labeled-element printing calls in
-    // here; the public `print_formula_*` API stays unconditionally flat,
-    // keeping Rodin-canonical strings and XML attributes newline-free.
+    // terminates at any width. Labeled-element printing and the one
+    // deliberate wrapped entry point, `print_formula_predicate_wrapped`,
+    // call in here; the rest of the public `print_formula_*` API stays
+    // unconditionally flat, keeping Rodin-canonical strings and XML
+    // attributes newline-free.
 
     fn wrap_ctx(&self, base_col: usize) -> WrapCtx {
         debug_assert!(
@@ -2005,6 +2007,18 @@ impl PrettyPrinter {
         let wc = self.wrap_ctx(base_col);
         let mut names = Vec::new();
         self.wrap_pred(pred, start_col, &wc, FormulaContext::Predicate, &mut names)
+    }
+
+    /// Convert a formula-model predicate to text starting at column 0,
+    /// wrapped at `max_line_width`. Flat — identical to
+    /// [`Self::print_formula_predicate`] — when wrapping is off or the
+    /// printer is a canonical one, whose output (Rodin-canonical strings,
+    /// XML attributes) must stay newline-free.
+    pub fn print_formula_predicate_wrapped(&self, pred: &formula::Predicate) -> String {
+        if self.formula_spacing != FormulaSpacing::Readable {
+            return self.print_formula_predicate(pred);
+        }
+        self.print_predicate_at(pred, 0, 0)
     }
 
     /// [`Self::print_predicate_at`] for expressions.

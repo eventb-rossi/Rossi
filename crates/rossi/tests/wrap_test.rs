@@ -302,6 +302,45 @@ fn presets_and_canonical_printers_never_wrap() {
 }
 
 #[test]
+fn formula_predicate_wrapped_wraps_at_width_and_reparses() {
+    let pred = rossi::parse_predicate_str(
+        "element : dom(EntityNames) & EntityNames : Entities +-> POW(Containers ** Names)",
+    )
+    .unwrap();
+
+    let output = wrapped(40).print_formula_predicate_wrapped(&pred);
+    assert!(output.contains('\n'), "expected wrapping: {output:?}");
+    for line in output.lines() {
+        assert!(
+            line.chars().count() <= 40,
+            "line exceeds 40 chars: {line:?}"
+        );
+    }
+    assert_eq!(
+        rossi::parse_predicate_str(&output).unwrap(),
+        pred,
+        "wrapped output must reparse as the same predicate"
+    );
+
+    // Width 0 keeps the wrapped entry point flat, like the rest of the API.
+    let flat = wrapped(0);
+    assert_eq!(
+        flat.print_formula_predicate_wrapped(&pred),
+        flat.print_formula_predicate(&pred)
+    );
+
+    // A canonical printer stays flat even with a forced width: its output
+    // feeds Rodin-canonical strings and XML attributes.
+    let canonical = PrettyPrinter::rodin_canonical().with_max_line_width(30);
+    let output = canonical.print_formula_predicate_wrapped(&pred);
+    assert!(
+        !output.contains('\n'),
+        "canonical must stay flat: {output:?}"
+    );
+    assert_eq!(output, canonical.print_formula_predicate(&pred));
+}
+
+#[test]
 fn base_model_wraps_at_120_and_reparses() {
     let source = std::fs::read_to_string("examples/base-model.eventb").unwrap();
     let printer = wrapped(120);
