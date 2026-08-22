@@ -88,16 +88,52 @@ jobs:
           # No-op when the host already targets this triple (everything except the
           # ARM64-Windows cross-build, which compiles on the x64 Windows runner).
           targets: ${{ matrix.target }}
+          # llvm-tools provides the llvm-profdata that matches rustc's LLVM,
+          # needed to merge the PGO training profiles.
+          components: llvm-tools
 
       - name: Cache Rust dependencies
         uses: Swatinem/rust-cache@v2
         with:
           key: ${{ matrix.target }}
 
-      - name: Build binaries
+      # Two-phase PGO build: instrument `rossi`, train it on the in-repo example
+      # models (scripts/pgo-train.sh), then rebuild both binaries with the merged
+      # profile. Measured 2026-08-22: 7-27% faster CLI runs, 20-32% faster cold
+      # LSP requests, 5% smaller binaries. The two cargo invocations must differ
+      # ONLY in -Cprofile-generate/-Cprofile-use: any other profile difference
+      # (e.g. strip) changes -Cmetadata, which is baked into the mangled symbol
+      # names rustc matches profiles by, and the profile silently stops applying.
+      - name: Build binaries (PGO)
+        # The ARM64-Windows cross-build cannot run its instrumented binary on the
+        # x64 runner, so that target ships without PGO (step below).
+        if: matrix.target != 'aarch64-pc-windows-msvc'
+        shell: bash
         # Empty on non-macOS rows, where the unset deployment target is ignored.
         env:
           MACOSX_DEPLOYMENT_TARGET: ${{ matrix.macosx_deployment_target }}
+        run: |
+          set -euo pipefail
+          # Native Windows rustc does not understand MSYS /d/... paths; cygpath
+          # is a no-op concern elsewhere.
+          pgodir="$PWD/pgo-data"
+          case "$(uname -s)" in MINGW*|MSYS*) pgodir="$(cygpath -m "$pgodir")" ;; esac
+          RUSTFLAGS="-Cprofile-generate=$pgodir" \
+            cargo build --release --locked --target ${{ matrix.target }} --bin rossi
+          bin="target/${{ matrix.target }}/release/rossi"
+          [ -f "$bin" ] || bin="$bin.exe"
+          scripts/pgo-train.sh "$bin"
+          sysroot="$(rustc --print sysroot)"
+          case "$(uname -s)" in MINGW*|MSYS*) sysroot="$(cygpath -u "$sysroot")" ;; esac
+          profdata=("$sysroot"/lib/rustlib/*/bin/llvm-profdata*)
+          "${profdata[0]}" merge -o pgo-merged.profdata pgo-data
+          usedata="$PWD/pgo-merged.profdata"
+          case "$(uname -s)" in MINGW*|MSYS*) usedata="$(cygpath -m "$usedata")" ;; esac
+          RUSTFLAGS="-Cprofile-use=$usedata" \
+            cargo build --release --locked --target ${{ matrix.target }} --bin rossi --bin eventb-language-server
+
+      - name: Build binaries (no PGO)
+        if: matrix.target == 'aarch64-pc-windows-msvc'
         run: cargo build --release --locked --target ${{ matrix.target }} --bin rossi --bin eventb-language-server
 
       # One flat archive per platform holding BOTH binaries plus the licenses and
