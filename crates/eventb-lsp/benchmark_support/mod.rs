@@ -5,6 +5,7 @@
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
 
+use eventb_lsp::formula_walk::declaration_span;
 use serde::Deserialize;
 use tower_lsp::lsp_types::{
     CompletionParams, CompletionResponse, HoverParams, PartialResultParams, Position,
@@ -23,10 +24,7 @@ pub struct ModelSpec {
     pub component_count: usize,
     pub root: String,
     pub hover_symbol: String,
-    #[serde(default = "default_hover_section")]
-    pub hover_section: String,
     pub reference_owner: String,
-    pub reference_section: String,
     pub reference_symbol: String,
     pub rename_component: String,
 }
@@ -51,13 +49,13 @@ impl ModelFixture {
             .unwrap_or_else(|| panic!("{} has no component {name}", self.spec.slug))
     }
 
-    pub fn declaration_offset(&self, component: &str, section: &str, symbol: &str) -> usize {
-        declaration_offset(&self.component(component).text, section, symbol).unwrap_or_else(|| {
-            panic!(
-                "{}: cannot find {component}::{symbol} in {section}",
-                self.spec.slug
-            )
-        })
+    /// Byte offset of `symbol`'s declaration in `component`, resolved from
+    /// the parsed component so the site does not depend on the layout the
+    /// fixture was printed with.
+    pub fn declaration_offset(&self, component: &str, symbol: &str) -> usize {
+        declaration_span(&self.component(component).component, symbol)
+            .map(|span| span.start)
+            .unwrap_or_else(|| panic!("{}: cannot find {component}::{symbol}", self.spec.slug))
     }
 
     pub fn component_name_offset(&self, component: &str) -> usize {
@@ -266,14 +264,9 @@ fn prepare_model(
 
     let fixture = ModelFixture { spec, components };
     fixture.component(&fixture.spec.root);
-    fixture.declaration_offset(
-        &fixture.spec.root,
-        &fixture.spec.hover_section,
-        &fixture.spec.hover_symbol,
-    );
+    fixture.declaration_offset(&fixture.spec.root, &fixture.spec.hover_symbol);
     fixture.declaration_offset(
         &fixture.spec.reference_owner,
-        &fixture.spec.reference_section,
         &fixture.spec.reference_symbol,
     );
     fixture.component_name_offset(&fixture.spec.rename_component);
@@ -309,33 +302,6 @@ fn validate_specs(config_path: &Path, specs: &[ModelSpec]) -> Result<(), String>
     Ok(())
 }
 
-fn default_hover_section() -> String {
-    "VARIABLES".to_string()
-}
-
-fn declaration_offset(text: &str, section: &str, symbol: &str) -> Option<usize> {
-    let mut in_section = false;
-    let mut offset = 0;
-    for line in text.split_inclusive('\n') {
-        let without_newline = line.trim_end_matches(['\r', '\n']);
-        if !without_newline.starts_with(char::is_whitespace) {
-            in_section = without_newline.trim() == section;
-        } else if in_section {
-            let declaration = without_newline
-                .trim()
-                .split("//")
-                .next()
-                .unwrap_or_default()
-                .trim();
-            if declaration.split_whitespace().next() == Some(symbol) {
-                return without_newline.find(symbol).map(|column| offset + column);
-            }
-        }
-        offset += line.len();
-    }
-    None
-}
-
 fn env_count(name: &str, default: usize) -> usize {
     std::env::var(name)
         .ok()
@@ -359,9 +325,7 @@ mod tests {
             component_count: 1,
             root: "M".to_string(),
             hover_symbol: "x".to_string(),
-            hover_section: "VARIABLES".to_string(),
             reference_owner: "M".to_string(),
-            reference_section: "VARIABLES".to_string(),
             reference_symbol: "x".to_string(),
             rename_component: "M".to_string(),
         }

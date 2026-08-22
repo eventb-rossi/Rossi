@@ -67,7 +67,12 @@ impl ResolvedEnvironments {
         // Always read the root's current edges. A root may have appeared first
         // as an indexed fallback, then be supplied here from a newer open
         // snapshot whose edges must win for this request.
-        let mut pending = VecDeque::from(direct_dependencies(&self.graph, &root_key, self.scope));
+        let mut pending = VecDeque::from(direct_dependencies(
+            &self.graph,
+            root_key.0,
+            &root_key.1,
+            self.scope,
+        ));
 
         while let Some(expected) = pending.pop_front() {
             #[cfg(test)]
@@ -86,7 +91,7 @@ impl ResolvedEnvironments {
                     self.graph.upsert_component(loaded.component());
                     self.components.insert(expected.clone(), loaded);
                     pending.extend(
-                        direct_dependencies(&self.graph, &expected, self.scope)
+                        direct_dependencies(&self.graph, expected.0, &expected.1, self.scope)
                             .into_iter()
                             .filter(|dependency| {
                                 !self.expanded.contains(dependency)
@@ -124,7 +129,12 @@ impl ResolvedEnvironments {
                     continue;
                 }
             }
-            pending.extend(direct_dependencies(&self.graph, &expected, self.scope));
+            pending.extend(direct_dependencies(
+                &self.graph,
+                expected.0,
+                &expected.1,
+                self.scope,
+            ));
         }
 
         ResolvedEnvironment {
@@ -206,7 +216,8 @@ impl ResolvedEnvironment<'_> {
                 let kind = self.graph.kind_of(&name)?;
                 Some(direct_dependencies(
                     self.graph,
-                    &(kind, name),
+                    kind,
+                    &name,
                     DependencyScope::All,
                 ))
             })
@@ -215,22 +226,35 @@ impl ResolvedEnvironment<'_> {
     }
 }
 
+/// Which outgoing edges a traversal follows.
 #[derive(Clone, Copy)]
-enum DependencyScope {
+pub enum DependencyScope {
+    /// Every dependency edge: REFINES, SEES and EXTENDS.
     All,
+    /// Only the REFINES chain.
     Refinements,
 }
 
-fn direct_dependencies(
+/// The components `name` depends on directly, in a fixed edge order
+/// (EXTENDS, then SEES, then REFINES) so a traversal over them is
+/// reproducible.
+pub fn direct_dependencies(
     graph: &DependencyGraph,
-    component: &(ComponentKind, String),
+    kind: ComponentKind,
+    name: &str,
     scope: DependencyScope,
 ) -> Vec<(ComponentKind, String)> {
-    let dependencies = graph
-        .references_of_kind(component.0, &component.1)
+    // `references_of_kind` groups the edges in a `HashMap`, whose iteration
+    // order differs between calls even within one thread. Take the groups
+    // out by kind instead, so the queue order is fixed: the closure a
+    // traversal reaches is the same either way, but an unordered queue
+    // reorders the hops that reach an already-expanded root, which varies
+    // how often the traversal revisits one.
+    let mut references = graph.references_of_kind(kind, name).unwrap_or_default();
+    let dependencies = [EdgeKind::Extends, EdgeKind::Sees, EdgeKind::Refines]
         .into_iter()
-        .flatten()
-        .filter(|(edge, _)| matches!(scope, DependencyScope::All) || *edge == EdgeKind::Refines)
+        .filter(|edge| matches!(scope, DependencyScope::All) || *edge == EdgeKind::Refines)
+        .filter_map(|edge| Some((edge, references.remove(&edge)?)))
         .flat_map(|(edge, names)| {
             names
                 .into_iter()

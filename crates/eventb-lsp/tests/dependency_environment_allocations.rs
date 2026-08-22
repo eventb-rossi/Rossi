@@ -16,6 +16,7 @@ use eventb_lsp::hover::HoverProvider;
 use eventb_lsp::lsp_types::Position;
 use eventb_lsp::references::ReferenceProvider;
 use eventb_lsp::rename::RenameProvider;
+use eventb_lsp::{DependencyScope, direct_dependencies};
 use rossi::deps::DependencyGraph;
 use stats_alloc::{INSTRUMENTED_SYSTEM, Region, StatsAlloc};
 
@@ -85,17 +86,7 @@ fn benchmark_model(
                     .iter()
                     .filter_map(|name| {
                         let kind = graph.kind_of(name)?;
-                        let dependencies = graph
-                            .references_of_kind(kind, name)
-                            .into_iter()
-                            .flatten()
-                            .flat_map(|(edge, names)| {
-                                names
-                                    .into_iter()
-                                    .map(move |name| (edge.target_kind(), name))
-                            })
-                            .collect::<Vec<_>>();
-                        Some(dependencies.len())
+                        Some(direct_dependencies(&graph, kind, name, DependencyScope::All).len())
                     })
                     .sum()
             },
@@ -108,11 +99,7 @@ fn benchmark_model(
     let root_uri = support::file_uri(&root_source.path);
     let root_position = offset_position(
         &root_source.text,
-        fixture.declaration_offset(
-            &fixture.spec.root,
-            &fixture.spec.hover_section,
-            &fixture.spec.hover_symbol,
-        ),
+        fixture.declaration_offset(&fixture.spec.root, &fixture.spec.hover_symbol),
     );
     let root_workspace = workspace_with_open(fixture, Arc::clone(&manager), &fixture.spec.root);
 
@@ -163,7 +150,6 @@ fn benchmark_model(
         &reference_source.text,
         fixture.declaration_offset(
             &fixture.spec.reference_owner,
-            &fixture.spec.reference_section,
             &fixture.spec.reference_symbol,
         ),
     );

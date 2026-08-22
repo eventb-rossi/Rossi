@@ -46,10 +46,21 @@ pub mod text_utils;
 pub mod walk;
 pub mod workspace;
 
+// `benchmark_support` is #[path]-included both here and into the
+// dependency_environment_allocations integration test, so it must spell
+// this crate's items the same way in either context.
+#[cfg(test)]
+extern crate self as eventb_lsp;
+
 #[cfg(test)]
 mod benchmark_metrics;
 #[cfg(test)]
 mod dependency_benchmark;
+
+// The dependency traversal itself stays crate-private; these two are
+// public so the allocation benchmark measures the same enumeration the
+// server uses instead of keeping its own copy.
+pub use resolved_environment::{DependencyScope, direct_dependencies};
 
 // Re-export the server implementation
 pub mod server;
