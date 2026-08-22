@@ -19,6 +19,7 @@ import { spawn } from 'child_process';
 import * as fs from 'fs/promises';
 import * as path from 'path';
 import { resolveCommandCwd } from './commandCwd';
+import { formatStyleFlags } from './styleFlags';
 import { regionToZeroIndexed, ValidationRegion } from './validationRegion';
 
 interface RossiRunResult {
@@ -337,10 +338,21 @@ export class RossiCommandController {
             // `fmt` reformats across the same representation, converting the
             // operator convention directly — no Rodin round-trip. Feed the
             // in-editor buffer via stdin and write the result back, so unsaved
-            // edits convert without forcing a save to disk.
+            // edits convert without forcing a save to disk. The user's
+            // `rossi.format.*` settings ride along so the result matches what
+            // the LSP formatter would produce.
             const buffer = await this.readEventBBuffer(input);
+            const format = workspace.getConfiguration('rossi');
+            const styleFlags = formatStyleFlags({
+                style: format.get('format.style'),
+                keywordCase: format.get('format.keywordCase'),
+                declLists: format.get('format.declLists'),
+                blankBetweenClauses: format.get('format.blankBetweenClauses'),
+                indentation: format.get('format.indentation'),
+                maxLineWidth: format.get('format.maxLineWidth'),
+            });
             const result = await this.runRossi(
-                ['fmt', '-', ascii ? '--ascii' : '--unicode'],
+                ['fmt', '-', ascii ? '--ascii' : '--unicode', ...styleFlags],
                 {
                     title: ascii ? 'Converting to ASCII' : 'Converting to Unicode',
                     cwd: null,
