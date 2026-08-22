@@ -92,7 +92,7 @@ impl ProofSource {
                     absorb(proofs_in_dir(dir)?);
                 }
                 for dir in local_dirs {
-                    if let Some(project_dir) = eventb_lsp::rodin::workspace_project_dir(dir) {
+                    if let Some(project_dir) = rossi_build::workspace::workspace_project_dir(dir) {
                         absorb(proofs_in_dir(&project_dir)?);
                     }
                 }

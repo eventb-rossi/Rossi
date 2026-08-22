@@ -43,7 +43,6 @@ pub mod symbols;
 #[cfg(test)]
 pub(crate) mod test_util;
 pub mod text_utils;
-pub mod walk;
 pub mod workspace;
 
 // `benchmark_support` is #[path]-included both here and into the

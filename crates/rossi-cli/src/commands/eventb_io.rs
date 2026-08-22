@@ -170,10 +170,9 @@ fn collect_files(
         if input.is_dir() {
             // Dot-directories (e.g. `.rossi/rodin` Rodin workspaces, `.git`)
             // hold generated or foreign files, never sources.
-            for entry in WalkDir::new(input)
-                .into_iter()
-                .filter_entry(|entry| entry.depth() == 0 || !eventb_lsp::walk::is_hidden_dir(entry))
-            {
+            for entry in WalkDir::new(input).into_iter().filter_entry(|entry| {
+                entry.depth() == 0 || !rossi_build::walk::is_hidden_dir(entry)
+            }) {
                 let entry = entry?;
                 let path = entry.path();
                 let file_type = entry.file_type();

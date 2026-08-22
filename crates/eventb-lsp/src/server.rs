@@ -675,7 +675,7 @@ impl RossiLanguageServer {
                 None => Some(configured),
             };
         }
-        root().map(|root| crate::rodin::default_workspace_dir(&root))
+        root().map(|root| rossi_build::workspace::default_workspace_dir(&root))
     }
 
     /// The Rodin workspace project the file at `uri` maps to — the one
@@ -692,7 +692,7 @@ impl RossiLanguageServer {
             .map(std::path::Path::to_path_buf)
             .filter(|dir| !dir.as_os_str().is_empty())?;
         let workspace_dir = self.resolved_rodin_workspace(Some(&source_dir))?;
-        let project_name = crate::rodin::project_name_for(
+        let project_name = rossi_build::workspace::project_name_for(
             &source_dir,
             self.cross_reference_manager.workspace_root().as_deref(),
         );
@@ -741,7 +741,7 @@ impl RossiLanguageServer {
         if std::fs::create_dir_all(&workspace_dir).is_ok() && config.rodin.sync {
             self.ensure_rodin_sync(&workspace_dir);
         }
-        let project_name = crate::rodin::project_name_for(
+        let project_name = rossi_build::workspace::project_name_for(
             &source_dir,
             self.cross_reference_manager.workspace_root().as_deref(),
         );

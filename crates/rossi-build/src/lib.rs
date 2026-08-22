@@ -39,7 +39,9 @@ pub mod rules;
 pub mod sc_model;
 pub mod sc_view;
 pub mod type_env;
+pub mod walk;
 pub mod wd;
+pub mod workspace;
 pub mod xml_out;
 
 mod ast_util;

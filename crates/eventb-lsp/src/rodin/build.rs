@@ -34,7 +34,7 @@ pub type Overlay = HashMap<PathBuf, String>;
 /// dot-directories such as the `.rossi` workspace itself), sorted.
 pub fn collect_source_files(dir: &Path) -> std::io::Result<Vec<PathBuf>> {
     let mut files = Vec::new();
-    for entry in crate::walk::source_walk(dir) {
+    for entry in rossi_build::walk::source_walk(dir) {
         let entry = entry.map_err(std::io::Error::other)?;
         let is_source = entry
             .path()

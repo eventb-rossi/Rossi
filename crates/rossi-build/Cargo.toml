@@ -14,6 +14,7 @@ categories = ["development-tools", "parser-implementations"]
 rossi.workspace = true
 thiserror.workspace = true
 quick-xml.workspace = true
+walkdir.workspace = true
 zip.workspace = true
 
 [dev-dependencies]

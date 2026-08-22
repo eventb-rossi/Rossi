@@ -320,7 +320,7 @@ impl CrossReferenceManager {
         // source-tree walk (symlinks followed, depth-capped, dot-directories
         // skipped) so this index and the Rodin build can never disagree
         // about what a source tree contains.
-        for entry in crate::walk::source_walk(root_path) {
+        for entry in rossi_build::walk::source_walk(root_path) {
             let entry = entry?;
             let path = entry.path();
             if entry.file_type().is_file()
