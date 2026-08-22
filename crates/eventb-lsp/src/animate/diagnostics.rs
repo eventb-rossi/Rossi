@@ -283,16 +283,7 @@ fn find_label_line<'t>(
 /// onto the message line as before.
 fn state_suffix(state: &str, bindings: &[StateBinding]) -> String {
     if !bindings.is_empty() {
-        let mut suffix = String::from("\nstate:");
-        for binding in bindings {
-            suffix.push_str("\n  ");
-            suffix.push_str(&binding.name);
-            suffix.push_str(" = ");
-            // A value never spans lines, whatever whitespace ProB printed.
-            let value: Vec<_> = binding.value.split_whitespace().collect();
-            suffix.push_str(&value.join(" "));
-        }
-        return suffix;
+        return format!("\nstate:{}", binding_lines(bindings));
     }
     if state.trim().is_empty() {
         String::new()
@@ -302,6 +293,21 @@ fn state_suffix(state: &str, bindings: &[StateBinding]) -> String {
             state.split_whitespace().collect::<Vec<_>>().join(" ")
         )
     }
+}
+
+/// One indented `name = value` line per binding, each starting on its own
+/// line, for the block under a `state:`/`counterexample:` label.
+fn binding_lines(bindings: &[StateBinding]) -> String {
+    let mut lines = String::new();
+    for binding in bindings {
+        lines.push_str("\n  ");
+        lines.push_str(&binding.name);
+        lines.push_str(" = ");
+        // A value never spans lines, whatever whitespace the tool printed.
+        let value: Vec<_> = binding.value.split_whitespace().collect();
+        lines.push_str(&value.join(" "));
+    }
+    lines
 }
 
 /// The findings a verdict produces, total over [`Verdict`] so the two lens
@@ -396,12 +402,23 @@ fn po_findings(disproved: &[PoResult], closure: &Closure) -> Vec<Finding> {
         .iter()
         .map(|po| {
             let (uri, component, anchor) = resolve_po_anchor(&po.name, closure);
+            // A structured valuation replaces the tool message, whose
+            // `disproved (counterexample: …)` text it fully covers.
+            let message = if po.bindings.is_empty() {
+                format!("PO {} disproved by ProB: {}", po.name, po.message)
+            } else {
+                format!(
+                    "PO {} disproved by ProB\ncounterexample:{}",
+                    po.name,
+                    binding_lines(&po.bindings)
+                )
+            };
             Finding {
                 uri,
                 component,
                 anchor,
                 code: "animate-po",
-                message: format!("PO {} disproved by ProB: {}", po.name, po.message),
+                message,
             }
         })
         .collect()
@@ -593,6 +610,31 @@ mod tests {
     }
 
     #[test]
+    fn po_counterexamples_render_one_binding_per_line() {
+        let result = |bindings| PoResult {
+            name: "m/inc/inv1/INV".to_string(),
+            message: "disproved (counterexample: x = 4)".to_string(),
+            bindings,
+        };
+        let structured = result(vec![StateBinding {
+            name: "x".to_string(),
+            value: "4".to_string(),
+        }]);
+        let findings = po_findings(&[structured], &test_closure());
+        assert_eq!(
+            findings[0].message,
+            "PO m/inc/inv1/INV disproved by ProB\ncounterexample:\n  x = 4"
+        );
+
+        // Older tools report no bindings: the message passes through.
+        let findings = po_findings(&[result(Vec::new())], &test_closure());
+        assert_eq!(
+            findings[0].message,
+            "PO m/inc/inv1/INV disproved by ProB: disproved (counterexample: x = 4)"
+        );
+    }
+
+    #[test]
     fn deadlock_anchors_on_the_machine_header() {
         let verdict = Verdict::Deadlock {
             state: "x = 10".to_string(),
@@ -613,6 +655,7 @@ mod tests {
         let po = |name: &str| PoResult {
             name: name.to_string(),
             message: "disproved".to_string(),
+            bindings: Vec::new(),
         };
 
         // An invariant label among the middle segments wins.

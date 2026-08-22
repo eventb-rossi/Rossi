@@ -47,6 +47,7 @@ pub(crate) struct Check {
     pub name: String,
     pub outcome: String,
     pub message: Option<String>,
+    pub bindings: Vec<StateBinding>,
 }
 
 #[derive(Debug, Default, Deserialize)]
@@ -124,11 +125,13 @@ pub enum Verdict {
 }
 
 /// One disproved obligation: its qualified name
-/// (`M1/INITIALISATION/inv4/INV`) and the tool's counterexample message.
+/// (`M1/INITIALISATION/inv4/INV`), the tool's counterexample message, and
+/// the structured counterexample valuation (empty from older tools).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct PoResult {
     pub name: String,
     pub message: String,
+    pub bindings: Vec<StateBinding>,
 }
 
 /// Parse stdout as a format-3 report, reporting the stderr tail when there
@@ -253,6 +256,7 @@ pub(crate) fn classify_po(report: &Report) -> Verdict {
         .map(|c| PoResult {
             name: c.name.clone(),
             message: check_message(c).to_string(),
+            bindings: c.bindings.clone(),
         })
         .collect();
     let spurious = report
@@ -495,7 +499,8 @@ mod tests {
         // (PoCommand.classify), plus a discharged one.
         let checks = r#"
             {"name": "M/INITIALISATION/inv1/INV", "outcome": "failed",
-             "message": "disproved (counterexample: x = 0)"},
+             "message": "disproved (counterexample: x = 0)",
+             "bindings": [{"name": "x", "value": "0"}]},
             {"name": "M/evt/inv1/INV", "outcome": "failed",
              "message": "no counterexample found (solver timeout after 1000 ms)"},
             {"name": "M/evt/grd1/GRD", "outcome": "failed",
@@ -507,6 +512,13 @@ mod tests {
             Verdict::PoDisproved { disproved, total } => {
                 assert_eq!(disproved.len(), 1);
                 assert_eq!(disproved[0].name, "M/INITIALISATION/inv1/INV");
+                assert_eq!(
+                    disproved[0].bindings,
+                    vec![StateBinding {
+                        name: "x".into(),
+                        value: "0".into()
+                    }]
+                );
                 assert_eq!(total, 5);
             }
             other => panic!("expected PoDisproved, got {other:?}"),
