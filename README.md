@@ -123,8 +123,9 @@ AST, pretty-printer, and Rodin XML/ZIP conversion. Run `cargo doc -p rossi
 
 ## CLI Tool
 
-The project ships a `rossi` command-line tool that wraps the parser,
-the `rossi-build` static checker, and the language server:
+The project ships a `rossi` command-line tool that wraps the parser and
+the `rossi-build` static checker (the language server is the separate
+`eventb-language-server` binary):
 
 | Subcommand | Purpose |
 |------------|---------|
@@ -133,7 +134,6 @@ the `rossi-build` static checker, and the language server:
 | `export`   | Export `.eventb`/`.txt`/dir into a Rodin `.zip` archive. |
 | `fmt`      | Reformat Event-B in place (style, operator convention, indentation). |
 | `build`    | Static-check a Rodin project and emit `.bcc` / `.bcm` checked XML. |
-| `lsp`      | Run the Rossi language server over stdio (equivalent to the `eventb-language-server` binary). |
 | `completions` | Print a shell completion script to stdout (run `rossi completions --help` for the supported shells). |
 
 ### Validate

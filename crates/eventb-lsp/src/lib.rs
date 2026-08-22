@@ -75,8 +75,8 @@ pub const HANDLER_THREAD_STACK_SIZE: usize = 16 * 1024 * 1024;
 /// Run the language server on a dedicated multi-thread runtime whose worker
 /// threads have [`HANDLER_THREAD_STACK_SIZE`] stacks.
 ///
-/// Both server binaries (`eventb-language-server` and `rossi lsp`) must enter
-/// through here so the stack policy stays in one place.
+/// The `eventb-language-server` binary enters through here so the stack
+/// policy stays in one place.
 pub fn run_stdio_blocking() -> Result<()> {
     tokio::runtime::Builder::new_multi_thread()
         .enable_all()

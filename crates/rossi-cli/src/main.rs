@@ -45,9 +45,6 @@ enum Command {
     /// Static-check a Rodin project and emit `.bcc` / `.bcm` output.
     #[command(about = "Static-check a Rodin project and emit .bcc/.bcm output")]
     Build(commands::build::BuildArgs),
-    /// Run the Rossi language server over stdio.
-    #[command(about = "Run the Rossi language server over stdio")]
-    Lsp,
     /// Generate a shell completion script (bash, zsh, fish, …).
     #[command(about = "Generate a shell completion script")]
     Completions(commands::completions::CompletionsArgs),
@@ -60,15 +57,6 @@ fn main() -> ExitCode {
         Command::Export(args) => commands::export::run(args),
         Command::Fmt(args) => commands::fmt::run(args),
         Command::Build(args) => commands::build::run_build_command(args),
-        // The LSP brings its own runtime (with sized handler stacks); the
-        // other commands are fully synchronous.
-        Command::Lsp => match eventb_lsp::run_stdio_blocking() {
-            Ok(()) => ExitCode::SUCCESS,
-            Err(e) => {
-                eprintln!("rossi lsp: {e}");
-                ExitCode::from(1)
-            }
-        },
         // Derive the completion script from the same clap command tree the CLI
         // parses with, so it can never drift from the real interface.
         Command::Completions(args) => commands::completions::run(args, &mut Cli::command()),

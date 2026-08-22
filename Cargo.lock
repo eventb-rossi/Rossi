@@ -1155,7 +1155,6 @@ version = "0.1.9"
 dependencies = [
  "clap",
  "clap_complete",
- "eventb-lsp",
  "rossi",
  "rossi-build",
  "serde",

@@ -18,7 +18,6 @@ doc = false
 [dependencies]
 rossi.workspace = true
 rossi-build.workspace = true
-eventb-lsp.workspace = true
 clap.workspace = true
 clap_complete.workspace = true
 serde = { workspace = true }
