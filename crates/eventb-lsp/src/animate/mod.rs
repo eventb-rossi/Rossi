@@ -254,7 +254,7 @@ pub async fn run(client: Client, request: AnimateRequest) {
             // failure carries the static errors as findings of its own; a
             // parse failure retracts. Tool/infrastructure failures keep
             // the last-known findings.
-            let mut message = format!("{title}: {error}");
+            let mut message = error_toast(title, &error);
             match &error {
                 AnimateError::BuildFailed(findings) => {
                     let unopened = unopened_finding_files(findings, &documents);
@@ -275,6 +275,11 @@ pub async fn run(client: Client, request: AnimateRequest) {
                 }
                 _ => {}
             }
+            // The toast vanishes on dismissal; the log line survives in the
+            // client's output channel for diagnosis.
+            client
+                .log_message(MessageType::ERROR, format!("{title}: {error}"))
+                .await;
             progress.finish(MessageType::ERROR, message).await;
         }
     }
@@ -479,6 +484,18 @@ pub fn verdict_message(
     }
 }
 
+/// The toast for a failed run. Every variant's Display is short and
+/// actionable except [`AnimateError::ToolFailed`], whose output excerpt
+/// belongs in the log (`window/logMessage`), not a toast.
+fn error_toast(title: &str, error: &AnimateError) -> String {
+    match error {
+        AnimateError::ToolFailed(_) => format!(
+            "{title}: eventb-animate failed — see the Rossi Language Server log for details."
+        ),
+        _ => format!("{title}: {error}"),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -552,6 +569,20 @@ mod tests {
         assert_eq!(kind, MessageType::INFO);
         assert!(message.contains("3 of 5 unproven"), "{message}");
         assert!(message.contains("1 spurious"), "{message}");
+    }
+
+    #[test]
+    fn tool_failure_toasts_are_short_and_point_at_the_log() {
+        let toast = error_toast(
+            "Model-check",
+            &AnimateError::ToolFailed("java.lang.Whatever stack tail".into()),
+        );
+        assert!(toast.contains("log"), "{toast}");
+        assert!(!toast.contains("stack tail"), "{toast}");
+
+        // Every other variant's Display is already short and stays the toast.
+        let toast = error_toast("Model-check", &AnimateError::Timeout(60));
+        assert!(toast.contains("timed out after 60 s"), "{toast}");
     }
 
     #[test]

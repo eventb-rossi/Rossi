@@ -11,17 +11,34 @@ fn notification(method: &'static str, params: Value) -> Request {
     Request::build(method).params(params).finish()
 }
 
+/// Read server-to-client messages until the next one of `method`.
+async fn next_message(
+    messages: &mut (impl futures::StreamExt<Item = Request> + Unpin),
+    method: &str,
+    timeout: std::time::Duration,
+) -> Option<Value> {
+    while let Ok(Some(req)) = tokio::time::timeout(timeout, messages.next()).await {
+        if req.method() == method {
+            return req.params().cloned();
+        }
+    }
+    None
+}
+
 /// Read server-to-client messages until the next `window/showMessage`.
 async fn next_show_message(
     messages: &mut (impl futures::StreamExt<Item = Request> + Unpin),
     timeout: std::time::Duration,
 ) -> Option<Value> {
-    while let Ok(Some(req)) = tokio::time::timeout(timeout, messages.next()).await {
-        if req.method() == "window/showMessage" {
-            return req.params().cloned();
-        }
-    }
-    None
+    next_message(messages, "window/showMessage", timeout).await
+}
+
+/// Read server-to-client messages until the next `window/logMessage`.
+async fn next_log_message(
+    messages: &mut (impl futures::StreamExt<Item = Request> + Unpin),
+    timeout: std::time::Duration,
+) -> Option<Value> {
+    next_message(messages, "window/logMessage", timeout).await
 }
 
 /// A uniquely-named workspace directory under the test target tmpdir,
@@ -782,7 +799,7 @@ mod animate_lens {
     //! `rossi.animate.path` setting when the configured tool is missing, and
     //! malformed arguments must be rejected at the JSON-RPC layer.
 
-    use super::{next_show_message, notification};
+    use super::{next_log_message, next_show_message, notification};
     use eventb_lsp::server::RossiLanguageServer;
     use futures::StreamExt;
     use serde_json::{Value, json};
@@ -845,6 +862,18 @@ mod animate_lens {
             .expect("executeCommand responds");
         let (_id, result) = response.into_parts();
         assert_eq!(result.expect("executeCommand succeeds"), Value::Null);
+
+        // The failure is logged before it is toasted, so the log line comes
+        // first on the wire.
+        let log = next_log_message(&mut messages, Duration::from_secs(10))
+            .await
+            .expect("the failure is logged through window/logMessage");
+        assert_eq!(log["type"], 1, "ERROR level: {log}");
+        let log_text = log["message"].as_str().unwrap();
+        assert!(
+            log_text.contains("was not found"),
+            "unexpected log line: {log_text}"
+        );
 
         let message = next_show_message(&mut messages, Duration::from_secs(10))
             .await

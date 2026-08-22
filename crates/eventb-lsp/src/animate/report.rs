@@ -156,12 +156,14 @@ pub(crate) fn parse(stdout: &str, stderr: &str) -> Result<Report, AnimateError> 
     Ok(report)
 }
 
-/// The last part of a failed run's output, for the error message.
+/// The last part of a failed run's output, for the error message. The
+/// excerpt rides the server log (`window/logMessage`), not a toast, so it
+/// can afford enough of a Java stack trace to diagnose from.
 fn excerpt(text: &str) -> String {
     if text.trim().is_empty() {
         return "no output".to_string();
     }
-    crate::text_utils::output_excerpt(text, 400)
+    crate::text_utils::output_excerpt(text, 2000)
 }
 
 fn report_message(report: &Report) -> String {
