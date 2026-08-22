@@ -215,18 +215,23 @@ fn ascii_mode_does_not_touch_comment_text() {
 
 #[test]
 fn commented_parameters_print_one_per_line() {
-    // The rossi (one-per-line) layout: a commented parameter forces the
-    // per-line ANY block so the comment re-attaches on reparse.
+    // The rossi (one-per-line) layout: each parameter gets its own line, so a
+    // trailing comment re-attaches to its parameter on reparse.
     let rossi_style = PrettyPrinter::styled(Style::Rossi);
     let src = "MACHINE m\nEVENTS\n    EVENT e\n    ANY\n        a // first\n        b\n    WHERE\n        @grd1 a > 0 ∧ b > 0\n    THEN\n        @act1 skip\n    END\nEND\n";
     let printed = rossi_style.print_component(&parse(src).unwrap());
     assert!(printed.contains("        a // first\n        b\n"));
 
-    // Without comments the joined one-line form is preserved (parameters are
-    // whitespace-separated — a comma here is a parse error).
+    // Uncommented parameters split one per line too — newlines are ordinary
+    // whitespace in the structural-list grammar, so the output reparses.
     let src2 = "MACHINE m\nEVENTS\n    EVENT e\n    ANY\n        a b\n    WHERE\n        @grd1 a > 0 ∧ b > 0\n    THEN\n        @act1 skip\n    END\nEND\n";
     let printed2 = rossi_style.print_component(&parse(src2).unwrap());
-    assert!(printed2.contains("        a b\n"));
+    assert!(
+        printed2.contains("        a\n        b\n"),
+        "got:\n{printed2}"
+    );
+    let reprinted = rossi_style.print_component(&parse(&printed2).unwrap());
+    assert_eq!(printed2, reprinted, "one-per-line ANY is not a fixed point");
 }
 
 #[test]

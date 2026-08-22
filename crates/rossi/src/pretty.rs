@@ -841,27 +841,13 @@ impl PrettyPrinter {
                 }
                 DeclListLayout::OnePerLine => {
                     writeln!(output, "{kw_indent}{any_kw}").unwrap();
-                    if event
-                        .parameters
-                        .iter()
-                        .any(|p| renders_comment(p.comment.as_deref()))
-                    {
-                        // A commented parameter needs its own line for the trailing
-                        // comment to re-attach to it on reparse.
-                        for param in &event.parameters {
-                            self.writeln_commented(
-                                output,
-                                &format!("{item_indent}{}", param.name),
-                                param.comment.as_deref(),
-                                &item_indent,
-                            );
-                        }
-                    } else {
-                        let param_names: Vec<&str> =
-                            event.parameters.iter().map(|p| p.name.as_str()).collect();
-                        // Parameters are whitespace-separated, not comma-separated, so
-                        // the line reparses under the structural-list grammar.
-                        writeln!(output, "{item_indent}{}", param_names.join(" ")).unwrap();
+                    for param in &event.parameters {
+                        self.writeln_commented(
+                            output,
+                            &format!("{item_indent}{}", param.name),
+                            param.comment.as_deref(),
+                            &item_indent,
+                        );
                     }
                 }
             }
