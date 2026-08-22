@@ -85,7 +85,7 @@ pub(crate) fn prepare(
     rodin_project_dir: Option<&Path>,
 ) -> Result<Prepared, AnimateError> {
     let closure = collect_closure(cross_references, documents, uri, machine)?;
-    let mut build = build_in_memory(&closure.components)?;
+    let mut build = build_in_memory(&closure)?;
     let po_count = match mode {
         AnimateMode::Po => apply_recorded_proof_state(&mut build, &closure, rodin_project_dir),
         AnimateMode::Check => count_po_sequents(&build, &closure.machine),
@@ -314,11 +314,9 @@ pub(crate) fn normalize_predicate(predicate: &str) -> String {
 
 /// Statically check the closure in memory, producing the `.bcc`/`.bcm`
 /// checked files and the generated `.bpo`/`.bps` proof-obligation files.
-fn build_in_memory(
-    components: &[rossi::NamedComponent],
-) -> Result<rossi_build::BuildResult, AnimateError> {
-    let mut project_components = Vec::with_capacity(components.len());
-    for named in components {
+fn build_in_memory(closure: &Closure) -> Result<rossi_build::BuildResult, AnimateError> {
+    let mut project_components = Vec::with_capacity(closure.components.len());
+    for named in &closure.components {
         let xml = rossi::to_xml(&named.component);
         let component = rossi_build::ProjectComponent::from_xml(&named.filename, &xml)
             .map_err(|e| AnimateError::Io(e.to_string()))?;
@@ -326,13 +324,15 @@ fn build_in_memory(
     }
     let project = rossi_build::Project::new(PROJECT_NAME, project_components);
     let result = rossi_build::build(&project);
-    let errors = result
-        .diagnostics
-        .iter()
-        .filter(|d| d.severity == rossi_build::Severity::Error)
-        .count();
-    if errors > 0 {
-        return Err(AnimateError::BuildFailed(errors));
+    let findings = super::diagnostics::build_findings(
+        result
+            .diagnostics
+            .iter()
+            .filter(|d| d.severity == rossi_build::Severity::Error),
+        closure,
+    );
+    if !findings.is_empty() {
+        return Err(AnimateError::BuildFailed(findings));
     }
     Ok(result)
 }
@@ -504,7 +504,7 @@ mod tests {
     }
 
     #[test]
-    fn static_errors_abort_with_a_count() {
+    fn static_errors_abort_with_anchored_findings() {
         let documents = DocumentManager::new();
         let xref = CrossReferenceManager::new();
         // `y` is never declared: the static check reports an error.
@@ -516,7 +516,28 @@ mod tests {
         );
         let uri = Url::parse("file:///m.eventb").unwrap();
         match prepare(&xref, &documents, &uri, "m", AnimateMode::Check, None).unwrap_err() {
-            AnimateError::BuildFailed(count) => assert!(count >= 1),
+            AnimateError::BuildFailed(findings) => {
+                assert!(!findings.is_empty());
+                for finding in &findings {
+                    assert_eq!(finding.code, "animate-build");
+                    assert_eq!(finding.uri, uri);
+                    assert_eq!(finding.component, "m");
+                }
+                // Pins the `Component.label` origin shape empirically.
+                let inv = findings
+                    .iter()
+                    .find(|f| f.message.contains("m.inv1"))
+                    .unwrap_or_else(|| panic!("an inv1 error among {findings:?}"));
+                assert_eq!(
+                    inv.anchor,
+                    super::super::diagnostics::Anchor::InvariantLabel("inv1".to_string())
+                );
+                assert!(
+                    inv.message.contains("unknown identifier"),
+                    "{}",
+                    inv.message
+                );
+            }
             other => panic!("expected BuildFailed, got {other:?}"),
         }
     }

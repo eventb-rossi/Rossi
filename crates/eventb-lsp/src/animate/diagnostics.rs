@@ -41,7 +41,9 @@ pub struct Finding {
 /// Where a finding lands in its component, from most to least specific.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Anchor {
-    /// The `@label` line of the named invariant.
+    /// The `@label` line of the named invariant. The text-scan fallback
+    /// resolves any `@label`-declared element (context axioms included), so
+    /// build findings reuse this anchor for non-event labels.
     InvariantLabel(String),
     /// The named event — on the named guard/action label inside it when one
     /// resolves, else on the event name. `INITIALISATION` is addressable.
@@ -419,6 +421,67 @@ fn error_finding(closure: &Closure, message: String) -> Finding {
     }
 }
 
+/// One finding per static-check error, anchored by the diagnostic's origin
+/// (`Component`, `Component.label`, `Component.event.clause`,
+/// `Component.event/label` — the `rossi_build::Diagnostic::origin` shapes),
+/// falling back to the clicked machine's header for origins that name no
+/// known component (such as `project`).
+pub(crate) fn build_findings<'a>(
+    errors: impl Iterator<Item = &'a rossi_build::Diagnostic>,
+    closure: &Closure,
+) -> Vec<Finding> {
+    errors
+        .map(|diagnostic| {
+            let (uri, component, anchor) = resolve_build_anchor(&diagnostic.origin, closure);
+            Finding {
+                uri,
+                component,
+                anchor,
+                code: "animate-build",
+                message: format!(
+                    "Static error in {}: {}",
+                    diagnostic.origin, diagnostic.message
+                ),
+            }
+        })
+        .collect()
+}
+
+/// The file, component, and anchor for a build diagnostic's origin. The uri
+/// only ever comes from an exact component-name match in the closure, so a
+/// mis-parsed origin degrades to a header — never to the wrong file.
+fn resolve_build_anchor(origin: &str, closure: &Closure) -> (Url, String, Anchor) {
+    let (component, element) = match origin.split_once('.') {
+        Some((component, element)) => (component, Some(element)),
+        None => (origin, None),
+    };
+    let Some(info) = closure.infos.iter().find(|info| info.name == component) else {
+        return (
+            closure.uri.clone(),
+            closure.machine.clone(),
+            Anchor::MachineHeader,
+        );
+    };
+    let anchor = match element {
+        None => Anchor::MachineHeader,
+        Some(element) => {
+            let (event, label) = match element.split_once('/').or_else(|| element.split_once('.')) {
+                Some((event, label)) => (event, Some(label)),
+                None => (element, None),
+            };
+            if info.event_names.contains(event) {
+                Anchor::Event {
+                    event: event.to_string(),
+                    label: label.map(str::to_string),
+                }
+            } else {
+                Anchor::InvariantLabel(element.to_string())
+            }
+        }
+    };
+    (info.uri.clone(), info.name.clone(), anchor)
+}
+
 /// The findings for the disproved subset of a po run. Each PO name
 /// (`component/…/TYPE`) anchors on the named invariant when one of its
 /// middle segments is an invariant label of that component, else on the
@@ -693,6 +756,104 @@ mod tests {
             "{}",
             diags[0].message
         );
+    }
+
+    fn build_error(origin: &str) -> rossi_build::Diagnostic {
+        rossi_build::Diagnostic {
+            severity: rossi_build::Severity::Error,
+            origin: origin.to_string(),
+            message: "boom".to_string(),
+            rule_id: None,
+            span: None,
+        }
+    }
+
+    #[test]
+    fn build_errors_anchor_by_origin_label_event_or_header() {
+        let closure = test_closure();
+        let errors = [
+            build_error("m.inv1"),
+            build_error("m.inc/grd1"),
+            build_error("m.inc.act1"),
+            build_error("m.inc"),
+            build_error("m"),
+            build_error("project"),
+        ];
+        let findings = build_findings(errors.iter(), &closure);
+        let anchors: Vec<&Anchor> = findings.iter().map(|f| &f.anchor).collect();
+        assert_eq!(
+            anchors,
+            vec![
+                &Anchor::InvariantLabel("inv1".to_string()),
+                &Anchor::Event {
+                    event: "inc".to_string(),
+                    label: Some("grd1".to_string()),
+                },
+                &Anchor::Event {
+                    event: "inc".to_string(),
+                    label: Some("act1".to_string()),
+                },
+                &Anchor::Event {
+                    event: "inc".to_string(),
+                    label: None,
+                },
+                &Anchor::MachineHeader,
+                &Anchor::MachineHeader,
+            ],
+            "{findings:?}"
+        );
+        for finding in &findings {
+            assert_eq!(finding.code, "animate-build");
+            assert_eq!(finding.component, "m");
+            assert!(finding.message.contains("boom"), "{}", finding.message);
+        }
+
+        let diags = published(findings);
+        let by_message = |needle: &str| {
+            diags
+                .iter()
+                .find(|d| d.message.contains(needle))
+                .unwrap_or_else(|| panic!("no diagnostic for {needle}: {diags:?}"))
+        };
+        assert_eq!(by_message("m.inv1").range.start.line, line_of("@inv1"));
+        assert_eq!(by_message("m.inc/grd1").range.start.line, line_of("@grd1"));
+    }
+
+    #[test]
+    fn context_axiom_build_errors_anchor_on_the_axiom_line() {
+        let mut closure = test_closure();
+        let context_uri = Url::parse("file:///c.eventb").unwrap();
+        closure.infos.push(ComponentInfo {
+            name: "c".to_string(),
+            uri: context_uri.clone(),
+            event_names: HashSet::new(),
+        });
+
+        let errors = [build_error("c.axm1")];
+        let findings = build_findings(errors.iter(), &closure);
+        assert_eq!(findings[0].uri, context_uri);
+        assert_eq!(findings[0].component, "c");
+        assert_eq!(
+            findings[0].anchor,
+            Anchor::InvariantLabel("axm1".to_string())
+        );
+
+        // The label text scan is component-generic: the axiom line resolves
+        // in the context's own document.
+        let context_text = "CONTEXT c\nAXIOMS\n    @axm1 1 = 1\nEND\n";
+        let mut overlay = FindingsOverlay::default();
+        overlay.apply("m".to_string(), AnimateMode::Check, findings);
+        let diags = animate_diagnostics(
+            &context_uri,
+            &ParsedDocument::from_text(context_text.to_string()),
+            &overlay,
+        );
+        assert_eq!(diags.len(), 1);
+        let axiom_line = context_text
+            .lines()
+            .position(|line| line.contains("@axm1"))
+            .unwrap() as u32;
+        assert_eq!(diags[0].range.start.line, axiom_line);
     }
 
     #[test]

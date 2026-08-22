@@ -62,8 +62,9 @@ pub enum AnimateError {
     /// A closure member has syntax errors — a recovered AST silently drops
     /// elements, so running the tool on it would verify a different model.
     ParseFailed(String),
-    /// The static check reported this many error diagnostics.
-    BuildFailed(usize),
+    /// The static check reported error diagnostics, already shaped into
+    /// findings anchored on the offending elements.
+    BuildFailed(Vec<diagnostics::Finding>),
     /// Filesystem failure while writing the temporary project.
     Io(String),
     /// The tool is not installed where the configuration points.
@@ -86,9 +87,10 @@ impl std::fmt::Display for AnimateError {
             AnimateError::ParseFailed(name) => {
                 write!(f, "fix the syntax errors in '{name}' first")
             }
-            AnimateError::BuildFailed(count) => write!(
+            AnimateError::BuildFailed(findings) => write!(
                 f,
-                "the model has {count} static error(s); fix the reported diagnostics first"
+                "the model has {} static error(s) — see diagnostics.",
+                findings.len()
             ),
             AnimateError::Io(message) => {
                 write!(f, "cannot write the temporary project: {message}")
@@ -248,19 +250,32 @@ pub async fn run(client: Client, request: AnimateRequest) {
         }
         Err(error) => {
             // A failed build/parse means the on-screen model is no longer
-            // the one the stored findings were computed from — retract them.
-            // Tool/infrastructure failures keep the last-known findings.
-            if matches!(
-                error,
-                AnimateError::BuildFailed(_) | AnimateError::ParseFailed(_)
-            ) {
-                analyzer
-                    .refresh_animate_findings(machine, mode, Vec::new())
-                    .await;
+            // the one the stored findings were computed from. A build
+            // failure carries the static errors as findings of its own; a
+            // parse failure retracts. Tool/infrastructure failures keep
+            // the last-known findings.
+            let mut message = format!("{title}: {error}");
+            match &error {
+                AnimateError::BuildFailed(findings) => {
+                    let unopened = unopened_finding_files(findings, &documents);
+                    if !unopened.is_empty() {
+                        message.push_str(&format!(
+                            " Some findings are in files not currently open: {}.",
+                            unopened.join(", ")
+                        ));
+                    }
+                    analyzer
+                        .refresh_animate_findings(machine, mode, findings.clone())
+                        .await;
+                }
+                AnimateError::ParseFailed(_) => {
+                    analyzer
+                        .refresh_animate_findings(machine, mode, Vec::new())
+                        .await;
+                }
+                _ => {}
             }
-            progress
-                .finish(MessageType::ERROR, format!("{title}: {error}"))
-                .await;
+            progress.finish(MessageType::ERROR, message).await;
         }
     }
 }
