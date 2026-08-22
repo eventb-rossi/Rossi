@@ -7,8 +7,9 @@
 //! and visible contexts, unsaved edits included), statically checks it with
 //! `rossi-build`, writes the result into a throwaway Rodin project directory,
 //! and runs `eventb-animate` there with `--json -`. The format-3 JSON report
-//! is classified into a verdict; violations become diagnostics anchored back
-//! onto the live sources, and every outcome ends in a `window/showMessage`.
+//! is classified into a verdict; violations and tool-reported errors become
+//! diagnostics anchored back onto the live sources, and every outcome ends
+//! in a `window/showMessage`.
 
 pub mod closure;
 pub mod diagnostics;
@@ -417,13 +418,16 @@ pub fn verdict_message(
             MessageType::WARNING,
             format!("Model check of {machine}: {category}: {message}"),
         ),
-        Verdict::LoadError { message } => (
+        Verdict::LoadError { .. } => (
             MessageType::ERROR,
-            format!("eventb-animate could not load the model: {message}"),
+            format!(
+                "Model check of {machine}: eventb-animate could not load the model — \
+                 see diagnostics."
+            ),
         ),
-        Verdict::EngineError { message } => (
+        Verdict::EngineError { .. } => (
             MessageType::ERROR,
-            format!("eventb-animate failed: {message}"),
+            format!("Model check of {machine} failed — see diagnostics."),
         ),
         Verdict::PoDisproved {
             disproved, total, ..
@@ -453,9 +457,9 @@ pub fn verdict_message(
             )
         }
         Verdict::PoOk { message } => (MessageType::INFO, format!("{machine}: {message}")),
-        Verdict::PoError { message } => (
+        Verdict::PoError { .. } => (
             MessageType::ERROR,
-            format!("eventb-animate po failed: {message}"),
+            format!("Disprove POs for {machine}: the po gate failed — see diagnostics."),
         ),
     }
 }
@@ -533,5 +537,29 @@ mod tests {
         assert_eq!(kind, MessageType::INFO);
         assert!(message.contains("3 of 5 unproven"), "{message}");
         assert!(message.contains("1 spurious"), "{message}");
+    }
+
+    #[test]
+    fn error_verdict_toasts_are_short_and_point_at_diagnostics() {
+        // The tool's message lives in the machine-header finding; the toast
+        // only points there.
+        let payload = "Error loading model: long ProB loader exception text";
+        for verdict in [
+            report::Verdict::LoadError {
+                message: payload.into(),
+            },
+            report::Verdict::EngineError {
+                message: payload.into(),
+            },
+            report::Verdict::PoError {
+                message: payload.into(),
+            },
+        ] {
+            let (kind, message) = verdict_message("m", &verdict, 1000);
+            assert_eq!(kind, MessageType::ERROR);
+            assert!(message.contains("see diagnostics"), "{message}");
+            assert!(message.contains('m'), "{message}");
+            assert!(!message.contains(payload), "{message}");
+        }
     }
 }

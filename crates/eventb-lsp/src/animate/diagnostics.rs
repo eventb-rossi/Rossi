@@ -33,7 +33,7 @@ pub struct Finding {
     pub component: String,
     pub anchor: Anchor,
     /// Diagnostic code: `animate-inv`, `animate-deadlock`, `animate-finding`,
-    /// or `animate-po`.
+    /// `animate-po`, or `animate-error`.
     pub code: &'static str,
     pub message: String,
 }
@@ -311,9 +311,11 @@ fn binding_lines(bindings: &[StateBinding]) -> String {
 }
 
 /// The findings a verdict produces, total over [`Verdict`] so the two lens
-/// flows cannot disagree about which verdicts yield diagnostics. Only
-/// violations and disproofs yield any; clean, inconclusive, and error
-/// verdicts return an empty set, which retracts the previous run's.
+/// flows cannot disagree about which verdicts yield diagnostics.
+/// Violations and disproofs anchor on the offending elements; error
+/// verdicts yield one machine-header finding carrying the tool's full
+/// message; clean and inconclusive verdicts return an empty set, which
+/// retracts the previous run's.
 pub(crate) fn findings(verdict: &Verdict, closure: &Closure) -> Vec<Finding> {
     match verdict {
         Verdict::PoDisproved { disproved, .. } => po_findings(disproved, closure),
@@ -388,7 +390,32 @@ pub(crate) fn findings(verdict: &Verdict, closure: &Closure) -> Vec<Finding> {
                 closure.machine
             ),
         }],
+        Verdict::LoadError { message } => vec![error_finding(
+            closure,
+            format!("eventb-animate could not load the model: {message}"),
+        )],
+        Verdict::EngineError { message } => vec![error_finding(
+            closure,
+            format!("eventb-animate failed: {message}"),
+        )],
+        Verdict::PoError { message } => vec![error_finding(
+            closure,
+            format!("eventb-animate po failed: {message}"),
+        )],
         _ => Vec::new(),
+    }
+}
+
+/// A single machine-header finding for a run that errored instead of
+/// producing a verdict — visible where the lens was clicked, replaced or
+/// retracted by the next run like any other finding.
+fn error_finding(closure: &Closure, message: String) -> Finding {
+    Finding {
+        uri: closure.uri.clone(),
+        component: closure.machine.clone(),
+        anchor: Anchor::MachineHeader,
+        code: "animate-error",
+        message,
     }
 }
 
@@ -606,6 +633,65 @@ mod tests {
         assert!(
             message.contains("— violated: y = 0\nstate:\n  y = 1"),
             "{message}"
+        );
+    }
+
+    #[test]
+    fn error_verdicts_anchor_on_the_clicked_machine_header() {
+        let payload = "Error loading model: long ProB loader exception text";
+        let verdicts = [
+            Verdict::LoadError {
+                message: payload.to_string(),
+            },
+            Verdict::EngineError {
+                message: payload.to_string(),
+            },
+            Verdict::PoError {
+                message: payload.to_string(),
+            },
+        ];
+        for verdict in &verdicts {
+            let found = findings(verdict, &test_closure());
+            assert_eq!(found.len(), 1, "{verdict:?}");
+            assert_eq!(found[0].code, "animate-error");
+            assert_eq!(found[0].anchor, Anchor::MachineHeader);
+            assert_eq!(found[0].component, "m");
+            assert!(found[0].message.contains(payload), "{}", found[0].message);
+            let diags = published(found.clone());
+            assert_eq!(diags[0].range.start.line, 0);
+            // The parsed anchor is the name token, not column zero.
+            assert_eq!(diags[0].range.start.character, 8);
+        }
+
+        // A failed re-run replaces the previous run's findings instead of
+        // silently retracting them.
+        let violation = Verdict::InvariantViolation {
+            violated: vec!["x : NAT".to_string()],
+            state: String::new(),
+            bindings: Vec::new(),
+            steps: 1,
+        };
+        let mut overlay = FindingsOverlay::default();
+        overlay.apply(
+            "m".to_string(),
+            AnimateMode::Check,
+            findings(&violation, &test_closure()),
+        );
+        overlay.apply(
+            "m".to_string(),
+            AnimateMode::Check,
+            findings(&verdicts[0], &test_closure()),
+        );
+        let diags = animate_diagnostics(
+            &Url::parse("file:///m.eventb").unwrap(),
+            &parsed(),
+            &overlay,
+        );
+        assert_eq!(diags.len(), 1);
+        assert!(
+            diags[0].message.contains("could not load the model"),
+            "{}",
+            diags[0].message
         );
     }
 
