@@ -1,5 +1,37 @@
 # Changelog
 
+## [0.2.0](https://github.com/eventb-rossi/rossi/compare/v0.1.9...v0.2.0) - 2026-08-23
+
+### Added
+- *(cli)* Serve the language server only from eventb-language-server
+- *(cli)* Wrap at 120 columns by default
+- *(fmt)* Wrap formulas at a configurable maximum line width
+- *(fmt)* Make camille the default formatting style
+- *(cli)* Expose the formatter style preset and toggles
+- *(fmt)* Add the camille formatting style to the pretty printer
+- *(fmt)* Expose wrapped formula-level predicate printing
+- *(build)* Expose a static-check-only entry point with the typed model
+- *(lsp)* Log animate failures and shorten the tool-failure toast
+- *(lsp)* Publish the static errors behind the animate build gate
+- *(lsp)* Turn animate verdict errors into diagnostics
+- *(lsp)* Render PO counterexamples one binding per line
+- *(lsp)* Render animate counterexample states one binding per line
+- *(lsp)* Mark well-definedness conditions with inlay hints
+- *(lsp)* Serve declaration type inlay hints
+- *(lsp)* Map rossi.format.maxLineWidth to the formatter
+- *(lsp)* Map rossi.format style settings to the formatter
+
+### Changed
+- *(build)* Move Rodin workspace helpers from eventb-lsp
+- *(build)* Return structured well-definedness conditions
+- *(lsp)* Collect document-link source lines once
+
+### Fixed
+- *(cli)* End formatted text with exactly one newline
+- *(fmt)* Print one-per-line any parameters without requiring comments
+- *(lsp)* Wrap WD inlay-hint tooltips at the configured width
+- *(lsp)* Resolve benchmark sites from the AST, not printed text
+
 ## [0.1.9](https://github.com/eventb-rossi/rossi/compare/v0.1.8...v0.1.9) - 2026-08-18
 
 ### Added
