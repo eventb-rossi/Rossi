@@ -360,14 +360,25 @@ fn export_proofs_precedence_next_to_inputs_wins() {
 
 #[test]
 fn export_proofs_bare_stdin_errors() {
-    let output = run_cli_with_stdin(&["export", "-", "--proofs", "-o", "unused.zip"], CTX);
+    let tmp = tempdir_unique("rossi-cli-export-proofs-stdin");
+    let out_zip = tmp.join("unused.zip");
+
+    let output = run_cli_with_stdin(
+        &["export", "-", "--proofs", "-o", out_zip.to_str().unwrap()],
+        CTX,
+    );
     assert!(
         !output.status.success(),
         "bare --proofs must reject stdin input"
     );
     let stderr = String::from_utf8_lossy(&output.stderr);
     assert!(stderr.contains("--proofs=PATH"), "stderr: {stderr}");
-    assert!(!Path::new("unused.zip").exists());
+    assert!(
+        !out_zip.exists(),
+        "the usage error must not create the output"
+    );
+
+    std::fs::remove_dir_all(&tmp).ok();
 }
 
 #[test]
