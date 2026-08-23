@@ -274,12 +274,19 @@ pub fn run_cli_with_stdin(args: &[&str], stdin_data: &str) -> std::process::Outp
         .stderr(Stdio::piped())
         .spawn()
         .expect("Failed to spawn rossi-cli");
-    child
+    // The CLI may reject its arguments and exit before reading stdin (as
+    // `export - --proofs` does), closing the pipe under us. That is a valid
+    // outcome for the run; the assertions live on the child's output.
+    match child
         .stdin
         .as_mut()
         .expect("child stdin")
         .write_all(stdin_data.as_bytes())
-        .expect("write stdin");
+    {
+        Ok(()) => {}
+        Err(e) if e.kind() == std::io::ErrorKind::BrokenPipe => {}
+        Err(e) => panic!("write stdin: {e}"),
+    }
     // `wait_with_output` closes stdin (signalling EOF) before collecting output.
     child.wait_with_output().expect("wait for rossi-cli")
 }
