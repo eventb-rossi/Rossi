@@ -16,8 +16,6 @@
 //! back to the sibling `eventb-models-collection` checkout. A TSV
 //! report is written to `target/rossi-build-pog-corpus.tsv`.
 
-use std::collections::BTreeMap;
-use std::io::Read;
 use std::path::Path;
 
 use rossi_build::po_view::PoView;
@@ -99,24 +97,6 @@ fn pog_corpus() {
     );
 }
 
-/// The reference `.bpo` contents of an archive, keyed by entry path.
-fn reference_bpos(bytes: &[u8]) -> Result<BTreeMap<String, String>, String> {
-    let mut archive =
-        zip::ZipArchive::new(std::io::Cursor::new(bytes)).map_err(|e| format!("zip: {e}"))?;
-    let mut out = BTreeMap::new();
-    for i in 0..archive.len() {
-        let mut entry = archive.by_index(i).map_err(|e| format!("zip: {e}"))?;
-        if entry.name().ends_with(".bpo") {
-            let mut contents = String::new();
-            entry
-                .read_to_string(&mut contents)
-                .map_err(|e| format!("zip read: {e}"))?;
-            out.insert(entry.name().to_string(), contents);
-        }
-    }
-    Ok(out)
-}
-
 /// Regenerate one archive and diff every generated `.bpo` against the
 /// reference. `Err` marks a model this comparison cannot judge.
 fn diff_model(zip: &Path) -> Result<Vec<String>, String> {
@@ -125,7 +105,7 @@ fn diff_model(zip: &Path) -> Result<Vec<String>, String> {
         .file_stem()
         .and_then(|s| s.to_str())
         .unwrap_or("project");
-    let references = reference_bpos(&bytes)?;
+    let references = common::bpo_entries(&bytes)?;
     if references.is_empty() {
         return Err("no reference .bpo in archive".into());
     }

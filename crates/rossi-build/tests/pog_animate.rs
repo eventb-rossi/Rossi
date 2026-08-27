@@ -25,7 +25,6 @@
 mod common;
 
 use std::collections::BTreeSet;
-use std::io::Read;
 use std::path::Path;
 use std::time::Duration;
 
@@ -70,15 +69,7 @@ fn animator_reads_back_generated_obligations() {
             .and_then(|s| s.to_str())
             .unwrap_or("?")
             .to_string();
-        let skip = flags.get(&model).is_some_and(|f| {
-            f.iter().any(|flag| {
-                matches!(
-                    flag.as_str(),
-                    "defective" | "keyword_identifier" | "unsupported" | "rodin_rejected"
-                )
-            })
-        });
-        if skip {
+        if common::flagged_unsupported(&flags, &model) {
             report.push(vec![
                 model,
                 "skip".into(),
@@ -134,8 +125,13 @@ fn check_one(
 
     common::regen_one(zip, regen_zip).map_err(|e| Skip(format!("regen: {e}")))?;
 
-    // Every generated sequent, as `<component>/<name>`.
-    let generated = generated_names(regen_zip).map_err(Skip)?;
+    // The animator names obligations by component alone, so the archive
+    // prefix is dropped — safe here, since multi-project archives are skipped.
+    let generated: BTreeSet<String> = common::generated_obligations(regen_zip)
+        .map_err(Skip)?
+        .into_iter()
+        .map(|(_, component, sequent)| format!("{component}/{sequent}"))
+        .collect();
     if generated.is_empty() {
         return Err(Skip("no generated obligations".into()));
     }
@@ -210,36 +206,4 @@ fn check_one(
         }
     }
     Ok(())
-}
-
-/// The generated obligations of a regenerated archive, as
-/// `<component>/<sequent>` rows.
-fn generated_names(zip: &Path) -> Result<BTreeSet<String>, String> {
-    let bytes = std::fs::read(zip).map_err(|e| format!("read: {e}"))?;
-    let mut archive =
-        zip::ZipArchive::new(std::io::Cursor::new(bytes)).map_err(|e| format!("zip: {e}"))?;
-    let mut out = BTreeSet::new();
-    for i in 0..archive.len() {
-        let mut entry = archive.by_index(i).map_err(|e| format!("zip: {e}"))?;
-        let name = entry.name().to_string();
-        if !name.ends_with(".bpo") {
-            continue;
-        }
-        let component = name
-            .rsplit('/')
-            .next()
-            .unwrap_or(&name)
-            .trim_end_matches(".bpo")
-            .to_string();
-        let mut contents = String::new();
-        entry
-            .read_to_string(&mut contents)
-            .map_err(|e| format!("zip read: {e}"))?;
-        let view = rossi_build::po_view::PoView::from_xml(&contents)
-            .map_err(|e| format!("{name}: {e}"))?;
-        for sequent in view.sequents.keys() {
-            out.insert(format!("{component}/{sequent}"));
-        }
-    }
-    Ok(out)
 }
