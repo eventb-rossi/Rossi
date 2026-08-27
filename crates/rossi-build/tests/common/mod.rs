@@ -112,6 +112,64 @@ pub fn regen_one(zip: &Path, out: &Path) -> Result<(), Box<dyn std::error::Error
     Ok(())
 }
 
+/// The `.bpo` entries of a zip archive, keyed by entry path.
+pub fn bpo_entries(zip_bytes: &[u8]) -> Result<BTreeMap<String, String>, String> {
+    let mut archive =
+        zip::ZipArchive::new(std::io::Cursor::new(zip_bytes)).map_err(|e| format!("zip: {e}"))?;
+    let mut out = BTreeMap::new();
+    for i in 0..archive.len() {
+        let mut entry = archive.by_index(i).map_err(|e| format!("zip: {e}"))?;
+        if entry.name().ends_with(".bpo") {
+            let mut contents = String::new();
+            std::io::Read::read_to_string(&mut entry, &mut contents)
+                .map_err(|e| format!("zip read: {e}"))?;
+            out.insert(entry.name().to_string(), contents);
+        }
+    }
+    Ok(out)
+}
+
+/// The obligations a regenerated archive carries, as
+/// `(project prefix, component, sequent)` — the set an external consumer of
+/// the generated `.bpo` should read back. The prefix is `"Project/"`, or
+/// empty for a flat archive, so a caller that names obligations by component
+/// alone can drop it and one that qualifies them can concatenate.
+///
+/// The component is kept separate from the prefix rather than folded into a
+/// single name: a multi-project archive routinely repeats component names
+/// across projects, and flattening them loses every obligation that collides.
+pub fn generated_obligations(zip: &Path) -> Result<BTreeSet<(String, String, String)>, String> {
+    let bytes = std::fs::read(zip).map_err(|e| format!("read: {e}"))?;
+    let mut out = BTreeSet::new();
+    for (path, contents) in bpo_entries(&bytes)? {
+        let stem = path.trim_end_matches(".bpo");
+        let (prefix, component) = match stem.rsplit_once('/') {
+            Some((dir, name)) => (format!("{dir}/"), name),
+            None => (String::new(), stem),
+        };
+        let view = rossi_build::po_view::PoView::from_xml(&contents)
+            .map_err(|e| format!("{path}: {e}"))?;
+        for sequent in view.sequents.keys() {
+            out.insert((prefix.clone(), component.to_string(), sequent.clone()));
+        }
+    }
+    Ok(out)
+}
+
+/// Whether `model` carries a flag marking it as input the corpus gates cannot
+/// hold to the same standard: broken sources, models needing an Event-B
+/// extension rossi does not support, and models no toolchain accepts.
+pub fn flagged_unsupported(flags: &BTreeMap<String, BTreeSet<String>>, model: &str) -> bool {
+    flags.get(model).is_some_and(|f| {
+        f.iter().any(|flag| {
+            matches!(
+                flag.as_str(),
+                "defective" | "keyword_identifier" | "unsupported" | "rodin_rejected"
+            )
+        })
+    })
+}
+
 /// Spawn `cmd` as the leader of a fresh process group (Unix). The corpus
 /// tools are wrapper scripts whose real work happens in a spawned JVM or
 /// container; on a timeout, `Child::kill` alone would reap the wrapper and

@@ -224,24 +224,10 @@ fn rodin_builds_regenerated_corpus() {
     );
 }
 
-/// The `.bpo` entries of an archive, keyed by entry path.
+/// The `.bpo` entries of an archive on disk, keyed by entry path.
 fn read_bpos(zip: &std::path::Path) -> Result<std::collections::BTreeMap<String, String>, String> {
     let bytes = std::fs::read(zip).map_err(|e| format!("read: {e}"))?;
-    let mut archive =
-        zip::ZipArchive::new(std::io::Cursor::new(bytes)).map_err(|e| format!("zip: {e}"))?;
-    let mut out = std::collections::BTreeMap::new();
-    for i in 0..archive.len() {
-        let mut entry = archive.by_index(i).map_err(|e| format!("zip: {e}"))?;
-        if entry.name().ends_with(".bpo") {
-            use std::io::Read as _;
-            let mut contents = String::new();
-            entry
-                .read_to_string(&mut contents)
-                .map_err(|e| format!("zip read: {e}"))?;
-            out.insert(entry.name().to_string(), contents);
-        }
-    }
-    Ok(out)
+    common::bpo_entries(&bytes)
 }
 
 /// Compare the generated proof obligations against the ones Rodin just
