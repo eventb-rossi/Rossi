@@ -11,12 +11,14 @@
 
 pub mod confidence;
 pub mod hyp_action;
+pub mod registry;
 pub mod rule;
 pub mod sequent;
 pub mod tree;
 
 pub use confidence::Confidence;
 pub use hyp_action::HypAction;
+pub use registry::{ReasonerDesc, Registration};
 pub use rule::{Antecedent, Rule};
 pub use sequent::{ProverSequent, TypedIdent};
 pub use tree::ProofTreeNode;
