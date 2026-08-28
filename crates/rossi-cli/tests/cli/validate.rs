@@ -255,13 +255,16 @@ fn test_cli_mixed_text_and_zip_files() {
     assert!(stdout.contains("✓ ../rossi/examples/binary-search.zip:M0.bum"));
     assert!(stdout.contains("Valid Machine 'M0'"));
     // Check proof status (binary-search.zip ships Rodin proof files, which
-    // are picked up even under --no-semantic)
-    assert!(stdout.contains("Proofs: 41/42 discharged, 1 pending"));
-    // Check summary (6 components + 1 EB015 warning row; the proof-summary
-    // row is bookkeeping and is not counted)
+    // are picked up even under --no-semantic). The refreshed archive
+    // records six FIS/SIM proofs the toolchain marks broken: their stored
+    // proofs predate its regenerated obligations and the default
+    // auto-tactics cannot re-close them.
+    assert!(stdout.contains("Proofs: 35/41 discharged, 6 pending, 6 broken"));
+    // Check summary (6 components + 6 EB016 warning rows; the
+    // proof-summary row is bookkeeping and is not counted)
     assert!(stdout.contains("Summary:"));
-    assert!(stdout.contains("Total:  7"));
-    assert!(stdout.contains("Passed: 7 ✓"));
+    assert!(stdout.contains("Total:  12"));
+    assert!(stdout.contains("Passed: 12 ✓"));
 }
 
 #[test]
