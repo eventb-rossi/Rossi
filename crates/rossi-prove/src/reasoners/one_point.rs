@@ -254,6 +254,15 @@ pub(crate) fn rewrite_in_compset(pred: &Predicate) -> Option<Predicate> {
 /// to a quantified predicate, consuming the first replacement
 /// equality found at the right polarity. `None` when nothing applies.
 pub(crate) fn one_point_inference(pred: &Predicate) -> Option<Predicate> {
+    one_point_inference_with_replacement(pred).map(|(result, _)| result)
+}
+
+/// The one-point application together with the consumed replacement
+/// expression, for the
+/// reasoner's well-definedness antecedent.
+pub(crate) fn one_point_inference_with_replacement(
+    pred: &Predicate,
+) -> Option<(Predicate, Expression)> {
     let PredicateKind::Quantified {
         op,
         decls,
@@ -282,7 +291,16 @@ pub(crate) fn one_point_inference(pred: &Predicate) -> Option<Predicate> {
             None,
         )
     });
-    instantiate_partial(*op, decls, &processing, &scan.replacements.slots)
+    let replacement = scan
+        .replacements
+        .slots
+        .iter()
+        .flatten()
+        .next()
+        .expect("a found scan holds a replacement")
+        .clone();
+    let result = instantiate_partial(*op, decls, &processing, &scan.replacements.slots)?;
+    Some((result, replacement))
 }
 
 /// Match-and-simplify: walks the body at the binder's polarity,

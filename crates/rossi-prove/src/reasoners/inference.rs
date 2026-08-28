@@ -1140,6 +1140,106 @@ impl Reasoner for AllmtD {
     }
 }
 
+/// `OnePointRule` (`onePointRule`, version 2) — applies the
+/// one-point rule to a quantified goal or hypothesis, with a second
+/// antecedent for the replacement's well-definedness.
+pub struct OnePointRule;
+
+impl Reasoner for OnePointRule {
+    fn replay(
+        &self,
+        seq: &ProverSequent,
+        stored: &StoredRule,
+        hints: &ReplayHints,
+    ) -> Result<Rule, String> {
+        // Hypothesis input: at most one needed hypothesis.
+        let hyp = match stored.rule.needed_hyps.as_slice() {
+            [] => None,
+            [hyp] => {
+                let hyp = hints.apply_pred(hyp);
+                if !seq.contains_hypothesis(&hyp) {
+                    return Err(format!("Nonexistent hypothesis: {}", display_pred(&hyp)));
+                }
+                Some(hyp)
+            }
+            _ => return Err("Expected at most one needed hypothesis!".into()),
+        };
+        let apply_to = hyp.clone().unwrap_or_else(|| seq.goal().clone());
+        if !matches!(apply_to.kind(), PredicateKind::Quantified { .. }) {
+            return Err(format!(
+                "One point rule applied to not quantified predicate {}",
+                display_pred(&apply_to)
+            ));
+        }
+        let (simplified, replacement) =
+            super::one_point::one_point_inference_with_replacement(&apply_to).ok_or_else(|| {
+                format!(
+                    "One point processing unsuccessful for predicate {}",
+                    display_pred(&apply_to)
+                )
+            })?;
+        let simplified = super::as_parsed_pred(&simplified).unwrap_or(simplified);
+        let replacement_wd = replacement.wd_lemma();
+        let display = match &hyp {
+            None => "One Point Rule in goal".to_string(),
+            Some(hyp) => format!("One Point Rule in {}", display_pred(hyp)),
+        };
+        let (goal, antecedents) = match &hyp {
+            None => (
+                Some(seq.goal().clone()),
+                vec![
+                    Antecedent {
+                        goal: Some(simplified),
+                        added_hyps: Vec::new(),
+                        unselected_added: Vec::new(),
+                        added_idents: Vec::new(),
+                        hyp_actions: Vec::new(),
+                    },
+                    Antecedent {
+                        goal: Some(replacement_wd),
+                        added_hyps: Vec::new(),
+                        unselected_added: Vec::new(),
+                        added_idents: Vec::new(),
+                        hyp_actions: Vec::new(),
+                    },
+                ],
+            ),
+            Some(hyp) => (
+                None,
+                vec![
+                    Antecedent {
+                        goal: None,
+                        added_hyps: Vec::new(),
+                        unselected_added: Vec::new(),
+                        added_idents: Vec::new(),
+                        hyp_actions: vec![HypAction::Rewrite {
+                            hyps: vec![hyp.clone()],
+                            added_idents: Vec::new(),
+                            inferred: vec![simplified],
+                            disappearing: vec![hyp.clone()],
+                        }],
+                    },
+                    Antecedent {
+                        goal: Some(replacement_wd),
+                        added_hyps: Vec::new(),
+                        unselected_added: Vec::new(),
+                        added_idents: Vec::new(),
+                        hyp_actions: vec![HypAction::Hide(vec![hyp.clone()])],
+                    },
+                ],
+            ),
+        };
+        Ok(Rule {
+            reasoner: stored.rule.reasoner.clone(),
+            goal,
+            needed_hyps: hyp.iter().cloned().collect(),
+            confidence: Confidence::DISCHARGED_MAX,
+            display,
+            antecedents,
+        })
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1557,5 +1657,81 @@ mod tests {
         hole.rule.needed_hyps = vec![pred(&env, univ)];
         hole.input.exprs.insert("exprs".into(), vec![None]);
         assert!(AllmpD.replay(&seq, &hole, &no_hints()).is_err());
+    }
+}
+
+#[cfg(test)]
+mod one_point_rule_tests {
+    use super::*;
+    use crate::skeleton::StoredInput;
+    use crate::test_util::{desc, env, pred};
+
+    fn sequent(
+        env: &rossi::formula::SealedTypeEnvironment,
+        hyps: &[&str],
+        goal: &str,
+    ) -> ProverSequent {
+        let hyps: Vec<Predicate> = hyps.iter().map(|s| pred(env, s)).collect();
+        ProverSequent::new(env.clone(), hyps.clone(), [], hyps, pred(env, goal))
+    }
+
+    fn stored(needed: Vec<Predicate>) -> StoredRule {
+        StoredRule {
+            rule: Rule {
+                reasoner: desc("onePointRule:2"),
+                goal: None,
+                needed_hyps: needed,
+                confidence: Confidence::DISCHARGED_MAX,
+                display: String::new(),
+                antecedents: Vec::new(),
+            },
+            input: StoredInput::default(),
+        }
+    }
+
+    #[test]
+    fn one_point_rule_on_the_goal_adds_the_wd_antecedent() {
+        let env = env(&[("S", "ℙ(ℤ)"), ("g", "ℙ(ℤ×ℤ)"), ("x", "ℤ")]);
+        let seq = sequent(&env, &[], "∃z·z = g(x) ∧ z ∈ S");
+        let rule = OnePointRule
+            .replay(&seq, &stored(Vec::new()), &ReplayHints::default())
+            .unwrap();
+        assert_eq!(rule.goal.as_ref(), Some(seq.goal()));
+        assert_eq!(
+            rule.antecedents[0].goal.as_ref(),
+            Some(&pred(&env, "g(x) ∈ S"))
+        );
+        assert_eq!(
+            rule.antecedents[1].goal.as_ref(),
+            Some(&pred(&env, "x ∈ dom(g) ∧ g ∈ ℤ ⇸ ℤ"))
+        );
+        assert!(rule.apply(&seq).is_some());
+    }
+
+    #[test]
+    fn one_point_rule_on_a_hypothesis_rewrites_and_hides() {
+        let env = env(&[("S", "ℙ(ℤ)")]);
+        let hyp = pred(&env, "∀z·z = 3 ⇒ z ∈ S");
+        let seq = sequent(&env, &["∀z·z = 3 ⇒ z ∈ S"], "⊥");
+        let rule = OnePointRule
+            .replay(&seq, &stored(vec![hyp.clone()]), &ReplayHints::default())
+            .unwrap();
+        assert_eq!(rule.goal, None);
+        assert_eq!(rule.needed_hyps, vec![hyp.clone()]);
+        assert_eq!(
+            rule.antecedents[0].hyp_actions,
+            vec![HypAction::Rewrite {
+                hyps: vec![hyp.clone()],
+                added_idents: Vec::new(),
+                inferred: vec![pred(&env, "3 ∈ S")],
+                disappearing: vec![hyp.clone()],
+            }]
+        );
+        assert_eq!(rule.antecedents[1].goal.as_ref(), Some(&pred(&env, "⊤")));
+        assert_eq!(
+            rule.antecedents[1].hyp_actions,
+            vec![HypAction::Hide(vec![hyp])]
+        );
+        assert!(rule.apply(&seq).is_some());
     }
 }
