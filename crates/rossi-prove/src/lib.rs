@@ -27,7 +27,7 @@ pub use bps::{PsStatus, read_bps};
 pub use confidence::Confidence;
 pub use deps::{ProofDependencies, is_proof_reusable};
 pub use hyp_action::HypAction;
-pub use po_loader::{PoError, PoFile};
+pub use po_loader::{PoError, PoFile, PoProject};
 pub use registry::{ReasonerDesc, Registration};
 pub use rule::{Antecedent, Rule};
 pub use sequent::{ProverSequent, TypedIdent};

@@ -74,6 +74,7 @@ proptest = "1.6"
 # Workspace crates
 rossi = { version = "0.2.0", path = "crates/rossi" }
 rossi-build = { version = "0.2.0", path = "crates/rossi-build" }
+rossi-prove = { version = "0.2.0", path = "crates/rossi-prove" }
 eventb-lsp = { version = "0.2.0", path = "crates/eventb-lsp" }
 
 [profile.release]
