@@ -300,6 +300,7 @@ impl Reasoner for PartitionRewrites {
                 rossi::formula::position::FormulaRef::Pred(&expanded),
             )
             .ok()
+            .map(|p| super::as_parsed_pred(&p).unwrap_or(p))
         };
         let display = |hyp: Option<&Predicate>, position: &Position| match hyp {
             None => "Partition rewrites in goal".to_string(),
@@ -410,6 +411,7 @@ impl Reasoner for FunImgSimplifies {
                 rossi::formula::position::FormulaRef::Expr(&replacement),
             )
             .ok()
+            .map(|p| super::as_parsed_pred(&p).unwrap_or(p))
         };
         let needed = |seq: &ProverSequent,
                       pred: &Predicate,
@@ -522,6 +524,7 @@ impl Reasoner for TotalDom {
                 rossi::formula::position::FormulaRef::Expr(&substitute),
             )
             .map_err(|_| failure())?;
+        let rewritten = super::as_parsed_pred(&rewritten).unwrap_or(rewritten);
 
         let display_sub = |hyp: &Predicate| {
             format!(
@@ -577,6 +580,263 @@ fn pred_sub_expr(pred: &Predicate, position: &Position) -> Option<Expression> {
     match pred.sub_formula(position)? {
         rossi::formula::position::FormulaRef::Expr(e) => Some(e.clone()),
         _ => None,
+    }
+}
+
+/// Position-input recovery: the position from
+/// the `pos` string, the hypothesis (if any) from the needed
+/// hypotheses.
+fn position_input(stored: &StoredRule) -> Result<(Option<Predicate>, Position), String> {
+    let pos = stored
+        .input
+        .strings
+        .get("pos")
+        .ok_or("Missing position input")?;
+    let position = Position::from_str(pos).map_err(|_| format!("Bad position: {pos}"))?;
+    match stored.rule.needed_hyps.as_slice() {
+        [] => Ok((None, position)),
+        [hyp] => Ok((Some(hyp.clone()), position)),
+        _ => Err("Expected exactly one needed hypothesis!".into()),
+    }
+}
+
+/// `FunImageGoal` (`funImgGoal`) — adds `f(E) ∈ B` for a function
+/// application at a WD-strict goal position, from a hypothesis
+/// `f ∈ A <arrow> B`.
+pub struct FunImageGoal;
+
+impl Reasoner for FunImageGoal {
+    fn replay(
+        &self,
+        seq: &ProverSequent,
+        stored: &StoredRule,
+        _hints: &ReplayHints,
+    ) -> Result<Rule, String> {
+        use rossi::formula::tag::BinaryExprOp;
+        let (hyp, position) = position_input(stored)?;
+        let goal = seq.goal();
+        if !goal.is_wd_strict_at(&position) {
+            return Err("Non WD-strict position in goal".into());
+        }
+        let fun_image = pred_sub_expr(goal, &position)
+            .filter(|e| {
+                matches!(
+                    e.kind(),
+                    ExpressionKind::Binary {
+                        op: BinaryExprOp::FunImage,
+                        ..
+                    }
+                )
+            })
+            .ok_or("Position does not denote a function application")?;
+        let ExpressionKind::Binary { left: fun, .. } = fun_image.kind() else {
+            unreachable!("a function application was matched");
+        };
+        let hyp = hyp
+            .filter(|hyp| seq.contains_hypothesis(hyp))
+            .ok_or("Missing hypothesis")?;
+        let PredicateKind::Relational {
+            op: RelationalOp::In,
+            left,
+            right: set,
+        } = hyp.kind()
+        else {
+            return Err(format!("Ill-formed hypothesis {}", display_pred(&hyp)));
+        };
+        let is_fun_or_rel = matches!(
+            set.kind(),
+            ExpressionKind::Binary {
+                op: BinaryExprOp::PFun
+                    | BinaryExprOp::TFun
+                    | BinaryExprOp::PInj
+                    | BinaryExprOp::TInj
+                    | BinaryExprOp::PSur
+                    | BinaryExprOp::TSur
+                    | BinaryExprOp::TBij
+                    | BinaryExprOp::Rel
+                    | BinaryExprOp::TRel
+                    | BinaryExprOp::SRel
+                    | BinaryExprOp::STRel,
+                ..
+            }
+        );
+        if left != fun || !is_fun_or_rel {
+            return Err(format!("Ill-formed hypothesis {}", display_pred(&hyp)));
+        }
+        let ExpressionKind::Binary { right: range, .. } = set.kind() else {
+            unreachable!("an arrow was matched");
+        };
+        let ff = goal.factory();
+        let added =
+            ff.relational_predicate(RelationalOp::In, fun_image.clone(), range.clone(), None);
+        Ok(Rule {
+            reasoner: stored.rule.reasoner.clone(),
+            goal: Some(goal.clone()),
+            needed_hyps: vec![hyp],
+            confidence: Confidence::DISCHARGED_MAX,
+            display: format!(
+                "functional image goal for {}",
+                super::display_expr(&fun_image)
+            ),
+            antecedents: vec![Antecedent {
+                goal: Some(goal.clone()),
+                added_hyps: vec![added],
+                unselected_added: Vec::new(),
+                added_idents: Vec::new(),
+                hyp_actions: Vec::new(),
+            }],
+        })
+    }
+}
+
+/// `FunOvr` (`funOvr`, version 1) — case-splits a function
+/// application whose function is an override, at a WD-strict
+/// position.
+pub struct FunOvr;
+
+impl Reasoner for FunOvr {
+    fn replay(
+        &self,
+        seq: &ProverSequent,
+        stored: &StoredRule,
+        _hints: &ReplayHints,
+    ) -> Result<Rule, String> {
+        use rossi::formula::tag::{BinaryExprOp, UnaryExprOp};
+        let (hyp, position) = position_input(stored)?;
+        let target = match &hyp {
+            None => seq.goal().clone(),
+            Some(hyp) => {
+                if !seq.contains_hypothesis(hyp) {
+                    return Err(format!(
+                        "Inference {} is not applicable for {} at position {position}",
+                        stored.rule.reasoner.id(),
+                        display_pred(hyp),
+                    ));
+                }
+                hyp.clone()
+            }
+        };
+        let failure = || {
+            format!(
+                "Inference {} is not applicable for {} at position {position}",
+                stored.rule.reasoner.id(),
+                display_pred(&target),
+            )
+        };
+        if !target.is_wd_strict_at(&position) {
+            return Err(failure());
+        }
+        let sub = pred_sub_expr(&target, &position).ok_or_else(failure)?;
+        let ExpressionKind::Binary {
+            op: BinaryExprOp::FunImage,
+            left: ovr,
+            right: arg,
+        } = sub.kind()
+        else {
+            return Err(failure());
+        };
+        let ExpressionKind::Associative {
+            op: AssocExprOp::Ovr,
+            children,
+        } = ovr.kind()
+        else {
+            return Err(failure());
+        };
+        let ff = target.factory();
+        let last = children.last().expect("an override has children");
+        let prefix = &children[..children.len() - 1];
+        let rest = match prefix {
+            [single] => single.clone(),
+            _ => assoc_as_parsed(AssocExprOp::Ovr, prefix.to_vec()),
+        };
+        let rewrite_to = |replacement: &Expression| {
+            target
+                .rewrite_sub_formula(
+                    &position,
+                    rossi::formula::position::FormulaRef::Expr(replacement),
+                )
+                .ok()
+                .map(|p| super::as_parsed_pred(&p).unwrap_or(p))
+        };
+        let rest_image = |dom_sub_by: Expression| {
+            let restricted =
+                ff.binary_expression(BinaryExprOp::DomSub, dom_sub_by, rest.clone(), None);
+            ff.binary_expression(BinaryExprOp::FunImage, restricted, arg.clone(), None)
+        };
+        let singleton_maplet = match last.kind() {
+            ExpressionKind::SetExtension(members) => match members.as_slice() {
+                [single] => match single.kind() {
+                    ExpressionKind::Binary {
+                        op: BinaryExprOp::Mapsto,
+                        left,
+                        right,
+                    } => Some((left.clone(), right.clone())),
+                    _ => None,
+                },
+                _ => None,
+            },
+            _ => None,
+        };
+        let (case_hyp, first, second) = match &singleton_maplet {
+            // g = {E ↦ F}: the argument equals E or it does not.
+            Some((e, f)) => {
+                let equal =
+                    ff.relational_predicate(RelationalOp::Equal, arg.clone(), e.clone(), None);
+                let set_e = ff.set_extension(vec![e.clone()], None);
+                (
+                    equal,
+                    rewrite_to(f).ok_or_else(failure)?,
+                    rewrite_to(&rest_image(set_e)).ok_or_else(failure)?,
+                )
+            }
+            // Otherwise: the argument is in dom(g) or it is not.
+            None => {
+                let dom_g = ff.unary_expression(UnaryExprOp::KDom, last.clone(), None);
+                let membership =
+                    ff.relational_predicate(RelationalOp::In, arg.clone(), dom_g.clone(), None);
+                let g_image =
+                    ff.binary_expression(BinaryExprOp::FunImage, last.clone(), arg.clone(), None);
+                (
+                    membership,
+                    rewrite_to(&g_image).ok_or_else(failure)?,
+                    rewrite_to(&rest_image(dom_g)).ok_or_else(failure)?,
+                )
+            }
+        };
+        let negated = ff.not_predicate(case_hyp.clone(), None);
+        let antecedent = |inferred: Predicate, new_hyp: Predicate| match &hyp {
+            None => Antecedent {
+                goal: Some(inferred),
+                added_hyps: vec![new_hyp],
+                unselected_added: Vec::new(),
+                added_idents: Vec::new(),
+                hyp_actions: Vec::new(),
+            },
+            Some(hyp) => Antecedent {
+                goal: None,
+                added_hyps: vec![new_hyp, inferred],
+                unselected_added: Vec::new(),
+                added_idents: Vec::new(),
+                hyp_actions: vec![HypAction::Hide(vec![hyp.clone()])],
+            },
+        };
+        let display = match &hyp {
+            None => "ovr in goal".to_string(),
+            Some(hyp) => format!(
+                "ovr in {}",
+                pred_sub_expr(hyp, &position)
+                    .map(|e| super::display_expr(&e))
+                    .unwrap_or_default()
+            ),
+        };
+        Ok(Rule {
+            reasoner: stored.rule.reasoner.clone(),
+            goal: hyp.is_none().then(|| seq.goal().clone()),
+            needed_hyps: hyp.iter().cloned().collect(),
+            confidence: Confidence::DISCHARGED_MAX,
+            display,
+            antecedents: vec![antecedent(first, case_hyp), antecedent(second, negated)],
+        })
     }
 }
 
@@ -786,6 +1046,51 @@ mod batch30_tests {
             .replay(&seq, &stored, &ReplayHints::default())
             .unwrap_err();
         assert!(err.contains("is inapplicable for goal"), "{err}");
+    }
+
+    #[test]
+    fn fun_image_goal_adds_the_range_membership() {
+        let env = env(&[("f", "ℙ(ℤ×ℤ)"), ("A", "ℙ(ℤ)"), ("B", "ℙ(ℤ)"), ("x", "ℤ")]);
+        let seq = sequent(&env, &["f ∈ A → B"], "f(x) > 0");
+        let mut stored = stored_goal("funImgGoal", seq.goal().clone(), "0");
+        stored.rule.needed_hyps = vec![pred(&env, "f ∈ A → B")];
+        let rule = FunImageGoal
+            .replay(&seq, &stored, &ReplayHints::default())
+            .unwrap();
+        assert_eq!(rule.needed_hyps, vec![pred(&env, "f ∈ A → B")]);
+        let ante = &rule.antecedents[0];
+        assert_eq!(ante.goal.as_ref(), Some(seq.goal()));
+        assert_eq!(ante.added_hyps, vec![pred(&env, "f(x) ∈ B")]);
+        assert!(rule.apply(&seq).is_some());
+    }
+
+    #[test]
+    fn fun_ovr_splits_on_a_singleton_override() {
+        let env = env(&[
+            ("f", "ℙ(ℤ×ℤ)"),
+            ("a", "ℤ"),
+            ("b", "ℤ"),
+            ("x", "ℤ"),
+            ("y", "ℤ"),
+        ]);
+        let seq = sequent(&env, &[], "(f  {a ↦ b})(x) = y");
+        let stored = stored_goal("funOvr:1", seq.goal().clone(), "0");
+        let rule = FunOvr
+            .replay(&seq, &stored, &ReplayHints::default())
+            .unwrap();
+        assert_eq!(rule.goal.as_ref(), Some(seq.goal()));
+        assert_eq!(rule.antecedents.len(), 2);
+        assert_eq!(
+            rule.antecedents[0].goal.as_ref(),
+            Some(&pred(&env, "b = y"))
+        );
+        assert_eq!(rule.antecedents[0].added_hyps, vec![pred(&env, "x = a")]);
+        assert_eq!(
+            rule.antecedents[1].goal.as_ref(),
+            Some(&pred(&env, "({a} ⩤ f)(x) = y"))
+        );
+        assert_eq!(rule.antecedents[1].added_hyps, vec![pred(&env, "¬ x = a")]);
+        assert!(rule.apply(&seq).is_some());
     }
 
     #[test]

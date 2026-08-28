@@ -397,66 +397,13 @@ fn disj(like: &Predicate, children: Vec<Predicate>) -> Predicate {
     }
 }
 
-/// `∃x·S = {x}` — the singleton existential: one
-/// declaration per scalar component of the element type (a maplet
-/// pattern mirrors a product), with `S` shifted under the new binder.
-/// Every declaration is named `x` and the serializer resolves
-/// clashes; the names here follow that resolution against `S`'s free
-/// identifiers, which is what the stored round-trip carries.
+/// `∃x·S = {x}` — the singleton existential, on the
+/// shared component binder.
 fn exists_singleton(set: &Expression) -> Option<Predicate> {
     let ff = set.factory();
-    let Some(Type::Pow(element)) = set.ty() else {
-        return None;
-    };
-    fn count_components(ty: &Type) -> u32 {
-        match ty {
-            Type::Prod(left, right) => count_components(left) + count_components(right),
-            _ => 1,
-        }
-    }
-    fn pattern(ff: &rossi::formula::FormulaFactory, ty: &Type, next: &mut u32) -> Expression {
-        match ty {
-            Type::Prod(left, right) => {
-                let l = pattern(ff, left, next);
-                let r = pattern(ff, right, next);
-                ff.binary_expression(BinaryExprOp::Mapsto, l, r, None)
-            }
-            _ => {
-                *next -= 1;
-                ff.bound_identifier(*next, None, Some(ty.clone()))
-            }
-        }
-    }
-    let n = count_components(element);
-    let mut solver = rossi::formula::FreshNameSolver::new(set.free_identifiers().iter().cloned());
-    fn decls_for(
-        ff: &rossi::formula::FormulaFactory,
-        ty: &Type,
-        solver: &mut rossi::formula::FreshNameSolver,
-        out: &mut Vec<rossi::formula::BoundIdentDecl>,
-    ) {
-        match ty {
-            Type::Prod(left, right) => {
-                decls_for(ff, left, solver, out);
-                decls_for(ff, right, solver, out);
-            }
-            _ => {
-                let name = solver.solve_and_add("x");
-                out.push(ff.bound_ident_decl(&name, None, None, Some(ty.clone())));
-            }
-        }
-    }
-    let mut decls = Vec::with_capacity(n as usize);
-    decls_for(ff, element, &mut solver, &mut decls);
-    let mut next = n;
-    let member = pattern(ff, element, &mut next);
+    let (decls, member, shifted) = super::component_binder(set)?;
     let singleton = ff.set_extension(vec![member], None);
-    let equal = ff.relational_predicate(
-        RelationalOp::Equal,
-        set.shift_bound_identifiers(n as i32),
-        singleton,
-        None,
-    );
+    let equal = ff.relational_predicate(RelationalOp::Equal, shifted, singleton, None);
     Some(ff.quantified_predicate(QuantPredOp::Exists, decls, equal, None))
 }
 

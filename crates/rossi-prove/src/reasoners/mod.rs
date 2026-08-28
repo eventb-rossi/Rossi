@@ -64,6 +64,9 @@ pub fn implementation(desc: &ReasonerDesc) -> Option<&'static dyn Reasoner> {
         "partitionRewrites" => &manual::PartitionRewrites,
         "funImgSimplifies" => &manual::FunImgSimplifies,
         "totalDom" => &manual::TotalDom,
+        "funImgGoal" => &manual::FunImageGoal,
+        "funOvr" => &manual::FunOvr,
+        "onePointRule" => &inference::OnePointRule,
         "isFunGoal" => &structural::IsFunGoal,
         "finiteHypBoundedGoal" => &structural::FiniteHypBoundedGoal,
         _ => return None,
@@ -82,6 +85,254 @@ pub(crate) fn break_possible_conjunct(pred: &Predicate) -> Vec<Predicate> {
         _ => vec![pred.clone()],
     };
     dedup_preserving_order(conjuncts)
+}
+
+/// The print→parse round-trip shape of a formula: an associative
+/// node's same-operator FIRST child prints without parentheses, so
+/// its left spine merges into the run on re-parsing, while later
+/// same-operator children keep their parentheses. Formulas parsed
+/// from stored output are already in this shape; substitution and
+/// position-replacement products may not be, and stored rules only
+/// exist post-round-trip. `None` means already normal.
+pub(crate) fn as_parsed_pred(pred: &Predicate) -> Option<Predicate> {
+    use rossi::formula::PredicateKind;
+    let ff = pred.factory().clone();
+    match pred.kind() {
+        PredicateKind::Literal(_)
+        | PredicateKind::PredicateVariable(_)
+        | PredicateKind::Application { .. }
+        | PredicateKind::Extended { .. } => None,
+        PredicateKind::Not(child) => as_parsed_pred(child).map(|p| ff.not_predicate(p, None)),
+        PredicateKind::Binary { op, left, right } => {
+            let l = as_parsed_pred(left);
+            let r = as_parsed_pred(right);
+            (l.is_some() || r.is_some()).then(|| {
+                ff.binary_predicate(
+                    *op,
+                    l.unwrap_or_else(|| left.clone()),
+                    r.unwrap_or_else(|| right.clone()),
+                    None,
+                )
+            })
+        }
+        PredicateKind::Associative { op, children } => {
+            let mut out: Vec<Predicate> = Vec::with_capacity(children.len());
+            let mut changed = false;
+            for child in children {
+                match as_parsed_pred(child) {
+                    Some(c) => {
+                        changed = true;
+                        out.push(c);
+                    }
+                    None => out.push(child.clone()),
+                }
+            }
+            while let Some(first) = out.first().cloned() {
+                let PredicateKind::Associative {
+                    op: inner,
+                    children: nested,
+                } = first.kind()
+                else {
+                    break;
+                };
+                if inner != op {
+                    break;
+                }
+                changed = true;
+                let mut merged = nested.clone();
+                merged.extend(out.drain(1..));
+                out = merged;
+            }
+            changed.then(|| ff.associative_predicate(*op, out, None))
+        }
+        PredicateKind::Quantified {
+            op,
+            decls,
+            pred: body,
+        } => as_parsed_pred(body).map(|p| ff.quantified_predicate(*op, decls.clone(), p, None)),
+        PredicateKind::Relational { op, left, right } => {
+            let l = as_parsed_expr(left);
+            let r = as_parsed_expr(right);
+            (l.is_some() || r.is_some()).then(|| {
+                ff.relational_predicate(
+                    *op,
+                    l.unwrap_or_else(|| left.clone()),
+                    r.unwrap_or_else(|| right.clone()),
+                    None,
+                )
+            })
+        }
+        PredicateKind::Simple(child) => as_parsed_expr(child).map(|e| ff.simple_predicate(e, None)),
+        PredicateKind::Multiple(children) => {
+            let mut out: Vec<Expression> = Vec::with_capacity(children.len());
+            let mut changed = false;
+            for child in children {
+                match as_parsed_expr(child) {
+                    Some(c) => {
+                        changed = true;
+                        out.push(c);
+                    }
+                    None => out.push(child.clone()),
+                }
+            }
+            changed.then(|| ff.multiple_predicate(out, None))
+        }
+    }
+}
+
+/// See [`as_parsed_pred`].
+pub(crate) fn as_parsed_expr(expr: &Expression) -> Option<Expression> {
+    use rossi::formula::ExpressionKind;
+    let ff = expr.factory().clone();
+    match expr.kind() {
+        ExpressionKind::FreeIdentifier(_)
+        | ExpressionKind::BoundIdentifier(_)
+        | ExpressionKind::IntegerLiteral(_)
+        | ExpressionKind::Atomic(_)
+        | ExpressionKind::Ascription { .. }
+        | ExpressionKind::Extended { .. } => None,
+        ExpressionKind::SetExtension(members) => {
+            let mut out: Vec<Expression> = Vec::with_capacity(members.len());
+            let mut changed = false;
+            for member in members {
+                match as_parsed_expr(member) {
+                    Some(m) => {
+                        changed = true;
+                        out.push(m);
+                    }
+                    None => out.push(member.clone()),
+                }
+            }
+            changed.then(|| ff.set_extension(out, None))
+        }
+        ExpressionKind::Bool(pred) => as_parsed_pred(pred).map(|p| ff.bool_expression(p, None)),
+        ExpressionKind::Binary { op, left, right } => {
+            let l = as_parsed_expr(left);
+            let r = as_parsed_expr(right);
+            (l.is_some() || r.is_some()).then(|| {
+                ff.binary_expression(
+                    *op,
+                    l.unwrap_or_else(|| left.clone()),
+                    r.unwrap_or_else(|| right.clone()),
+                    None,
+                )
+            })
+        }
+        ExpressionKind::Associative { op, children } => {
+            let mut out: Vec<Expression> = Vec::with_capacity(children.len());
+            let mut changed = false;
+            for child in children {
+                match as_parsed_expr(child) {
+                    Some(c) => {
+                        changed = true;
+                        out.push(c);
+                    }
+                    None => out.push(child.clone()),
+                }
+            }
+            while let Some(first) = out.first().cloned() {
+                let ExpressionKind::Associative {
+                    op: inner,
+                    children: nested,
+                } = first.kind()
+                else {
+                    break;
+                };
+                if inner != op {
+                    break;
+                }
+                changed = true;
+                let mut merged = nested.clone();
+                merged.extend(out.drain(1..));
+                out = merged;
+            }
+            changed.then(|| ff.associative_expression(*op, out, None))
+        }
+        ExpressionKind::Unary { op, child } => {
+            as_parsed_expr(child).map(|e| ff.unary_expression(*op, e, None))
+        }
+        ExpressionKind::Quantified {
+            op,
+            decls,
+            pred,
+            expr: value,
+            form,
+        } => {
+            let p = as_parsed_pred(pred);
+            let v = as_parsed_expr(value);
+            (p.is_some() || v.is_some()).then(|| {
+                ff.quantified_expression(
+                    *op,
+                    decls.clone(),
+                    p.unwrap_or_else(|| pred.clone()),
+                    v.unwrap_or_else(|| value.clone()),
+                    None,
+                    *form,
+                )
+            })
+        }
+    }
+}
+
+/// The component binder: one declaration per scalar
+/// component of a set's element type — a maplet pattern mirrors a
+/// product — with the set shifted under the new binder. The reference
+/// names
+/// every declaration `x` and lets its serializer resolve clashes; the
+/// names here follow that resolution against the set's free
+/// identifiers, which is what the stored round-trip carries. Returns
+/// (declarations, pattern, shifted set).
+pub(crate) fn component_binder(
+    set: &Expression,
+) -> Option<(Vec<BoundIdentDecl>, Expression, Expression)> {
+    use rossi::formula::Type;
+    let ff = set.factory();
+    let Some(Type::Pow(element)) = set.ty() else {
+        return None;
+    };
+    fn count(ty: &Type) -> u32 {
+        match ty {
+            Type::Prod(left, right) => count(left) + count(right),
+            _ => 1,
+        }
+    }
+    fn pattern(ff: &rossi::formula::FormulaFactory, ty: &Type, next: &mut u32) -> Expression {
+        match ty {
+            Type::Prod(left, right) => {
+                let l = pattern(ff, left, next);
+                let r = pattern(ff, right, next);
+                ff.binary_expression(rossi::formula::tag::BinaryExprOp::Mapsto, l, r, None)
+            }
+            _ => {
+                *next -= 1;
+                ff.bound_identifier(*next, None, Some(ty.clone()))
+            }
+        }
+    }
+    fn decls_for(
+        ff: &rossi::formula::FormulaFactory,
+        ty: &Type,
+        solver: &mut FreshNameSolver,
+        out: &mut Vec<BoundIdentDecl>,
+    ) {
+        match ty {
+            Type::Prod(left, right) => {
+                decls_for(ff, left, solver, out);
+                decls_for(ff, right, solver, out);
+            }
+            _ => {
+                let name = solver.solve_and_add("x");
+                out.push(ff.bound_ident_decl(&name, None, None, Some(ty.clone())));
+            }
+        }
+    }
+    let n = count(element);
+    let mut solver = FreshNameSolver::new(set.free_identifiers().iter().cloned());
+    let mut decls = Vec::with_capacity(n as usize);
+    decls_for(ff, element, &mut solver, &mut decls);
+    let mut next = n;
+    let member = pattern(ff, element, &mut next);
+    Some((decls, member, set.shift_bound_identifiers(n as i32)))
 }
 
 /// Insertion-ordered set semantics: first occurrence wins, order kept.

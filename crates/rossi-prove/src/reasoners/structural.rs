@@ -861,11 +861,7 @@ mod tests {
                 .is_none()
         );
         // Registered but not implemented.
-        assert!(
-            RegistryProvider
-                .implementation(&desc("onePointRule:2"))
-                .is_none()
-        );
+        assert!(RegistryProvider.implementation(&desc("eq")).is_none());
         // Unknown id.
         assert!(
             RegistryProvider
