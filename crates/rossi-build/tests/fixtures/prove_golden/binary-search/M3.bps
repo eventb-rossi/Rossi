@@ -1,0 +1,9 @@
+<?xml version="1.0" encoding="UTF-8" standalone="no"?>
+<org.eventb.core.psFile>
+    <org.eventb.core.psStatus name="INITIALISATION/act2/WD" org.eventb.core.confidence="1000" org.eventb.core.poStamp="0" org.eventb.core.psManual="false"/>
+    <org.eventb.core.psStatus name="INITIALISATION/act2/SIM" org.eventb.core.confidence="1000" org.eventb.core.poStamp="0" org.eventb.core.psBroken="true" org.eventb.core.psManual="true"/>
+    <org.eventb.core.psStatus name="search_inc/act1/WD" org.eventb.core.confidence="1000" org.eventb.core.poStamp="0" org.eventb.core.psManual="false"/>
+    <org.eventb.core.psStatus name="search_inc/act1/SIM" org.eventb.core.confidence="1000" org.eventb.core.poStamp="0" org.eventb.core.psBroken="true" org.eventb.core.psManual="true"/>
+    <org.eventb.core.psStatus name="search_dec/act1/WD" org.eventb.core.confidence="1000" org.eventb.core.poStamp="0" org.eventb.core.psManual="false"/>
+    <org.eventb.core.psStatus name="search_dec/act1/SIM" org.eventb.core.confidence="1000" org.eventb.core.poStamp="0" org.eventb.core.psBroken="true" org.eventb.core.psManual="true"/>
+</org.eventb.core.psFile>
