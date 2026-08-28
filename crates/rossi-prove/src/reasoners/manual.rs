@@ -22,7 +22,10 @@ use super::{break_possible_conjunct, display_pred};
 /// the `pos` input string; a rule with a goal is a goal rewrite,
 /// otherwise the hypothesis is the first predicate of the first
 /// hypothesis action.
-fn stored_input(stored: &StoredRule) -> Result<(Option<Predicate>, Position), String> {
+fn stored_input(
+    stored: &StoredRule,
+    hints: &ReplayHints,
+) -> Result<(Option<Predicate>, Position), String> {
     let pos = stored
         .input
         .strings
@@ -48,7 +51,7 @@ fn stored_input(stored: &StoredRule) -> Result<(Option<Predicate>, Position), St
         _ => None,
     }
     .ok_or("Expected first hyp action to be a forward or hide hyp action!")?;
-    Ok((Some(hyp.clone()), position))
+    Ok((Some(hints.apply_pred(hyp)), position))
 }
 
 /// `getNeededHyps`: the hypotheses justifying a rewrite of the given
@@ -62,11 +65,12 @@ type NeededHyps<'a> = &'a dyn Fn(&ProverSequent, &Predicate, &Position) -> Optio
 pub(crate) fn manual_rewrite_rule(
     seq: &ProverSequent,
     stored: &StoredRule,
+    hints: &ReplayHints,
     rewrite: &dyn Fn(&Predicate, &Position) -> Option<Predicate>,
     needed: NeededHyps<'_>,
     display: &dyn Fn(Option<&Predicate>, &Position) -> String,
 ) -> Result<Rule, String> {
-    let (hyp, position) = stored_input(stored)?;
+    let (hyp, position) = stored_input(stored, hints)?;
     let reasoner_id = stored.rule.reasoner.id().to_string();
     match hyp {
         None => {
@@ -287,7 +291,7 @@ impl Reasoner for PartitionRewrites {
         &self,
         seq: &ProverSequent,
         stored: &StoredRule,
-        _hints: &ReplayHints,
+        hints: &ReplayHints,
     ) -> Result<Rule, String> {
         let rewrite = |pred: &Predicate, position: &Position| -> Option<Predicate> {
             let sub = pred.sub_formula(position)?;
@@ -314,7 +318,14 @@ impl Reasoner for PartitionRewrites {
                     .unwrap_or_default()
             ),
         };
-        manual_rewrite_rule(seq, stored, &rewrite, &|_, _, _| Some(Vec::new()), &display)
+        manual_rewrite_rule(
+            seq,
+            stored,
+            hints,
+            &rewrite,
+            &|_, _, _| Some(Vec::new()),
+            &display,
+        )
     }
 }
 
@@ -386,7 +397,7 @@ impl Reasoner for FunImgSimplifies {
         &self,
         seq: &ProverSequent,
         stored: &StoredRule,
-        _hints: &ReplayHints,
+        hints: &ReplayHints,
     ) -> Result<Rule, String> {
         let rewrite = |pred: &Predicate, position: &Position| -> Option<Predicate> {
             use rossi::formula::tag::BinaryExprOp;
@@ -425,7 +436,7 @@ impl Reasoner for FunImgSimplifies {
             None => "Functional image simplification in goal".to_string(),
             Some(_) => "Functional image simplification in hyp".to_string(),
         };
-        manual_rewrite_rule(seq, stored, &rewrite, &needed, &display)
+        manual_rewrite_rule(seq, stored, hints, &rewrite, &needed, &display)
     }
 }
 
@@ -439,7 +450,7 @@ impl Reasoner for TotalDom {
         &self,
         seq: &ProverSequent,
         stored: &StoredRule,
-        _hints: &ReplayHints,
+        hints: &ReplayHints,
     ) -> Result<Rule, String> {
         use rossi::formula::tag::BinaryExprOp;
         // The substitute expression from the `subst` input.
@@ -452,7 +463,7 @@ impl Reasoner for TotalDom {
                 _ => None,
             })
             .ok_or("Expected exactly one substitute!")?;
-        let (hyp, position) = stored_input(stored)?;
+        let (hyp, position) = stored_input(stored, hints)?;
 
         let to_rewrite = match &hyp {
             None => seq.goal(),
@@ -594,7 +605,7 @@ impl Reasoner for RemoveNegation {
         &self,
         seq: &ProverSequent,
         stored: &StoredRule,
-        _hints: &ReplayHints,
+        hints: &ReplayHints,
     ) -> Result<Rule, String> {
         use rossi::formula::tag::{AtomicOp, BinaryPredOp, QuantPredOp};
         let unfold = |sub: &Predicate| -> Option<Predicate> {
@@ -687,7 +698,14 @@ impl Reasoner for RemoveNegation {
                     .unwrap_or_default()
             ),
         };
-        manual_rewrite_rule(seq, stored, &rewrite, &|_, _, _| Some(Vec::new()), &display)
+        manual_rewrite_rule(
+            seq,
+            stored,
+            hints,
+            &rewrite,
+            &|_, _, _| Some(Vec::new()),
+            &display,
+        )
     }
 }
 
@@ -1191,7 +1209,7 @@ impl Reasoner for RemoveMembershipL1 {
         &self,
         seq: &ProverSequent,
         stored: &StoredRule,
-        _hints: &ReplayHints,
+        hints: &ReplayHints,
     ) -> Result<Rule, String> {
         let rewrite = |pred: &Predicate, position: &Position| -> Option<Predicate> {
             let rossi::formula::position::FormulaRef::Pred(sub) = pred.sub_formula(position)?
@@ -1231,14 +1249,591 @@ impl Reasoner for RemoveMembershipL1 {
                     .unwrap_or_default()
             ),
         };
-        manual_rewrite_rule(seq, stored, &rewrite, &|_, _, _| Some(Vec::new()), &display)
+        manual_rewrite_rule(
+            seq,
+            stored,
+            hints,
+            &rewrite,
+            &|_, _, _| Some(Vec::new()),
+            &display,
+        )
     }
+}
+
+/// `RemoveInclusion` (`ri`) — unfolds one inclusion at the stored
+/// position: the level-0 auto-rewriter relational rules first, then
+/// `S ⊆ T` becomes a universally quantified membership implication
+/// over the element type's components.
+pub struct RemoveInclusion;
+
+impl Reasoner for RemoveInclusion {
+    fn replay(
+        &self,
+        seq: &ProverSequent,
+        stored: &StoredRule,
+        hints: &ReplayHints,
+    ) -> Result<Rule, String> {
+        use rossi::formula::tag::{BinaryPredOp, QuantPredOp};
+        let rewrite = |pred: &Predicate, position: &Position| -> Option<Predicate> {
+            let rossi::formula::position::FormulaRef::Pred(sub) = pred.sub_formula(position)?
+            else {
+                return None;
+            };
+            let PredicateKind::Relational {
+                op: RelationalOp::SubsetEq,
+                left: s,
+                right: t,
+            } = sub.kind()
+            else {
+                return None;
+            };
+            let ff = sub.factory();
+            let new_sub = super::auto_rewriter::rewrite_relational(sub).or_else(|| {
+                // DEF_SUBSETEQ over the element components.
+                let base = match s.ty()? {
+                    rossi::formula::Type::Pow(base) => (**base).clone(),
+                    _ => return None,
+                };
+                let (decls, pattern) = super::type_binder(ff, &base);
+                let n = decls.len() as i32;
+                let p = ff.relational_predicate(
+                    RelationalOp::In,
+                    pattern.clone(),
+                    s.shift_bound_identifiers(n),
+                    None,
+                );
+                let q = ff.relational_predicate(
+                    RelationalOp::In,
+                    pattern,
+                    t.shift_bound_identifiers(n),
+                    None,
+                );
+                Some(ff.quantified_predicate(
+                    QuantPredOp::Forall,
+                    decls,
+                    ff.binary_predicate(BinaryPredOp::LImp, p, q, None),
+                    None,
+                ))
+            })?;
+            pred.rewrite_sub_formula(
+                position,
+                rossi::formula::position::FormulaRef::Pred(&new_sub),
+            )
+            .ok()
+            .map(|p| super::as_parsed_pred(&p).unwrap_or(p))
+        };
+        let display = |hyp: Option<&Predicate>, position: &Position| match hyp {
+            None => "remove ⊆ in goal".to_string(),
+            Some(hyp) => format!(
+                "remove ⊆ in {}",
+                hyp.sub_formula(position)
+                    .and_then(|sub| match sub {
+                        rossi::formula::position::FormulaRef::Pred(p) => Some(display_pred(p)),
+                        _ => None,
+                    })
+                    .unwrap_or_default()
+            ),
+        };
+        manual_rewrite_rule(
+            seq,
+            stored,
+            hints,
+            &rewrite,
+            &|_, _, _| Some(Vec::new()),
+            &display,
+        )
+    }
+}
+
+/// `EqvRewrites` (`eqvRewrites`) — `P ⇔ Q` at the stored position
+/// becomes `(P ⇒ Q) ∧ (Q ⇒ P)`.
+pub struct EqvRewrites;
+
+impl Reasoner for EqvRewrites {
+    fn replay(
+        &self,
+        seq: &ProverSequent,
+        stored: &StoredRule,
+        hints: &ReplayHints,
+    ) -> Result<Rule, String> {
+        use rossi::formula::tag::BinaryPredOp;
+        let rewrite = |pred: &Predicate, position: &Position| -> Option<Predicate> {
+            let rossi::formula::position::FormulaRef::Pred(sub) = pred.sub_formula(position)?
+            else {
+                return None;
+            };
+            let PredicateKind::Binary {
+                op: BinaryPredOp::LEqv,
+                left,
+                right,
+            } = sub.kind()
+            else {
+                return None;
+            };
+            let ff = sub.factory();
+            let new_sub = ff.associative_predicate(
+                AssocPredOp::LAnd,
+                vec![
+                    ff.binary_predicate(BinaryPredOp::LImp, left.clone(), right.clone(), None),
+                    ff.binary_predicate(BinaryPredOp::LImp, right.clone(), left.clone(), None),
+                ],
+                None,
+            );
+            pred.rewrite_sub_formula(
+                position,
+                rossi::formula::position::FormulaRef::Pred(&new_sub),
+            )
+            .ok()
+            .map(|p| super::as_parsed_pred(&p).unwrap_or(p))
+        };
+        let display = |hyp: Option<&Predicate>, position: &Position| match hyp {
+            None => "rewrites equivalence in goal".to_string(),
+            Some(hyp) => format!(
+                "rewrites equivalence in hyp ({})",
+                hyp.sub_formula(position)
+                    .and_then(|sub| match sub {
+                        rossi::formula::position::FormulaRef::Pred(p) => Some(display_pred(p)),
+                        _ => None,
+                    })
+                    .unwrap_or_default()
+            ),
+        };
+        manual_rewrite_rule(
+            seq,
+            stored,
+            hints,
+            &rewrite,
+            &|_, _, _| Some(Vec::new()),
+            &display,
+        )
+    }
+}
+
+/// Relational image over a right union (`relImgUnionRightRewrites`) —
+/// `r[A ∪ … ∪ B]` at the stored position distributes into
+/// `r[A] ∪ … ∪ r[B]`.
+pub struct RelImgUnionRight;
+
+impl Reasoner for RelImgUnionRight {
+    fn replay(
+        &self,
+        seq: &ProverSequent,
+        stored: &StoredRule,
+        hints: &ReplayHints,
+    ) -> Result<Rule, String> {
+        use rossi::formula::tag::BinaryExprOp;
+        let rewrite = |pred: &Predicate, position: &Position| -> Option<Predicate> {
+            let rossi::formula::position::FormulaRef::Expr(sub) = pred.sub_formula(position)?
+            else {
+                return None;
+            };
+            let ExpressionKind::Binary {
+                op: BinaryExprOp::RelImage,
+                left: r,
+                right: set,
+            } = sub.kind()
+            else {
+                return None;
+            };
+            let ExpressionKind::Associative {
+                op: AssocExprOp::BUnion,
+                children,
+            } = set.kind()
+            else {
+                return None;
+            };
+            let ff = sub.factory();
+            let images: Vec<Expression> = children
+                .iter()
+                .map(|child| {
+                    ff.binary_expression(BinaryExprOp::RelImage, r.clone(), child.clone(), None)
+                })
+                .collect();
+            let new_sub = ff.associative_expression(AssocExprOp::BUnion, images, None);
+            pred.rewrite_sub_formula(
+                position,
+                rossi::formula::position::FormulaRef::Expr(&new_sub),
+            )
+            .ok()
+            .map(|p| super::as_parsed_pred(&p).unwrap_or(p))
+        };
+        let display = |hyp: Option<&Predicate>, position: &Position| match hyp {
+            None => "relational image with ∪ right in goal".to_string(),
+            Some(hyp) => format!(
+                "relational image with ∪ right in hyp ({})",
+                hyp.sub_formula(position)
+                    .and_then(|sub| match sub {
+                        rossi::formula::position::FormulaRef::Expr(e) =>
+                            Some(super::display_expr(e)),
+                        _ => None,
+                    })
+                    .unwrap_or_default()
+            ),
+        };
+        manual_rewrite_rule(
+            seq,
+            stored,
+            hints,
+            &rewrite,
+            &|_, _, _| Some(Vec::new()),
+            &display,
+        )
+    }
+}
+
+/// Disjunction to implication (`disjToImplRewrites`) — every
+/// disjunction in the subformula at the stored position becomes
+/// `¬d1 ⇒ d2 ∨ … ∨ dn` (one bottom-up pass of the driver).
+pub struct DisjToImpl;
+
+/// The `DEF_OR` hook.
+struct DisjToImplHook;
+
+impl super::driver::NodeRewriter for DisjToImplHook {
+    fn predicate(&mut self, pred: &Predicate) -> Option<Predicate> {
+        use rossi::formula::tag::BinaryPredOp;
+        let PredicateKind::Associative {
+            op: AssocPredOp::LOr,
+            children,
+        } = pred.kind()
+        else {
+            return None;
+        };
+        let ff = pred.factory();
+        let (first, rest) = children.split_first().expect("a disjunction has children");
+        let neg = match first.kind() {
+            PredicateKind::Not(inner) => inner.clone(),
+            _ => ff.not_predicate(first.clone(), None),
+        };
+        let rest = match rest {
+            [single] => single.clone(),
+            _ => ff.associative_predicate(AssocPredOp::LOr, rest.to_vec(), None),
+        };
+        Some(ff.binary_predicate(BinaryPredOp::LImp, neg, rest, None))
+    }
+}
+
+impl Reasoner for DisjToImpl {
+    fn replay(
+        &self,
+        seq: &ProverSequent,
+        stored: &StoredRule,
+        hints: &ReplayHints,
+    ) -> Result<Rule, String> {
+        let rewrite = |pred: &Predicate, position: &Position| -> Option<Predicate> {
+            let rossi::formula::position::FormulaRef::Pred(sub) = pred.sub_formula(position)?
+            else {
+                return None;
+            };
+            if !matches!(sub.kind(), PredicateKind::Associative { .. }) {
+                return None;
+            }
+            let new_sub = super::driver::rewrite_pred(sub, &mut DisjToImplHook)
+                .unwrap_or_else(|| sub.clone());
+            pred.rewrite_sub_formula(
+                position,
+                rossi::formula::position::FormulaRef::Pred(&new_sub),
+            )
+            .ok()
+            .map(|p| super::as_parsed_pred(&p).unwrap_or(p))
+        };
+        let display = |hyp: Option<&Predicate>, position: &Position| match hyp {
+            None => "∨ to ⇒ in goal".to_string(),
+            Some(hyp) => format!(
+                "∨ to ⇒ in {}",
+                hyp.sub_formula(position)
+                    .and_then(|sub| match sub {
+                        rossi::formula::position::FormulaRef::Pred(p) => Some(display_pred(p)),
+                        _ => None,
+                    })
+                    .unwrap_or_default()
+            ),
+        };
+        manual_rewrite_rule(
+            seq,
+            stored,
+            hints,
+            &rewrite,
+            &|_, _, _| Some(Vec::new()),
+            &display,
+        )
+    }
+}
+
+/// `FunSingletonImg` (`funSingletonImg`) — `r[{E}]` at the stored
+/// position becomes `{r(E)}`, with a well-definedness antecedent.
+pub struct FunSingletonImg;
+
+impl Reasoner for FunSingletonImg {
+    fn replay(
+        &self,
+        seq: &ProverSequent,
+        stored: &StoredRule,
+        hints: &ReplayHints,
+    ) -> Result<Rule, String> {
+        use rossi::formula::tag::BinaryExprOp;
+        let (hyp, position) = position_input(stored, hints)?;
+        let target = match &hyp {
+            None => seq.goal().clone(),
+            Some(hyp) => {
+                if !seq.contains_hypothesis(hyp) {
+                    return Err(format!(
+                        "Inference {} is not applicable for {} at position {position}",
+                        stored.rule.reasoner.id(),
+                        display_pred(hyp),
+                    ));
+                }
+                hyp.clone()
+            }
+        };
+        let failure = || {
+            format!(
+                "Inference {} is not applicable for {} at position {position}",
+                stored.rule.reasoner.id(),
+                display_pred(&target),
+            )
+        };
+        let sub = pred_sub_expr(&target, &position).ok_or_else(failure)?;
+        let (r, e) = match sub.kind() {
+            ExpressionKind::Binary {
+                op: BinaryExprOp::RelImage,
+                left: r,
+                right: set,
+            } => match set.kind() {
+                ExpressionKind::SetExtension(members) => match members.as_slice() {
+                    [single] => (r.clone(), single.clone()),
+                    _ => return Err(failure()),
+                },
+                _ => return Err(failure()),
+            },
+            _ => return Err(failure()),
+        };
+        let ff = target.factory();
+        let image = ff.binary_expression(BinaryExprOp::FunImage, r, e, None);
+        let setext = ff.set_extension(vec![image], None);
+        let inferred = target
+            .rewrite_sub_formula(
+                &position,
+                rossi::formula::position::FormulaRef::Expr(&setext),
+            )
+            .map_err(|_| failure())?;
+        let inferred = super::as_parsed_pred(&inferred).unwrap_or(inferred);
+        let wd_antecedent = Antecedent {
+            goal: Some(inferred.wd_lemma()),
+            added_hyps: Vec::new(),
+            unselected_added: Vec::new(),
+            added_idents: Vec::new(),
+            hyp_actions: Vec::new(),
+        };
+        let main = match &hyp {
+            None => Antecedent {
+                goal: Some(inferred),
+                added_hyps: Vec::new(),
+                unselected_added: Vec::new(),
+                added_idents: Vec::new(),
+                hyp_actions: Vec::new(),
+            },
+            Some(hyp) => Antecedent {
+                goal: None,
+                added_hyps: vec![inferred],
+                unselected_added: Vec::new(),
+                added_idents: Vec::new(),
+                hyp_actions: vec![HypAction::Hide(vec![hyp.clone()])],
+            },
+        };
+        let display = match &hyp {
+            None => "fun. singleton img. in goal".to_string(),
+            Some(hyp) => format!(
+                "fun. singleton img. in {}",
+                pred_sub_expr(hyp, &position)
+                    .map(|e| super::display_expr(&e))
+                    .unwrap_or_default()
+            ),
+        };
+        Ok(Rule {
+            reasoner: stored.rule.reasoner.clone(),
+            goal: hyp.is_none().then(|| seq.goal().clone()),
+            needed_hyps: hyp.iter().cloned().collect(),
+            confidence: Confidence::DISCHARGED_MAX,
+            display,
+            antecedents: vec![wd_antecedent, main],
+        })
+    }
+}
+
+/// Local equality rewriting (`locEq`) — replaces one occurrence of a free
+/// identifier, at the stored position, by the other side of an
+/// equality hypothesis.
+pub struct LocalEq;
+
+impl Reasoner for LocalEq {
+    fn replay(
+        &self,
+        seq: &ProverSequent,
+        stored: &StoredRule,
+        hints: &ReplayHints,
+    ) -> Result<Rule, String> {
+        let pos = stored
+            .input
+            .strings
+            .get("pos")
+            .ok_or("Missing position input")?;
+        let position = Position::from_str(pos).map_err(|_| format!("Bad position: {pos}"))?;
+        // Input recovery: goal mode names the equality as the needed
+        // hypothesis; hypothesis mode stores a rewrite action whose
+        // two required hypotheses are the equality and the target,
+        // told apart by re-deriving the recorded result.
+        let (target_hyp, equality) = if stored.rule.goal.is_some() {
+            match stored.rule.needed_hyps.as_slice() {
+                [eq] => (None, eq.clone()),
+                _ => return Err("There should be only one needed hypothesis".into()),
+            }
+        } else {
+            let action = stored
+                .rule
+                .antecedents
+                .first()
+                .and_then(|antecedent| antecedent.hyp_actions.first())
+                .ok_or("There should be at least one action")?;
+            let (hyps, inferred) = match action {
+                HypAction::Rewrite { hyps, inferred, .. }
+                | HypAction::ForwardInf { hyps, inferred, .. } => (hyps, inferred),
+                _ => return Err("First action shall be a forward inference".into()),
+            };
+            let ([h0, h1], [result]) = (hyps.as_slice(), inferred.as_slice()) else {
+                return Err("There should be exactly two hypotheses in the inference".into());
+            };
+            let rewrites_to = |equality: &Predicate, target: &Predicate| -> bool {
+                let Some(replacement) = equality_side(equality, target, &position) else {
+                    return false;
+                };
+                target
+                    .rewrite_sub_formula(
+                        &position,
+                        rossi::formula::position::FormulaRef::Expr(&replacement),
+                    )
+                    .is_ok_and(|rewritten| &rewritten == result)
+            };
+            // Recovery runs on the stored predicates, as Rodin's `makeInput`
+            // does; only the rewritten hypothesis is then renamed. That is
+            // `AbstractManualRewrites.Input.applyHints`, which `LocalEqRewrite`
+            // does not override: it renames `pred` and leaves `equality`
+            // alone, so a rename reaching the equality fails here exactly as
+            // it does in Rodin.
+            if rewrites_to(h0, h1) {
+                (Some(hints.apply_pred(h1)), h0.clone())
+            } else if rewrites_to(h1, h0) {
+                (Some(hints.apply_pred(h0)), h1.clone())
+            } else {
+                return Err("Cannot proceed re-writing with the given hypotheses".into());
+            }
+        };
+        if let Some(hyp) = &target_hyp {
+            if !seq.contains_hypothesis(hyp) {
+                return Err(format!(
+                    "{} is not a hypothesis of the given sequent",
+                    display_pred(hyp)
+                ));
+            }
+        }
+        let target = target_hyp.clone().unwrap_or_else(|| seq.goal().clone());
+        if !seq.contains_hypothesis(&equality) {
+            return Err(format!(
+                "{} is not a hypothesis of the given sequent",
+                display_pred(&equality)
+            ));
+        }
+        let replacement = equality_side(&equality, &target, &position).ok_or_else(|| {
+            format!(
+                "The {} cannot be re-written with the given input.",
+                if target_hyp.is_none() {
+                    "goal"
+                } else {
+                    "hypothesis"
+                }
+            )
+        })?;
+        let result = target
+            .rewrite_sub_formula(
+                &position,
+                rossi::formula::position::FormulaRef::Expr(&replacement),
+            )
+            .map_err(|_| "Input position out of range".to_string())?;
+        let result = super::as_parsed_pred(&result).unwrap_or(result);
+        match target_hyp {
+            None => Ok(Rule {
+                reasoner: stored.rule.reasoner.clone(),
+                goal: Some(target),
+                needed_hyps: vec![equality],
+                confidence: Confidence::DISCHARGED_MAX,
+                display: "lae in goal".into(),
+                antecedents: vec![Antecedent {
+                    goal: Some(result),
+                    added_hyps: Vec::new(),
+                    unselected_added: Vec::new(),
+                    added_idents: Vec::new(),
+                    hyp_actions: Vec::new(),
+                }],
+            }),
+            Some(hyp) => Ok(Rule {
+                reasoner: stored.rule.reasoner.clone(),
+                goal: None,
+                needed_hyps: Vec::new(),
+                confidence: Confidence::DISCHARGED_MAX,
+                display: format!("lae in {}", display_pred(&hyp)),
+                antecedents: vec![Antecedent {
+                    goal: None,
+                    added_hyps: Vec::new(),
+                    unselected_added: Vec::new(),
+                    added_idents: Vec::new(),
+                    hyp_actions: vec![HypAction::Rewrite {
+                        hyps: vec![hyp.clone(), equality],
+                        added_idents: Vec::new(),
+                        inferred: vec![result],
+                        disappearing: vec![hyp],
+                    }],
+                }],
+            }),
+        }
+    }
+}
+
+/// The replacement for the identifier at `position` inside `target`,
+/// when the equality names it on either side (the named side must be
+/// a free identifier).
+fn equality_side(
+    equality: &Predicate,
+    target: &Predicate,
+    position: &Position,
+) -> Option<Expression> {
+    let PredicateKind::Relational {
+        op: RelationalOp::Equal,
+        left,
+        right,
+    } = equality.kind()
+    else {
+        return None;
+    };
+    let ident = pred_sub_expr(target, position)?;
+    if !matches!(ident.kind(), ExpressionKind::FreeIdentifier(_)) {
+        return None;
+    }
+    if matches!(left.kind(), ExpressionKind::FreeIdentifier(_)) && left == &ident {
+        return Some(right.clone());
+    }
+    if matches!(right.kind(), ExpressionKind::FreeIdentifier(_)) && right == &ident {
+        return Some(left.clone());
+    }
+    None
 }
 
 /// Position-input recovery: the position from
 /// the `pos` string, the hypothesis (if any) from the needed
 /// hypotheses.
-fn position_input(stored: &StoredRule) -> Result<(Option<Predicate>, Position), String> {
+fn position_input(
+    stored: &StoredRule,
+    hints: &ReplayHints,
+) -> Result<(Option<Predicate>, Position), String> {
     let pos = stored
         .input
         .strings
@@ -1247,7 +1842,7 @@ fn position_input(stored: &StoredRule) -> Result<(Option<Predicate>, Position), 
     let position = Position::from_str(pos).map_err(|_| format!("Bad position: {pos}"))?;
     match stored.rule.needed_hyps.as_slice() {
         [] => Ok((None, position)),
-        [hyp] => Ok((Some(hyp.clone()), position)),
+        [hyp] => Ok((Some(hints.apply_pred(hyp)), position)),
         _ => Err("Expected exactly one needed hypothesis!".into()),
     }
 }
@@ -1262,10 +1857,10 @@ impl Reasoner for FunImageGoal {
         &self,
         seq: &ProverSequent,
         stored: &StoredRule,
-        _hints: &ReplayHints,
+        hints: &ReplayHints,
     ) -> Result<Rule, String> {
         use rossi::formula::tag::BinaryExprOp;
-        let (hyp, position) = position_input(stored)?;
+        let (hyp, position) = position_input(stored, hints)?;
         let goal = seq.goal();
         if !goal.is_wd_strict_at(&position) {
             return Err("Non WD-strict position in goal".into());
@@ -1351,10 +1946,10 @@ impl Reasoner for FunOvr {
         &self,
         seq: &ProverSequent,
         stored: &StoredRule,
-        _hints: &ReplayHints,
+        hints: &ReplayHints,
     ) -> Result<Rule, String> {
         use rossi::formula::tag::{BinaryExprOp, UnaryExprOp};
-        let (hyp, position) = position_input(stored)?;
+        let (hyp, position) = position_input(stored, hints)?;
         let target = match &hyp {
             None => seq.goal().clone(),
             Some(hyp) => {
@@ -1811,6 +2406,151 @@ mod batch30_tests {
             Some(&pred(&env, "x > 0 ⇒ 1 ≤ x ∧ x ≤ 5"))
         );
         assert!(rule.apply(&seq).is_some());
+    }
+
+    #[test]
+    fn remove_inclusion_unfolds_over_components() {
+        let env = env(&[("r", "ℙ(ℤ×ℤ)"), ("q", "ℙ(ℤ×ℤ)")]);
+        let seq = sequent(&env, &[], "r ⊆ q");
+        let rule = RemoveInclusion
+            .replay(
+                &seq,
+                &stored_goal("ri", seq.goal().clone(), ""),
+                &ReplayHints::default(),
+            )
+            .unwrap();
+        assert_eq!(
+            rule.antecedents[0].goal.as_ref(),
+            Some(&pred(&env, "∀x,x0·x ↦ x0 ∈ r ⇒ x ↦ x0 ∈ q"))
+        );
+        assert!(rule.apply(&seq).is_some());
+    }
+
+    #[test]
+    fn eqv_and_disj_rewrites() {
+        let env = env(&[("a", "ℤ"), ("b", "ℤ"), ("c", "ℤ")]);
+        let seq = sequent(&env, &[], "a > 0 ⇔ b > 0");
+        let rule = EqvRewrites
+            .replay(
+                &seq,
+                &stored_goal("eqvRewrites", seq.goal().clone(), ""),
+                &ReplayHints::default(),
+            )
+            .unwrap();
+        let goals: Vec<Option<Predicate>> =
+            rule.antecedents.iter().map(|a| a.goal.clone()).collect();
+        assert_eq!(
+            goals,
+            vec![
+                Some(pred(&env, "a > 0 ⇒ b > 0")),
+                Some(pred(&env, "b > 0 ⇒ a > 0")),
+            ]
+        );
+        let seq = sequent(&env, &[], "a > 0 ∨ b > 0 ∨ c > 0");
+        let rule = DisjToImpl
+            .replay(
+                &seq,
+                &stored_goal("disjToImplRewrites", seq.goal().clone(), ""),
+                &ReplayHints::default(),
+            )
+            .unwrap();
+        assert_eq!(
+            rule.antecedents[0].goal.as_ref(),
+            Some(&pred(&env, "¬ a > 0 ⇒ b > 0 ∨ c > 0"))
+        );
+    }
+
+    #[test]
+    fn rel_img_union_right_distributes() {
+        let env = env(&[("r", "ℙ(ℤ×ℤ)"), ("A", "ℙ(ℤ)"), ("B", "ℙ(ℤ)"), ("S", "ℙ(ℤ)")]);
+        let seq = sequent(&env, &[], "r[A ∪ B] = S");
+        let rule = RelImgUnionRight
+            .replay(
+                &seq,
+                &stored_goal("relImgUnionRightRewrites", seq.goal().clone(), "0"),
+                &ReplayHints::default(),
+            )
+            .unwrap();
+        assert_eq!(
+            rule.antecedents[0].goal.as_ref(),
+            Some(&pred(&env, "r[A] ∪ r[B] = S"))
+        );
+    }
+
+    #[test]
+    fn fun_singleton_img_rewrites_with_wd() {
+        let env = env(&[("r", "ℙ(ℤ×ℤ)"), ("x", "ℤ"), ("S", "ℙ(ℤ)")]);
+        let seq = sequent(&env, &[], "r[{x}] = S");
+        let rule = FunSingletonImg
+            .replay(
+                &seq,
+                &stored_goal("funSingletonImg", seq.goal().clone(), "0"),
+                &ReplayHints::default(),
+            )
+            .unwrap();
+        assert_eq!(rule.antecedents.len(), 2);
+        assert_eq!(
+            rule.antecedents[1].goal.as_ref(),
+            Some(&pred(&env, "{r(x)} = S"))
+        );
+        assert!(rule.antecedents[0].goal.is_some());
+    }
+
+    #[test]
+    fn local_eq_rewrites_goal_and_hypothesis() {
+        let env = env(&[("x", "ℤ"), ("y", "ℤ")]);
+        // Goal mode: the equality is the needed hypothesis.
+        let seq = sequent(&env, &["x = y + 1"], "x > 0");
+        let mut stored = stored_goal("locEq", seq.goal().clone(), "0");
+        stored.rule.needed_hyps = vec![pred(&env, "x = y + 1")];
+        let rule = LocalEq
+            .replay(&seq, &stored, &ReplayHints::default())
+            .unwrap();
+        assert_eq!(rule.needed_hyps, vec![pred(&env, "x = y + 1")]);
+        assert_eq!(
+            rule.antecedents[0].goal.as_ref(),
+            Some(&pred(&env, "y + 1 > 0"))
+        );
+        // Hypothesis mode: recovered from the stored rewrite action.
+        let target = pred(&env, "x > 0");
+        let equality = pred(&env, "x = y + 1");
+        let seq = sequent(&env, &["x = y + 1", "x > 0"], "⊥");
+        let mut input = crate::skeleton::StoredInput::default();
+        input.strings.insert("pos".into(), "0".into());
+        let stored = StoredRule {
+            rule: Rule {
+                reasoner: desc("locEq"),
+                goal: None,
+                needed_hyps: Vec::new(),
+                confidence: Confidence::DISCHARGED_MAX,
+                display: String::new(),
+                antecedents: vec![Antecedent {
+                    goal: None,
+                    added_hyps: Vec::new(),
+                    unselected_added: Vec::new(),
+                    added_idents: Vec::new(),
+                    hyp_actions: vec![HypAction::Rewrite {
+                        hyps: vec![equality.clone(), target.clone()],
+                        added_idents: Vec::new(),
+                        inferred: vec![pred(&env, "y + 1 > 0")],
+                        disappearing: vec![target.clone()],
+                    }],
+                }],
+            },
+            input,
+        };
+        let rule = LocalEq
+            .replay(&seq, &stored, &ReplayHints::default())
+            .unwrap();
+        assert_eq!(
+            rule.antecedents[0].hyp_actions,
+            vec![HypAction::Rewrite {
+                hyps: vec![target.clone(), equality],
+                added_idents: Vec::new(),
+                inferred: vec![pred(&env, "y + 1 > 0")],
+                disappearing: vec![target],
+            }]
+        );
     }
 
     #[test]

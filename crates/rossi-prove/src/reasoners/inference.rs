@@ -1240,6 +1240,122 @@ impl Reasoner for OnePointRule {
     }
 }
 
+/// `FiniteSet` (`finiteSet`, version 0) — the goal `finite(S)`
+/// reduces to the input superset `T`'s well-definedness, finiteness,
+/// and `S ⊆ T`.
+pub struct FiniteSet;
+
+impl Reasoner for FiniteSet {
+    fn replay(
+        &self,
+        seq: &ProverSequent,
+        stored: &StoredRule,
+        _hints: &ReplayHints,
+    ) -> Result<Rule, String> {
+        let goal = seq.goal();
+        let PredicateKind::Simple(s) = goal.kind() else {
+            return Err("Goal is not a finiteness".into());
+        };
+        let t = stored
+            .input
+            .exprs
+            .get("expr")
+            .and_then(|list| match list.as_slice() {
+                [Some(expr)] => Some(expr.clone()),
+                _ => None,
+            })
+            .ok_or("Expected a single expression input")?;
+        if s.ty() != t.ty() {
+            return Err("Incorrect input type".into());
+        }
+        let ff = goal.factory();
+        let antecedent = |goal: Predicate| Antecedent {
+            goal: Some(goal),
+            added_hyps: Vec::new(),
+            unselected_added: Vec::new(),
+            added_idents: Vec::new(),
+            hyp_actions: Vec::new(),
+        };
+        Ok(Rule {
+            reasoner: stored.rule.reasoner.clone(),
+            goal: Some(goal.clone()),
+            needed_hyps: Vec::new(),
+            confidence: Confidence::DISCHARGED_MAX,
+            display: "finite set".into(),
+            antecedents: vec![
+                antecedent(t.wd_lemma()),
+                antecedent(ff.simple_predicate(t.clone(), None)),
+                antecedent(ff.relational_predicate(RelationalOp::SubsetEq, s.clone(), t, None)),
+            ],
+        })
+    }
+}
+
+/// `ConjF` (`conjF`) — splits a conjunctive hypothesis forward: the
+/// conjunction is rewritten into its conjuncts and they are selected.
+pub struct ConjF;
+
+impl Reasoner for ConjF {
+    fn replay(
+        &self,
+        seq: &ProverSequent,
+        stored: &StoredRule,
+        hints: &ReplayHints,
+    ) -> Result<Rule, String> {
+        let _ = seq;
+        // Forward-inference input: the first rewrite action's single
+        // required hypothesis.
+        let hyp = stored
+            .rule
+            .antecedents
+            .first()
+            .and_then(|antecedent| antecedent.hyp_actions.first())
+            .and_then(|action| match action {
+                HypAction::Rewrite { hyps, .. } | HypAction::ForwardInf { hyps, .. } => {
+                    hyps.first()
+                }
+                _ => None,
+            })
+            .map(|hyp| hints.apply_pred(hyp))
+            .ok_or("Null hypothesis")?;
+        if !matches!(
+            hyp.kind(),
+            PredicateKind::Associative {
+                op: AssocPredOp::LAnd,
+                ..
+            }
+        ) {
+            return Err(format!(
+                "Predicate is not a conjunction: {}",
+                display_pred(&hyp)
+            ));
+        }
+        let inferred = break_possible_conjunct(&hyp);
+        Ok(Rule {
+            reasoner: stored.rule.reasoner.clone(),
+            goal: None,
+            needed_hyps: Vec::new(),
+            confidence: Confidence::DISCHARGED_MAX,
+            display: format!("∧ hyp ({})", display_pred(&hyp)),
+            antecedents: vec![Antecedent {
+                goal: None,
+                added_hyps: Vec::new(),
+                unselected_added: Vec::new(),
+                added_idents: Vec::new(),
+                hyp_actions: vec![
+                    HypAction::Rewrite {
+                        hyps: vec![hyp.clone()],
+                        added_idents: Vec::new(),
+                        inferred: inferred.clone(),
+                        disappearing: vec![hyp],
+                    },
+                    HypAction::Select(inferred),
+                ],
+            }],
+        })
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1687,6 +1803,72 @@ mod one_point_rule_tests {
             },
             input: StoredInput::default(),
         }
+    }
+
+    #[test]
+    fn finite_set_produces_the_three_antecedents() {
+        let env = env(&[("S", "ℙ(ℤ)"), ("a", "ℤ"), ("b", "ℤ")]);
+        let seq = sequent(&env, &[], "finite(S)");
+        let mut stored = stored(Vec::new());
+        stored.rule.reasoner = desc("finiteSet:0");
+        stored.input.exprs.insert(
+            "expr".into(),
+            vec![Some(match pred(&env, "a ‥ b = a ‥ b").kind() {
+                PredicateKind::Relational { left, .. } => left.clone(),
+                _ => unreachable!(),
+            })],
+        );
+        let rule = FiniteSet
+            .replay(&seq, &stored, &ReplayHints::default())
+            .unwrap();
+        let goals: Vec<Option<Predicate>> =
+            rule.antecedents.iter().map(|a| a.goal.clone()).collect();
+        assert_eq!(
+            goals,
+            vec![
+                Some(pred(&env, "⊤")),
+                Some(pred(&env, "finite(a ‥ b)")),
+                Some(pred(&env, "S ⊆ a ‥ b")),
+            ]
+        );
+        assert!(rule.apply(&seq).is_some());
+    }
+
+    #[test]
+    fn conj_f_splits_a_conjunctive_hypothesis() {
+        let env = env(&[("a", "ℤ"), ("b", "ℤ")]);
+        let hyp = pred(&env, "a > 0 ∧ b > 0");
+        let seq = sequent(&env, &["a > 0 ∧ b > 0"], "⊥");
+        let mut stored = stored(Vec::new());
+        stored.rule.reasoner = desc("conjF");
+        stored.rule.antecedents = vec![Antecedent {
+            goal: None,
+            added_hyps: Vec::new(),
+            unselected_added: Vec::new(),
+            added_idents: Vec::new(),
+            hyp_actions: vec![HypAction::Rewrite {
+                hyps: vec![hyp.clone()],
+                added_idents: Vec::new(),
+                inferred: Vec::new(),
+                disappearing: vec![hyp.clone()],
+            }],
+        }];
+        let rule = ConjF
+            .replay(&seq, &stored, &ReplayHints::default())
+            .unwrap();
+        assert_eq!(
+            rule.antecedents[0].hyp_actions,
+            vec![
+                HypAction::Rewrite {
+                    hyps: vec![hyp.clone()],
+                    added_idents: Vec::new(),
+                    inferred: vec![pred(&env, "a > 0"), pred(&env, "b > 0")],
+                    disappearing: vec![hyp],
+                },
+                HypAction::Select(vec![pred(&env, "a > 0"), pred(&env, "b > 0")]),
+            ]
+        );
+        assert!(rule.apply(&seq).is_some());
     }
 
     #[test]

@@ -71,6 +71,17 @@ pub fn implementation(desc: &ReasonerDesc) -> Option<&'static dyn Reasoner> {
         "onePointRule" => &inference::OnePointRule,
         "isFunGoal" => &structural::IsFunGoal,
         "finiteHypBoundedGoal" => &structural::FiniteHypBoundedGoal,
+        "hypOr" => &structural::HypOr,
+        "finiteSetMinus" => &structural::FiniteSetMinus,
+        "finiteInter" => &structural::FiniteInter,
+        "finiteSet" => &inference::FiniteSet,
+        "conjF" => &inference::ConjF,
+        "ri" => &manual::RemoveInclusion,
+        "eqvRewrites" => &manual::EqvRewrites,
+        "relImgUnionRightRewrites" => &manual::RelImgUnionRight,
+        "disjToImplRewrites" => &manual::DisjToImpl,
+        "funSingletonImg" => &manual::FunSingletonImg,
+        "locEq" => &manual::LocalEq,
         _ => return None,
     };
     Some(imp)
