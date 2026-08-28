@@ -11,6 +11,7 @@ pub(crate) mod auto_rewriter;
 pub(crate) mod driver;
 pub(crate) mod genmp;
 pub mod inference;
+pub(crate) mod manual;
 pub(crate) mod one_point;
 pub mod rewrites;
 pub mod structural;
@@ -60,6 +61,7 @@ pub fn implementation(desc: &ReasonerDesc) -> Option<&'static dyn Reasoner> {
         "typeRewrites" => &rewrites::TypeRewrites,
         "autoRewritesL5" => &auto_rewriter::AutoRewritesL5,
         "genMPL4" => &genmp::GenMPL4,
+        "partitionRewrites" => &manual::PartitionRewrites,
         _ => return None,
     };
     Some(imp)
