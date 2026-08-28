@@ -16,12 +16,14 @@ pub mod confidence;
 pub mod deps;
 pub mod hyp_action;
 pub mod po_loader;
+pub mod reasoners;
 pub mod registry;
 pub mod rule;
 pub mod sequent;
 pub mod skeleton;
 pub mod status;
 pub mod tree;
+mod variations;
 
 pub use bpr::{BprError, Keep, ProofBody, ProofEntry, StoredProof, read_bpr};
 pub use bps::{PsStatus, read_bps};
