@@ -9,6 +9,7 @@
 
 pub(crate) mod auto_rewriter;
 pub(crate) mod driver;
+pub(crate) mod genmp;
 pub mod inference;
 pub(crate) mod one_point;
 pub mod rewrites;
@@ -58,6 +59,7 @@ pub fn implementation(desc: &ReasonerDesc) -> Option<&'static dyn Reasoner> {
         "allmtD" => &inference::AllmtD,
         "typeRewrites" => &rewrites::TypeRewrites,
         "autoRewritesL5" => &auto_rewriter::AutoRewritesL5,
+        "genMPL4" => &genmp::GenMPL4,
         _ => return None,
     };
     Some(imp)

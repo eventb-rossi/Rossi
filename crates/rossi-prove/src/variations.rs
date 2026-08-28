@@ -10,7 +10,7 @@
 //! entries the lists contain.
 
 use num_bigint::BigInt;
-use rossi::formula::tag::{AtomicOp, RelationalOp};
+use rossi::formula::tag::{AtomicOp, RelationalOp, UnaryExprOp};
 use rossi::formula::{Expression, ExpressionKind, Predicate, PredicateKind, Type};
 
 /// Predicates `Q` such that `Q ⇒ P` — `getStrongerPositive`.
@@ -406,9 +406,18 @@ fn is_atomic(expr: &Expression, op: AtomicOp) -> bool {
     matches!(expr.kind(), ExpressionKind::Atomic(found) if *found == op)
 }
 
+/// A literal value, seeing through the unary minus this crate's
+/// parse-normal form keeps (the reference parser folds them).
 fn int_lit(expr: &Expression) -> Option<BigInt> {
     match expr.kind() {
         ExpressionKind::IntegerLiteral(value) => Some(value.clone()),
+        ExpressionKind::Unary {
+            op: UnaryExprOp::UnMinus,
+            child,
+        } => match child.kind() {
+            ExpressionKind::IntegerLiteral(value) => Some(-value.clone()),
+            _ => None,
+        },
         _ => None,
     }
 }
@@ -425,8 +434,16 @@ fn is_negative_int_lit(expr: &Expression) -> bool {
     int_lit(expr).is_some_and(|value| value < BigInt::ZERO)
 }
 
+/// A literal in the crate's parse-normal shape: negative values are a
+/// unary minus over the positive literal, as the parser produces them.
 fn literal(like: &Expression, value: BigInt) -> Expression {
-    like.factory().integer_literal(value, None)
+    let ff = like.factory();
+    if value < BigInt::ZERO {
+        let unsigned = ff.integer_literal(-value, None);
+        ff.unary_expression(UnaryExprOp::UnMinus, unsigned, None)
+    } else {
+        ff.integer_literal(value, None)
+    }
 }
 
 fn nat(like: &Expression) -> Expression {
@@ -512,6 +529,39 @@ mod tests {
         for s in ["x<1", "x≤0", "¬x∈ℕ1"] {
             assert!(contains(&list, &env, s), "missing {s}");
         }
+    }
+
+    #[test]
+    fn negative_literal_variations_use_parse_normal_shape() {
+        let env = env(&[("x", "ℤ")]);
+        // L1 lists −1<x among the predicates implying x∈ℕ; the
+        // constructed −1 must match the parse-normal unary-minus shape.
+        let list = stronger_positive(&pred(&env, "x∈ℕ"));
+        for s in ["−1<x", "x>−1"] {
+            assert!(contains(&list, &env, s), "missing {s}");
+        }
+    }
+
+    #[test]
+    fn parsed_negative_literal_bound_implies_natural_membership() {
+        let env = env(&[("x", "ℤ")]);
+        // −1<x is equivalent to x∈ℕ at level 1; the parsed −1 arrives
+        // as a unary minus over the literal 1.
+        let list = stronger_positive(&pred(&env, "−1<x"));
+        for s in ["−1<x", "x∈ℕ", "0≤x", "x∈ℕ1"] {
+            assert!(contains(&list, &env, s), "missing {s}");
+        }
+    }
+
+    #[test]
+    fn literal_constructor_matches_parsed_negative_literal() {
+        let env = env(&[("x", "ℤ")]);
+        let parsed = pred(&env, "x≤−1");
+        let PredicateKind::Relational { right, .. } = parsed.kind() else {
+            panic!("expected a relational predicate");
+        };
+        assert_eq!(int_lit(right), Some(BigInt::from(-1)));
+        assert_eq!(&literal(right, BigInt::from(-1)), right);
     }
 
     #[test]
