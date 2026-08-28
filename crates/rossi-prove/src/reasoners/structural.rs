@@ -423,6 +423,173 @@ impl Reasoner for MngHyp {
     }
 }
 
+/// `IsFunGoal` — discharges `E ∈ Ta ⇸ Tb` over type expressions with
+/// a hypothesis typing `E` as any kind of function.
+pub struct IsFunGoal;
+
+impl Reasoner for IsFunGoal {
+    fn replay(
+        &self,
+        seq: &ProverSequent,
+        stored: &StoredRule,
+        _hints: &ReplayHints,
+    ) -> Result<Rule, String> {
+        use rossi::formula::ExpressionKind;
+        use rossi::formula::tag::{BinaryExprOp, RelationalOp};
+        let goal = seq.goal();
+        let PredicateKind::Relational {
+            op: RelationalOp::In,
+            left: element,
+            right: set,
+        } = goal.kind()
+        else {
+            return Err("Goal is not an inclusion".into());
+        };
+        let ExpressionKind::Binary {
+            op: BinaryExprOp::PFun,
+            left,
+            right,
+        } = set.kind()
+        else {
+            return Err("Goal is not a functional inclusion".into());
+        };
+        if !left.is_type_expression() {
+            return Err(
+                "Left hand side of functional inclusion in goal is not a type expression.".into(),
+            );
+        }
+        if !right.is_type_expression() {
+            return Err(
+                "Right hand side of functional inclusion in goal is not a type expression.".into(),
+            );
+        }
+        let is_fun = |e: &rossi::formula::Expression| {
+            matches!(
+                e.kind(),
+                ExpressionKind::Binary {
+                    op: BinaryExprOp::PFun
+                        | BinaryExprOp::TFun
+                        | BinaryExprOp::PInj
+                        | BinaryExprOp::TInj
+                        | BinaryExprOp::PSur
+                        | BinaryExprOp::TSur
+                        | BinaryExprOp::TBij,
+                    ..
+                }
+            )
+        };
+        let fun_hyp = seq
+            .visible_hyp_iter()
+            .find(|hyp| {
+                matches!(hyp.kind(),
+                    PredicateKind::Relational {
+                        op: RelationalOp::In,
+                        left,
+                        right,
+                    } if left == element && is_fun(right))
+            })
+            .ok_or("No appropriate hypothesis found")?;
+        Ok(closing_rule(
+            stored,
+            Some(goal.clone()),
+            vec![fun_hyp.clone()],
+            "functional goal".into(),
+        ))
+    }
+}
+
+/// `FiniteHypBoundedGoal` — discharges a goal asserting a lower or
+/// upper bound of a set known finite (or given in extension).
+pub struct FiniteHypBoundedGoal;
+
+impl Reasoner for FiniteHypBoundedGoal {
+    fn replay(
+        &self,
+        seq: &ProverSequent,
+        stored: &StoredRule,
+        _hints: &ReplayHints,
+    ) -> Result<Rule, String> {
+        use rossi::formula::tag::RelationalOp;
+        use rossi::formula::{Expression, ExpressionKind};
+        // ∃x·∀y·y ∈ S ⇒ (a bound comparison between x and y), with S
+        // closed.
+        let bound_set = |goal: &Predicate| -> Option<Expression> {
+            let PredicateKind::Quantified {
+                op: QuantPredOp::Exists,
+                decls: outer,
+                pred: inner,
+            } = goal.kind()
+            else {
+                return None;
+            };
+            let PredicateKind::Quantified {
+                op: QuantPredOp::Forall,
+                decls: inner_decls,
+                pred: body,
+            } = inner.kind()
+            else {
+                return None;
+            };
+            if outer.len() != 1 || inner_decls.len() != 1 {
+                return None;
+            }
+            let PredicateKind::Binary {
+                op: BinaryPredOp::LImp,
+                left: membership,
+                right: bound,
+            } = body.kind()
+            else {
+                return None;
+            };
+            let PredicateKind::Relational {
+                op: RelationalOp::In,
+                left: member,
+                right: set,
+            } = membership.kind()
+            else {
+                return None;
+            };
+            if !matches!(member.kind(), ExpressionKind::BoundIdentifier(0)) {
+                return None;
+            }
+            let PredicateKind::Relational {
+                op: RelationalOp::Le | RelationalOp::Ge,
+                left,
+                right,
+            } = bound.kind()
+            else {
+                return None;
+            };
+            let index = |e: &Expression| match e.kind() {
+                ExpressionKind::BoundIdentifier(i) => Some(*i),
+                _ => None,
+            };
+            let (a, b) = (index(left)?, index(right)?);
+            if !((a == 0 && b == 1) || (a == 1 && b == 0)) {
+                return None;
+            }
+            set.dangling_bound_indices().is_empty().then(|| set.clone())
+        };
+        let Some(set) = bound_set(seq.goal()) else {
+            return Err("Finite hyp is not applicable".into());
+        };
+        let finite_hyp = seq
+            .visible_hyp_iter()
+            .find(|hyp| matches!(hyp.kind(), PredicateKind::Simple(child) if child == &set));
+        let needed = match finite_hyp {
+            Some(hyp) => vec![hyp.clone()],
+            None if matches!(set.kind(), ExpressionKind::SetExtension(_)) => Vec::new(),
+            None => return Err("Finite hyp is not applicable".into()),
+        };
+        Ok(closing_rule(
+            stored,
+            Some(seq.goal().clone()),
+            needed,
+            "Existence of minimum or maximum in goal with finite hypothesis".into(),
+        ))
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -705,5 +872,72 @@ mod tests {
                 .implementation(&crate::registry::resolve("com.example.mystery"))
                 .is_none()
         );
+    }
+
+    #[test]
+    fn is_fun_goal_discharges_with_a_function_hypothesis() {
+        let env = env(&[("f", "ℙ(ℤ×ℤ)"), ("A", "ℙ(ℤ)")]);
+        let seq = sequent(&env, &["f ∈ A → ℤ"], "f ∈ ℤ ⇸ ℤ");
+        let rule = IsFunGoal
+            .replay(&seq, &stored("isFunGoal"), &ReplayHints::default())
+            .unwrap();
+        assert_eq!(rule.goal.as_ref(), Some(seq.goal()));
+        assert_eq!(rule.needed_hyps, vec![pred(&env, "f ∈ A → ℤ")]);
+        assert!(rule.antecedents.is_empty());
+        assert!(rule.apply(&seq).is_some());
+    }
+
+    #[test]
+    fn is_fun_goal_requires_type_expressions() {
+        let env = env(&[("f", "ℙ(ℤ×ℤ)"), ("A", "ℙ(ℤ)")]);
+        let seq = sequent(&env, &["f ∈ A → ℤ"], "f ∈ A ⇸ ℤ");
+        let err = IsFunGoal
+            .replay(&seq, &stored("isFunGoal"), &ReplayHints::default())
+            .unwrap_err();
+        assert!(err.contains("not a type expression"), "{err}");
+    }
+
+    #[test]
+    fn finite_hyp_bounded_goal_uses_the_finiteness_hypothesis() {
+        let env = env(&[("S", "ℙ(ℤ)")]);
+        let seq = sequent(&env, &["finite(S)"], "∃x·∀y·y ∈ S ⇒ x ≤ y");
+        let rule = FiniteHypBoundedGoal
+            .replay(
+                &seq,
+                &stored("finiteHypBoundedGoal"),
+                &ReplayHints::default(),
+            )
+            .unwrap();
+        assert_eq!(rule.needed_hyps, vec![pred(&env, "finite(S)")]);
+        assert!(rule.antecedents.is_empty());
+        assert!(rule.apply(&seq).is_some());
+    }
+
+    #[test]
+    fn finite_hyp_bounded_goal_accepts_a_set_in_extension() {
+        let env = env(&[("z", "ℤ")]);
+        let seq = sequent(&env, &[], "∃x·∀y·y ∈ {1, z} ⇒ y ≤ x");
+        let rule = FiniteHypBoundedGoal
+            .replay(
+                &seq,
+                &stored("finiteHypBoundedGoal"),
+                &ReplayHints::default(),
+            )
+            .unwrap();
+        assert_eq!(rule.needed_hyps, Vec::<Predicate>::new());
+    }
+
+    #[test]
+    fn finite_hyp_bounded_goal_fails_without_evidence() {
+        let env = env(&[("S", "ℙ(ℤ)")]);
+        let seq = sequent(&env, &[], "∃x·∀y·y ∈ S ⇒ x ≤ y");
+        let err = FiniteHypBoundedGoal
+            .replay(
+                &seq,
+                &stored("finiteHypBoundedGoal"),
+                &ReplayHints::default(),
+            )
+            .unwrap_err();
+        assert_eq!(err, "Finite hyp is not applicable");
     }
 }
