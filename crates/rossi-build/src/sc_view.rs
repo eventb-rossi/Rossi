@@ -20,9 +20,7 @@ use std::collections::BTreeMap;
 use quick_xml::Reader;
 use quick_xml::XmlVersion;
 use quick_xml::events::{BytesStart, Event as XmlEvent};
-use rossi::{
-    ActionBody, Expression, ExpressionKind, Predicate, parse_action_str, parse_predicate_str,
-};
+use rossi::{ActionBody, Predicate, parse_action_str, parse_predicate_str};
 
 use crate::error::{ProjectError, Result};
 use crate::xml_out::tag;
@@ -454,7 +452,7 @@ pub fn strip_type_ascriptions_action(body: ActionBody) -> ActionBody {
     match body {
         ActionBody::Skip => ActionBody::Skip,
         ActionBody::Assignment(assignment) => {
-            ActionBody::Assignment(assignment.rewrite(&mut StripAscriptions))
+            ActionBody::Assignment(assignment.strip_ascriptions())
         }
     }
 }
@@ -467,19 +465,7 @@ pub fn strip_type_ascriptions_action(body: ActionBody) -> ActionBody {
 /// compares equal to `{x∣P}`.
 #[must_use]
 pub fn strip_type_ascriptions_pred(p: Predicate) -> Predicate {
-    p.rewrite(&mut StripAscriptions)
-}
-
-/// Unwraps `E ⦂ T` to `E` everywhere, bottom-up.
-struct StripAscriptions;
-
-impl rossi::formula::FormulaRewriter for StripAscriptions {
-    fn rewrite_expression(&mut self, expr: &Expression) -> Expression {
-        match expr.kind() {
-            ExpressionKind::Ascription { expr: inner, .. } => inner.clone(),
-            _ => expr.clone(),
-        }
-    }
+    p.strip_ascriptions()
 }
 
 #[cfg(test)]
