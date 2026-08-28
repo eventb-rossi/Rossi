@@ -1,0 +1,14 @@
+[package]
+name = "rossi-prove"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+authors.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "Sequent-prover kernel for Event-B in Rossi: proof trees, reasoners, and stored-proof replay."
+keywords = ["event-b", "rodin", "prover", "formal-methods"]
+categories = ["development-tools"]
+
+[dependencies]
+rossi.workspace = true

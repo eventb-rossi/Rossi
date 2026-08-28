@@ -4,6 +4,7 @@ members = [
     "crates/rossi",
     "crates/rossi-build",
     "crates/rossi-cli",
+    "crates/rossi-prove",
     "crates/eventb-lsp",
     "crates/xtask",
 ]
