@@ -10,10 +10,16 @@
 //! combines.
 
 pub mod confidence;
+pub mod hyp_action;
+pub mod rule;
 pub mod sequent;
+pub mod tree;
 
 pub use confidence::Confidence;
+pub use hyp_action::HypAction;
+pub use rule::{Antecedent, Rule};
 pub use sequent::{ProverSequent, TypedIdent};
+pub use tree::ProofTreeNode;
 
 #[cfg(test)]
 pub(crate) mod test_util {
