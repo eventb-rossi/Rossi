@@ -10,6 +10,7 @@
 //! combines.
 
 pub mod bpr;
+pub mod bps;
 pub mod confidence;
 pub mod deps;
 pub mod hyp_action;
@@ -18,9 +19,11 @@ pub mod registry;
 pub mod rule;
 pub mod sequent;
 pub mod skeleton;
+pub mod status;
 pub mod tree;
 
 pub use bpr::{BprError, Keep, ProofBody, ProofEntry, StoredProof, read_bpr};
+pub use bps::{PsStatus, read_bps};
 pub use confidence::Confidence;
 pub use deps::{ProofDependencies, is_proof_reusable};
 pub use hyp_action::HypAction;
@@ -29,6 +32,7 @@ pub use registry::{ReasonerDesc, Registration};
 pub use rule::{Antecedent, Rule};
 pub use sequent::{ProverSequent, TypedIdent};
 pub use skeleton::{Skeleton, StoredInput, StoredRule};
+pub use status::{StatusVerdict, compute_status};
 pub use tree::ProofTreeNode;
 
 #[cfg(test)]
