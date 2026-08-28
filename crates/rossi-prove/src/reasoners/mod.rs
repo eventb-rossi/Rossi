@@ -7,8 +7,10 @@
 //! only trusted descriptors resolve, so a version-conflicting or
 //! unknown reasoner never replays.
 
+pub(crate) mod auto_rewriter;
 pub(crate) mod driver;
 pub mod inference;
+pub(crate) mod one_point;
 pub mod rewrites;
 pub mod structural;
 
@@ -55,6 +57,7 @@ pub fn implementation(desc: &ReasonerDesc) -> Option<&'static dyn Reasoner> {
         "allmpD" => &inference::AllmpD,
         "allmtD" => &inference::AllmtD,
         "typeRewrites" => &rewrites::TypeRewrites,
+        "autoRewritesL5" => &auto_rewriter::AutoRewritesL5,
         _ => return None,
     };
     Some(imp)
