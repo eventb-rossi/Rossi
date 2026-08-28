@@ -1167,7 +1167,11 @@ dependencies = [
 name = "rossi-prove"
 version = "0.2.0"
 dependencies = [
+ "indoc",
+ "quick-xml",
  "rossi",
+ "stacker",
+ "thiserror",
 ]
 
 [[package]]

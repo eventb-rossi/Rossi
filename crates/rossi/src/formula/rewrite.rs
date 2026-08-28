@@ -519,6 +519,15 @@ impl Predicate {
     }
 }
 
+impl Expression {
+    /// This expression with every type ascription `E ⦂ T` unwrapped to
+    /// `E` — see [`Predicate::strip_ascriptions`].
+    #[must_use]
+    pub fn strip_ascriptions(&self) -> Expression {
+        self.rewrite(&mut StripAscriptions)
+    }
+}
+
 impl Assignment {
     /// This assignment with every type ascription `E ⦂ T` unwrapped to
     /// `E` — see [`Predicate::strip_ascriptions`].
