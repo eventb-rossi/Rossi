@@ -590,6 +590,180 @@ impl Reasoner for FiniteHypBoundedGoal {
     }
 }
 
+/// `HypOr` — discharges a disjunctive goal one of whose disjuncts is
+/// implied by a hypothesis (first disjunct with a match wins).
+pub struct HypOr;
+
+impl Reasoner for HypOr {
+    fn replay(
+        &self,
+        seq: &ProverSequent,
+        stored: &StoredRule,
+        _hints: &ReplayHints,
+    ) -> Result<Rule, String> {
+        let goal = seq.goal();
+        let PredicateKind::Associative {
+            op: AssocPredOp::LOr,
+            children,
+        } = goal.kind()
+        else {
+            return Err("Goal is not a disjunctive predicate".into());
+        };
+        for child in children {
+            let hyp = variations::stronger_positive(child)
+                .into_iter()
+                .find(|p| seq.contains_hypothesis(p));
+            if let Some(hyp) = hyp {
+                return Ok(closing_rule(
+                    stored,
+                    Some(goal.clone()),
+                    vec![hyp],
+                    "∨ goal in hyp".into(),
+                ));
+            }
+        }
+        Err("Hypotheses contain no disjunct of goal".into())
+    }
+}
+
+/// `FiniteSetMinus` — `finite(S ∖ T)` reduces to `finite(S)`.
+pub struct FiniteSetMinus;
+
+impl Reasoner for FiniteSetMinus {
+    fn replay(
+        &self,
+        seq: &ProverSequent,
+        stored: &StoredRule,
+        _hints: &ReplayHints,
+    ) -> Result<Rule, String> {
+        use rossi::formula::ExpressionKind;
+        use rossi::formula::tag::BinaryExprOp;
+        let goal = seq.goal();
+        let new_goal = match goal.kind() {
+            PredicateKind::Simple(child) => match child.kind() {
+                ExpressionKind::Binary {
+                    op: BinaryExprOp::SetMinus,
+                    left,
+                    ..
+                } => Some(goal.factory().simple_predicate(left.clone(), None)),
+                _ => None,
+            },
+            _ => None,
+        };
+        let new_goal = new_goal
+            .ok_or_else(|| format!("Inference {} is not applicable", stored.rule.reasoner.id()))?;
+        Ok(Rule {
+            reasoner: stored.rule.reasoner.clone(),
+            goal: Some(goal.clone()),
+            needed_hyps: Vec::new(),
+            confidence: Confidence::DISCHARGED_MAX,
+            display: "finite of ∖".into(),
+            antecedents: vec![Antecedent {
+                goal: Some(new_goal),
+                added_hyps: Vec::new(),
+                unselected_added: Vec::new(),
+                added_idents: Vec::new(),
+                hyp_actions: Vec::new(),
+            }],
+        })
+    }
+}
+
+/// `FiniteInter` — finiteness of a binary, generalised or quantified
+/// intersection reduces to a finite operand or witness.
+pub struct FiniteInter;
+
+impl Reasoner for FiniteInter {
+    fn replay(
+        &self,
+        seq: &ProverSequent,
+        stored: &StoredRule,
+        _hints: &ReplayHints,
+    ) -> Result<Rule, String> {
+        use rossi::formula::tag::{AssocExprOp, QuantExprOp, RelationalOp, UnaryExprOp};
+        use rossi::formula::{ExpressionKind, Type};
+        let goal = seq.goal();
+        let ff = goal.factory();
+        let finite = |e: rossi::formula::Expression| ff.simple_predicate(e, None);
+        let new_goal = match goal.kind() {
+            PredicateKind::Simple(child) => match child.kind() {
+                // FIN_BINTER_R: finite of one operand suffices.
+                ExpressionKind::Associative {
+                    op: AssocExprOp::BInter,
+                    children,
+                } => Some(ff.associative_predicate(
+                    AssocPredOp::LOr,
+                    children.iter().map(|c| finite(c.clone())).collect(),
+                    None,
+                )),
+                // FIN_KINTER_R: some member of the set is finite.
+                ExpressionKind::Unary {
+                    op: UnaryExprOp::KInter,
+                    child: set,
+                } => {
+                    let Some(Type::Pow(base)) = set.ty() else {
+                        return Err(format!(
+                            "Inference '{}' is not applicable",
+                            "finite of intersection"
+                        ));
+                    };
+                    let base = (**base).clone();
+                    let decl = ff.bound_ident_decl("s", None, None, Some(base.clone()));
+                    let ident = ff.bound_identifier(0, None, Some(base));
+                    let body = ff.associative_predicate(
+                        AssocPredOp::LAnd,
+                        vec![
+                            ff.relational_predicate(
+                                RelationalOp::In,
+                                ident.clone(),
+                                set.shift_bound_identifiers(1),
+                                None,
+                            ),
+                            finite(ident),
+                        ],
+                        None,
+                    );
+                    Some(ff.quantified_predicate(QuantPredOp::Exists, vec![decl], body, None))
+                }
+                // FIN_QINTER_R: a witness of the family is finite.
+                ExpressionKind::Quantified {
+                    op: QuantExprOp::QInter,
+                    decls,
+                    pred,
+                    expr,
+                    ..
+                } => Some(ff.quantified_predicate(
+                    QuantPredOp::Exists,
+                    decls.clone(),
+                    ff.associative_predicate(
+                        AssocPredOp::LAnd,
+                        vec![pred.clone(), finite(expr.clone())],
+                        None,
+                    ),
+                    None,
+                )),
+                _ => None,
+            },
+            _ => None,
+        };
+        let new_goal = new_goal.ok_or("Inference 'finite of intersection' is not applicable")?;
+        Ok(Rule {
+            reasoner: stored.rule.reasoner.clone(),
+            goal: Some(goal.clone()),
+            needed_hyps: Vec::new(),
+            confidence: Confidence::DISCHARGED_MAX,
+            display: "finite of intersection".into(),
+            antecedents: vec![Antecedent {
+                goal: Some(new_goal),
+                added_hyps: Vec::new(),
+                unselected_added: Vec::new(),
+                added_idents: Vec::new(),
+                hyp_actions: Vec::new(),
+            }],
+        })
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -921,6 +1095,40 @@ mod tests {
             )
             .unwrap();
         assert_eq!(rule.needed_hyps, Vec::<Predicate>::new());
+    }
+
+    #[test]
+    fn hyp_or_discharges_via_a_disjunct() {
+        let env = env(&[("x", "ℤ"), ("y", "ℤ")]);
+        let seq = sequent(&env, &["y > 0"], "x > 0 ∨ y > 0");
+        let rule = HypOr
+            .replay(&seq, &stored("hypOr"), &ReplayHints::default())
+            .unwrap();
+        assert_eq!(rule.needed_hyps, vec![pred(&env, "y > 0")]);
+        assert!(rule.antecedents.is_empty());
+        assert!(rule.apply(&seq).is_some());
+    }
+
+    #[test]
+    fn finite_set_minus_and_inter_reduce_the_goal() {
+        let env = env(&[("S", "ℙ(ℤ)"), ("T", "ℙ(ℤ)")]);
+        let seq = sequent(&env, &[], "finite(S ∖ T)");
+        let rule = FiniteSetMinus
+            .replay(&seq, &stored("finiteSetMinus"), &ReplayHints::default())
+            .unwrap();
+        assert_eq!(
+            rule.antecedents[0].goal.as_ref(),
+            Some(&pred(&env, "finite(S)"))
+        );
+        let seq = sequent(&env, &[], "finite(S ∩ T)");
+        let rule = FiniteInter
+            .replay(&seq, &stored("finiteInter"), &ReplayHints::default())
+            .unwrap();
+        assert_eq!(
+            rule.antecedents[0].goal.as_ref(),
+            Some(&pred(&env, "finite(S) ∨ finite(T)"))
+        );
+        assert!(rule.apply(&seq).is_some());
     }
 
     #[test]
