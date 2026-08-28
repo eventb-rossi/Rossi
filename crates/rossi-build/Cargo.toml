@@ -19,6 +19,7 @@ zip.workspace = true
 
 [dev-dependencies]
 proptest.workspace = true
+rossi-prove.workspace = true
 serde_json.workspace = true
 
 [features]

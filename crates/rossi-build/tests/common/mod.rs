@@ -470,6 +470,21 @@ pub fn pog_known_divergence(corpus: &Path, model: &str) -> Option<String> {
     None
 }
 
+/// Models whose recorded proof statuses are known not to be
+/// reproducible by the proof-reuse harness: rows carrying the
+/// `prove_divergence` flag in the corpus `model_flags.tsv`, with the
+/// audited reason.
+pub fn prove_known_divergence(corpus: &Path, model: &str) -> Option<String> {
+    let tsv = std::fs::read_to_string(corpus.join("model_flags.tsv")).ok()?;
+    for line in tsv.lines().skip(1) {
+        let mut cols = line.split('\t');
+        if cols.next() == Some(model) && cols.next() == Some("prove_divergence") {
+            return Some(cols.next().unwrap_or("").to_string());
+        }
+    }
+    None
+}
+
 /// Compare a reference proof-obligation view against a generated one,
 /// appending findings. The comparison is semantic: sequent name sets,
 /// natures, accuracy, goals, flattened hypotheses and identifiers,

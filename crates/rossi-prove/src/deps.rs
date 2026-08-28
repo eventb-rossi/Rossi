@@ -92,6 +92,41 @@ pub fn is_proof_reusable(deps: &ProofDependencies, seq: &ProverSequent) -> bool 
     !deps.is_context_dependent()
 }
 
+/// Explains why [`is_proof_reusable`] answers no — the first failing
+/// check with the offending item, for harness triage.
+pub fn explain_reuse_failure(deps: &ProofDependencies, seq: &ProverSequent) -> Option<String> {
+    if !deps.has_deps {
+        return None;
+    }
+    if let Some(goal) = &deps.goal
+        && goal != seq.goal()
+    {
+        return Some(format!("goal mismatch: proof needs {goal:?}"));
+    }
+    for hyp in &deps.used_hypotheses {
+        if !seq.contains_hypothesis(hyp) {
+            return Some(format!("missing hypothesis {hyp:?}"));
+        }
+    }
+    for ident in &deps.used_free_idents {
+        if seq.type_env().get(&ident.name) != Some(&ident.ty) {
+            return Some(format!("identifier {} at {:?}", ident.name, ident.ty));
+        }
+    }
+    for name in &deps.introduced_free_idents {
+        if seq.type_env().contains(name) {
+            return Some(format!("introduced name {name} is taken"));
+        }
+    }
+    if let Some(desc) = deps.used_reasoners.iter().find(|desc| !desc.is_trusted()) {
+        return Some(format!("untrusted reasoner {}", desc.id()));
+    }
+    if deps.is_context_dependent() {
+        return Some("context-dependent proof".to_string());
+    }
+    None
+}
+
 /// The mutable accumulator, using order-preserving vectors with set
 /// semantics so the finished dependencies are deterministic.
 #[derive(Debug, Default)]

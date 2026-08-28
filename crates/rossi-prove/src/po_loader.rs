@@ -47,7 +47,7 @@ pub struct PoFile {
 
 #[derive(Debug, Default)]
 struct PoSet {
-    parent: Option<String>,
+    parent: Option<SetRef>,
     idents: Vec<(String, String)>,
     preds: Vec<(String, String)>,
 }
@@ -64,13 +64,22 @@ pub struct PoSequentEntry {
     hints: Vec<Hint>,
 }
 
+/// A reference to a shared predicate set: the `.bpo` file's handle
+/// path (predicate-set chains cross files — a machine's `CTXHYP`
+/// parent points into the seen context's `.bpo`) and the set's name.
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct SetRef {
+    file: String,
+    set: String,
+}
+
 /// A hypothesis-set key inside one sequent's chain.
 #[derive(Debug, Clone, PartialEq, Eq)]
 enum SetKey {
     /// The sequent's own local set.
     Local,
-    /// A shared top-level set, by name.
-    Named(String),
+    /// A shared set, possibly in another component's file.
+    Named(SetRef),
 }
 
 #[derive(Debug)]
@@ -108,26 +117,57 @@ impl PoFile {
     pub fn sequent(&self, name: &str) -> Option<&PoSequentEntry> {
         self.sequents.iter().find(|entry| entry.name == name)
     }
+}
 
-    /// Builds the prover sequent of the named obligation.
-    pub fn load(&self, name: &str) -> Result<ProverSequent, String> {
-        let entry = self
+/// The `.bpo` files of one project, keyed by the handle path their
+/// cross-references use (`/<project>/<component>.bpo`). Hypothesis-set
+/// chains cross component files, so sequents load against the project.
+#[derive(Debug, Default)]
+pub struct PoProject {
+    files: BTreeMap<String, PoFile>,
+}
+
+impl PoProject {
+    /// Registers one parsed file under its handle path.
+    pub fn insert(&mut self, path: impl Into<String>, file: PoFile) {
+        self.files.insert(path.into(), file);
+    }
+
+    /// The registered file at `path`.
+    pub fn file(&self, path: &str) -> Option<&PoFile> {
+        self.files.get(path)
+    }
+
+    /// Builds the prover sequent of one obligation.
+    pub fn load(&self, path: &str, name: &str) -> Result<ProverSequent, String> {
+        let file = self
+            .files
+            .get(path)
+            .ok_or_else(|| format!("no component at `{path}`"))?;
+        let entry = file
             .sequent(name)
             .ok_or_else(|| format!("no obligation named `{name}`"))?;
+        let total_sets: usize = self.files.values().map(|f| f.sets.len()).sum();
 
         // The hypothesis-set chain, root first, ending at the local set.
         let mut chain: Vec<(SetKey, &PoSet)> = vec![(SetKey::Local, &entry.local)];
-        let mut parent = entry.local.parent.as_deref();
-        while let Some(name) = parent {
-            if chain.len() > self.sets.len() + 1 {
+        let mut parent = entry.local.parent.as_ref();
+        while let Some(reference) = parent {
+            if chain.len() > total_sets + 1 {
                 return Err("cyclic predicate-set chain".to_string());
             }
             let set = self
-                .sets
-                .get(name)
-                .ok_or_else(|| format!("dangling parent set `{name}`"))?;
-            chain.push((SetKey::Named(name.to_string()), set));
-            parent = set.parent.as_deref();
+                .files
+                .get(&reference.file)
+                .and_then(|file| file.sets.get(&reference.set))
+                .ok_or_else(|| {
+                    format!(
+                        "dangling parent set `{}` in `{}`",
+                        reference.set, reference.file
+                    )
+                })?;
+            chain.push((SetKey::Named(reference.clone()), set));
+            parent = set.parent.as_ref();
         }
         chain.reverse();
 
@@ -331,7 +371,7 @@ fn read_bpo(reader: impl BufRead) -> Result<PoFile, PoError> {
                     Ctx::Set(
                         get(&attrs, NAME).unwrap_or_default().to_string(),
                         PoSet {
-                            parent: get(&attrs, PARENT_SET).map(handle_leaf),
+                            parent: get(&attrs, PARENT_SET).map(parse_set_ref),
                             ..PoSet::default()
                         },
                     )
@@ -353,7 +393,7 @@ fn read_bpo(reader: impl BufRead) -> Result<PoFile, PoError> {
             }
             Some(Ctx::Sequent(entry)) => {
                 if name == PO_PREDICATE_SET.as_bytes() {
-                    entry.local.parent = get(&attrs, PARENT_SET).map(handle_leaf);
+                    entry.local.parent = get(&attrs, PARENT_SET).map(parse_set_ref);
                     Ctx::LocalSet
                 } else if name == PO_PREDICATE.as_bytes() {
                     let predicate = get(&attrs, PREDICATE).unwrap_or_default().to_string();
@@ -457,12 +497,73 @@ fn get<'a>(attrs: &'a [(String, String)], key: &str) -> Option<&'a str> {
         .map(|(_, v)| v.as_str())
 }
 
-/// The last segment name of a handle, `\/` and `\\` unescaped:
-/// `…|org.eventb.core.poPredicateSet#CTXHYP` → `CTXHYP`.
-fn handle_leaf(handle: &str) -> String {
-    let last = handle.rsplit('|').next().unwrap_or(handle);
-    let name = last.rsplit('#').next().unwrap_or(last);
-    name.replace("\\/", "/").replace("\\\\", "\\")
+/// Splits on unescaped occurrences of `sep`, keeping escapes intact
+/// inside the pieces. Handle grammar (matching rossi-build's
+/// `handles.rs` writer): `/`, `|`, `#`, `\` inside names are escaped
+/// with a backslash — generated element names draw on an alphabet that
+/// includes every delimiter.
+fn split_raw(raw: &str, sep: char) -> Vec<String> {
+    let mut parts = vec![String::new()];
+    let mut chars = raw.chars();
+    while let Some(c) = chars.next() {
+        if c == '\\' {
+            if let Some(next) = chars.next() {
+                let last = parts.last_mut().expect("non-empty");
+                last.push('\\');
+                last.push(next);
+            }
+        } else if c == sep {
+            parts.push(String::new());
+        } else {
+            parts.last_mut().expect("non-empty").push(c);
+        }
+    }
+    parts
+}
+
+/// Removes the backslash escapes of one handle piece.
+fn unescape_piece(raw: &str) -> String {
+    let mut out = String::with_capacity(raw.len());
+    let mut chars = raw.chars();
+    while let Some(c) = chars.next() {
+        if c == '\\' {
+            if let Some(next) = chars.next() {
+                out.push(next);
+            }
+        } else {
+            out.push(c);
+        }
+    }
+    out
+}
+
+/// The `name` of a raw `type#name` handle piece, unescaped.
+fn piece_name(piece: &str) -> String {
+    let raw = split_raw(piece, '#');
+    unescape_piece(raw.last().map(String::as_str).unwrap_or(piece))
+}
+
+/// A set handle split into the referenced file's basename and the
+/// set's name. Chains resolve by basename because exported archives
+/// are routinely renamed: the handle keeps the original project name
+/// while the archive directory does not, and chains never cross
+/// projects.
+fn parse_set_ref(handle: &str) -> SetRef {
+    let parts = split_raw(handle, '|');
+    let path = parts.first().map(String::as_str).unwrap_or(handle);
+    let file = split_raw(path, '/')
+        .last()
+        .map(String::as_str)
+        .map(unescape_piece)
+        .unwrap_or_default();
+    SetRef {
+        file,
+        set: parts
+            .last()
+            .map(String::as_str)
+            .map(piece_name)
+            .unwrap_or_default(),
+    }
 }
 
 /// Parses one selection hint. A hint with a second handle is an
@@ -476,23 +577,28 @@ fn parse_hint(attrs: &[(String, String)]) -> Option<Hint> {
             end: set_key(snd),
         }),
         None => {
-            // `…|poPredicateSet#SET|poPredicate#PRD` — the set and the
-            // predicate are the last two segments.
-            let mut segments = fst.rsplit('|');
-            let pred = handle_leaf(segments.next()?);
-            let set = set_key(segments.next()?);
-            Some(Hint::Single { set, pred })
+            // `…|poPredicateSet#SET|poPredicate#PRD` — the predicate is
+            // the last piece, its set the handle up to it.
+            let parts = split_raw(fst, '|');
+            let (pred, set_parts) = parts.split_last()?;
+            Some(Hint::Single {
+                set: set_key(&set_parts.join("|")),
+                pred: piece_name(pred),
+            })
         }
     }
 }
 
 /// A set handle: one pointing inside a sequent is that sequent's local
-/// set, otherwise the named top-level set.
+/// set, otherwise a shared set reference.
 fn set_key(handle: &str) -> SetKey {
-    if handle.contains(&format!("|{PO_SEQUENT}#")) {
+    let local = split_raw(handle, '|')
+        .iter()
+        .any(|part| part.starts_with(&format!("{PO_SEQUENT}#")));
+    if local {
         SetKey::Local
     } else {
-        SetKey::Named(handle_leaf(handle))
+        SetKey::Named(parse_set_ref(handle))
     }
 }
 
@@ -508,7 +614,7 @@ mod tests {
     /// a division hypothesis (WD `y≠0`), a WD-free one, and a
     /// universally quantified one in the sequent's local set (its WD
     /// is skipped by the no-forall filter).
-    fn fixture(sequents: &str) -> PoFile {
+    fn fixture(sequents: &str) -> PoProject {
         let xml = formatdoc!(
             r#"<?xml version="1.0" encoding="UTF-8" standalone="no"?>
             <org.eventb.core.poFile org.eventb.core.poStamp="0">
@@ -524,7 +630,12 @@ mod tests {
             {sequents}
             </org.eventb.core.poFile>"#
         );
-        PoFile::read(xml.as_bytes()).expect("readable file")
+        let mut project = PoProject::default();
+        project.insert(
+            "M.bpo",
+            PoFile::read(xml.as_bytes()).expect("readable file"),
+        );
+        project
     }
 
     fn ints() -> rossi::formula::SealedTypeEnvironment {
@@ -544,10 +655,13 @@ mod tests {
             </org.eventb.core.poSequent>"#
         );
         let file = fixture(&sequents);
-        let entry = file.sequent("evt/inv1/INV").expect("sequent present");
+        let entry = file
+            .file("M.bpo")
+            .and_then(|f| f.sequent("evt/inv1/INV"))
+            .expect("sequent present");
         assert_eq!(entry.stamp.as_deref(), Some("3"));
 
-        let seq = file.load("evt/inv1/INV").expect("loads");
+        let seq = file.load("M.bpo", "evt/inv1/INV").expect("loads");
         let ints = ints();
         assert_eq!(seq.type_env().get("x"), ints.get("x"));
         assert_eq!(seq.type_env().get("y"), ints.get("y"));
@@ -601,7 +715,7 @@ mod tests {
             </org.eventb.core.poSequent>"#
         );
         let file = fixture(&sequents);
-        let seq = file.load("evt/act1/WD").expect("loads");
+        let seq = file.load("M.bpo", "evt/act1/WD").expect("loads");
         let ints = ints();
         // Only CTXHYP's hypothesis; no y≠0 from the goal.
         let hyps: Vec<_> = seq.hyp_iter().cloned().collect();
@@ -617,7 +731,7 @@ mod tests {
             </org.eventb.core.poSequent>"#
         );
         let file = fixture(&sequents);
-        let seq = file.load("evt/inv2/INV").expect("loads");
+        let seq = file.load("M.bpo", "evt/inv2/INV").expect("loads");
         let ints = ints();
         // The goal's WD y≠0 is already present as the WD of x÷y=1.
         let count = seq
@@ -643,15 +757,23 @@ mod tests {
             </org.eventb.core.poSequent>"#
         );
         let file = fixture(&sequents);
-        assert!(file.load("evt/bad/INV").unwrap_err().contains("dangling"));
         assert!(
-            file.load("evt/undeclared/INV")
+            file.load("M.bpo", "evt/bad/INV")
+                .unwrap_err()
+                .contains("dangling")
+        );
+        assert!(
+            file.load("M.bpo", "evt/undeclared/INV")
                 .unwrap_err()
                 .contains("undeclared")
         );
-        assert!(file.load("evt/nogoal/INV").unwrap_err().contains("no goal"));
         assert!(
-            file.load("evt/absent/INV")
+            file.load("M.bpo", "evt/nogoal/INV")
+                .unwrap_err()
+                .contains("no goal")
+        );
+        assert!(
+            file.load("M.bpo", "evt/absent/INV")
                 .unwrap_err()
                 .contains("no obligation")
         );
