@@ -160,6 +160,19 @@ impl Type {
         out
     }
 
+    /// Parses a canonical string back into a type: the inverse of
+    /// [`Type::to_rodin_canonical`] for the extension-free forms found
+    /// in `org.eventb.core.type` attributes.
+    ///
+    /// `None` when the string is not an extension-free type spelling —
+    /// malformed input, a non-type expression such as `1+2`, or a
+    /// parametric type like `List(ℤ)`, which parses as a function
+    /// application and is rejected by the interpretation step.
+    pub fn parse_rodin(s: &str) -> Option<Type> {
+        let expr = crate::parser::parse_expression_str(s).ok()?;
+        super::typecheck::type_from_expression(&expr)
+    }
+
     fn write_canonical(&self, out: &mut String) {
         match self {
             Type::Bool => out.push_str("BOOL"),
@@ -241,10 +254,10 @@ mod tests {
 
     #[test]
     fn canonical_left_nested_product_stays_flat() {
-        // (A × B) × C prints without parentheses: the form is
-        // right-associative, so the flat spelling A×B×C re-reads as
-        // A×(B×C) — the parenthesised right operand is what preserves
-        // the distinction.
+        // (A × B) × C prints without parentheses: `×` is
+        // left-associative (kernel_lang p.18), so the flat spelling
+        // A×B×C re-reads as (A×B)×C — only a product in the right
+        // operand needs parentheses to survive a round-trip.
         let t = Type::prod(
             Type::prod(Type::given("A"), Type::given("B")),
             Type::given("C"),
@@ -283,6 +296,59 @@ mod tests {
             params: vec![],
         };
         assert_eq!(enumeration.to_rodin_canonical(), "Direction");
+    }
+
+    #[test]
+    fn parse_rodin_roundtrip() {
+        // Every extension-free canonical form parses back to the type
+        // that produced it.
+        let types = [
+            Type::Int,
+            Type::Bool,
+            Type::given("USERS"),
+            Type::pow(Type::Int),
+            Type::carrier_set_type("USERS"),
+            Type::prod(Type::given("AUCTIONS"), Type::given("ITEMS")),
+            Type::prod(
+                Type::given("USERS"),
+                Type::prod(Type::given("AUCTIONS"), Type::given("ITEMS")),
+            ),
+            Type::prod(
+                Type::prod(Type::given("A"), Type::given("B")),
+                Type::given("C"),
+            ),
+            Type::pow(Type::prod(
+                Type::given("USERS"),
+                Type::prod(Type::given("AUCTIONS"), Type::given("ITEMS")),
+            )),
+            Type::relation(Type::Int, Type::given("S")),
+        ];
+        for t in types {
+            assert_eq!(Type::parse_rodin(&t.to_rodin_canonical()), Some(t));
+        }
+    }
+
+    #[test]
+    fn parse_rodin_flat_product_is_left_nested() {
+        // The flat spelling is the canonical form of the left-nested
+        // product, so it must parse back left-nested.
+        assert_eq!(
+            Type::parse_rodin("A×B×C"),
+            Some(Type::prod(
+                Type::prod(Type::given("A"), Type::given("B")),
+                Type::given("C"),
+            ))
+        );
+    }
+
+    #[test]
+    fn parse_rodin_rejects_non_types() {
+        // Well-formed expressions that are not type spellings, the
+        // parametric form (a function application to the parser), and
+        // malformed input.
+        for s in ["1+2", "S∪T", "x↦y", "{1}", "List(ℤ)", "ℙ(", ""] {
+            assert_eq!(Type::parse_rodin(s), None, "accepted {s:?}");
+        }
     }
 
     #[test]
