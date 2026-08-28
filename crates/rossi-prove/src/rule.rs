@@ -59,6 +59,8 @@ impl Antecedent {
 /// A proof rule.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Rule {
+    /// The reasoner that produced this rule.
+    pub reasoner: crate::registry::ReasonerDesc,
     /// The goal this rule discharges; `None` is a wildcard matching
     /// any goal.
     pub goal: Option<Predicate>,
@@ -98,7 +100,7 @@ impl Rule {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::test_util::{env, pred};
+    use crate::test_util::{desc, env, pred};
     use rossi::formula::{SealedTypeEnvironment, Type};
 
     /// x=1, y=3 (selected: x=1; hidden: y=3) ⊢ x<2
@@ -121,6 +123,7 @@ mod tests {
 
     fn closing(goal: Option<Predicate>, needed: Vec<Predicate>) -> Rule {
         Rule {
+            reasoner: desc("hyp"),
             goal,
             needed_hyps: needed,
             confidence: Confidence::DISCHARGED_MAX,
@@ -156,6 +159,7 @@ mod tests {
     fn wildcard_antecedent_inherits_the_goal() {
         let seq = base();
         let rule = Rule {
+            reasoner: desc("hyp"),
             goal: None,
             needed_hyps: Vec::new(),
             confidence: Confidence::DISCHARGED_MAX,
@@ -179,6 +183,7 @@ mod tests {
     fn stated_rule_goal_with_wildcard_antecedent_is_ill_formed() {
         let seq = base();
         let rule = Rule {
+            reasoner: desc("hyp"),
             goal: Some(seq.goal().clone()),
             needed_hyps: Vec::new(),
             confidence: Confidence::DISCHARGED_MAX,
@@ -201,6 +206,7 @@ mod tests {
         let added = pred(&wide, "z>0");
         let unsel = pred(&wide, "z<9");
         let rule = Rule {
+            reasoner: desc("hyp"),
             goal: None,
             needed_hyps: Vec::new(),
             confidence: Confidence::DISCHARGED_MAX,
@@ -227,6 +233,7 @@ mod tests {
         let seq = base();
         // Introducing `x` again clashes with the environment.
         let rule = Rule {
+            reasoner: desc("hyp"),
             goal: None,
             needed_hyps: Vec::new(),
             confidence: Confidence::DISCHARGED_MAX,
@@ -258,6 +265,7 @@ mod tests {
         ];
         let apply = |actions: Vec<HypAction>| {
             let rule = Rule {
+                reasoner: desc("hyp"),
                 goal: None,
                 needed_hyps: Vec::new(),
                 confidence: Confidence::DISCHARGED_MAX,
@@ -289,6 +297,7 @@ mod tests {
         let src = pred(&env, "x=1");
         let inf = pred(&env, "1=x");
         let rule = Rule {
+            reasoner: desc("hyp"),
             goal: None,
             needed_hyps: Vec::new(),
             confidence: Confidence::DISCHARGED_MAX,
