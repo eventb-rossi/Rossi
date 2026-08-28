@@ -237,6 +237,7 @@ pub mod attr {
     pub const CONFIDENCE: &str = "org.eventb.core.confidence";
     pub const PS_MANUAL: &str = "org.eventb.core.psManual";
     pub const PS_BROKEN: &str = "org.eventb.core.psBroken";
+    pub const CONTEXT_DEPENDENT: &str = "org.eventb.core.contextDependent";
 }
 
 /// Element tags used in `.bcc`/`.bcm`.

@@ -13,6 +13,7 @@ mod machine;
 mod model;
 mod natures;
 pub mod reconcile;
+pub mod status;
 mod tables;
 
 use rossi::Component;

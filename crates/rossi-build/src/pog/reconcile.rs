@@ -52,7 +52,7 @@ pub fn reconcile_build_files(files: &mut [ScFile], mut old: impl FnMut(&str) -> 
 /// The `(bpo index, bps index)` of every same-stem `.bpo` / `.bps` pair —
 /// the one implementation of the pairing rule, shared with
 /// [`reset_stale_statuses`]. Indices, so callers keep their `&mut` access.
-fn bpo_bps_pairs(files: &[ScFile]) -> Vec<(usize, usize)> {
+pub(crate) fn bpo_bps_pairs(files: &[ScFile]) -> Vec<(usize, usize)> {
     files
         .iter()
         .enumerate()
@@ -206,7 +206,7 @@ pub fn reset_stale_statuses(files: &mut [ScFile]) -> Vec<(String, usize)> {
 /// recorded discharge). A sequent without a stamp reads as `"0"`, the
 /// generator's default. Malformed XML stops the scan; the missing entries
 /// then read as open and their rows reset — conservative, never unsafe.
-fn sequent_stamps(bpo: &str) -> HashMap<String, String> {
+pub(crate) fn sequent_stamps(bpo: &str) -> HashMap<String, String> {
     let mut reader = Reader::from_str(bpo);
     let mut buf = Vec::new();
     let mut stamps = HashMap::new();
@@ -246,7 +246,7 @@ fn sequent_stamps(bpo: &str) -> HashMap<String, String> {
 /// A fresh unattempted status row in the generator's exact shape
 /// (`pog::model::into_sc_files`), escaped by the same
 /// [`crate::xml_out::escape_attr`] the generator uses.
-fn fresh_status_row(name: &str, stamp: &str) -> String {
+pub(crate) fn fresh_status_row(name: &str, stamp: &str) -> String {
     let mut row = format!("<{} {}=\"", xtag::PS_STATUS, attr::NAME);
     crate::xml_out::escape_attr(name, &mut row);
     row.push_str(&format!(
@@ -384,24 +384,27 @@ fn line_name(line: &str, prefix: &str) -> Option<String> {
 }
 
 /// One `.bps` row as parsed for reconciliation and stamp guarding.
-struct StatusRow {
+pub(crate) struct StatusRow {
     /// Unescaped `name` attribute.
-    name: String,
+    pub(crate) name: String,
     /// The row rebuilt from its raw attribute bytes (carried verbatim).
-    row: String,
+    pub(crate) row: String,
     /// Unescaped `org.eventb.core.poStamp`, when present.
-    stamp: Option<String>,
+    pub(crate) stamp: Option<String>,
     /// Parsed `org.eventb.core.confidence`, when present and numeric.
-    confidence: Option<i64>,
+    pub(crate) confidence: Option<i64>,
     /// `org.eventb.core.psBroken="true"`.
-    broken: bool,
+    pub(crate) broken: bool,
+    /// `org.eventb.core.contextDependent="true"` — such rows are
+    /// re-checked on every build, even with a matching stamp.
+    pub(crate) context_dependent: bool,
 }
 
 /// Parse a `.bps` document into [`StatusRow`]s in document order. Rows
 /// rebuild from their raw attribute bytes, so carried values survive
 /// byte-for-byte; status rows are attribute-only by construction, so
 /// children are not represented.
-fn parse_status_rows(bps: &str) -> Vec<StatusRow> {
+pub(crate) fn parse_status_rows(bps: &str) -> Vec<StatusRow> {
     let mut reader = Reader::from_str(bps);
     let mut buf = Vec::new();
     let mut rows = Vec::new();
@@ -416,6 +419,7 @@ fn parse_status_rows(bps: &str) -> Vec<StatusRow> {
                     stamp: None,
                     confidence: None,
                     broken: false,
+                    context_dependent: false,
                 };
                 for attr in e.attributes().flatten() {
                     let key = String::from_utf8_lossy(attr.key.as_ref());
@@ -432,6 +436,8 @@ fn parse_status_rows(bps: &str) -> Vec<StatusRow> {
                         parsed.confidence = unescaped().parse::<i64>().ok();
                     } else if attr.key.as_ref() == attr::PS_BROKEN.as_bytes() {
                         parsed.broken = raw == "true";
+                    } else if attr.key.as_ref() == attr::CONTEXT_DEPENDENT.as_bytes() {
+                        parsed.context_dependent = raw == "true";
                     }
                     parsed.row.push(' ');
                     parsed.row.push_str(&key);
@@ -452,7 +458,7 @@ fn parse_status_rows(bps: &str) -> Vec<StatusRow> {
 
 /// Render a `.bps` document from finished rows, matching the
 /// generator's byte format.
-fn assemble_status(rows: &[String]) -> String {
+pub(crate) fn assemble_status(rows: &[String]) -> String {
     let mut out = String::from(DOC_HEADER);
     if rows.is_empty() {
         out.push_str(&format!("<{}/>\n", xtag::PS_FILE));
