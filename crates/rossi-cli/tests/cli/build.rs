@@ -363,8 +363,9 @@ fn build_zip(input: &std::path::Path, out_zip: &std::path::Path) {
 #[test]
 fn build_zip_preserves_proof_files() {
     // A rebuilt archive carries our generated .bpo (obligations) and
-    // .bps (fresh unattempted statuses, as the input has none to carry)
-    // while the input's .bpr proofs are preserved byte-exact.
+    // .bps (the archive's recorded discharged statuses, carried
+    // at their matching stamps) while the input's .bpr proofs are
+    // preserved byte-exact.
     let tmp = tempdir_unique("rossi-cli-build-proofs");
     let out_zip = tmp.join("out.zip");
     build_zip(std::path::Path::new(TRAFFIC_LIGHT), &out_zip);
@@ -375,7 +376,7 @@ fn build_zip_preserves_proof_files() {
     let m0_bpo = std::fs::read_to_string(root.join("M0.bpo")).expect("M0.bpo");
     assert!(m0_bpo.contains(r#"<org.eventb.core.poSequent name="INITIALISATION/inv3/INV""#));
     let m0_bps = std::fs::read_to_string(root.join("M0.bps")).expect("M0.bps");
-    assert!(m0_bps.contains(r#"<org.eventb.core.psStatus name="INITIALISATION/inv3/INV" org.eventb.core.confidence="-99" org.eventb.core.poStamp="0" org.eventb.core.psManual="false"/>"#));
+    assert!(m0_bps.contains(r#"<org.eventb.core.psStatus name="INITIALISATION/inv3/INV" org.eventb.core.confidence="1000" org.eventb.core.poStamp="0" org.eventb.core.psManual="false"/>"#));
     assert_eq!(
         std::fs::read(root.join("M0.bpr")).expect("M0.bpr"),
         zip_entry_bytes(std::path::Path::new(TRAFFIC_LIGHT), "traffic-light/M0.bpr"),
@@ -417,14 +418,18 @@ const DISCHARGED_INV3: &str = r#"name="INITIALISATION/inv3/INV" org.eventb.core.
 
 /// Mark the `INITIALISATION/inv3/INV` status row manually discharged,
 /// asserting the edit applied — a drifted needle would otherwise let
-/// the carry-forward assertions pass vacuously.
+/// the carry-forward assertions pass vacuously. The zip flow carries
+/// the archive's auto-discharged row; the loose-directory flow
+/// reconciles against the initially empty destination and starts from
+/// a fresh unattempted row. Either becomes a manual discharge.
 fn discharge_inv3(text: &str) -> String {
-    let out = text.replacen(
-        r#"name="INITIALISATION/inv3/INV" org.eventb.core.confidence="-99" org.eventb.core.poStamp="0" org.eventb.core.psManual="false""#,
-        DISCHARGED_INV3,
-        1,
-    );
-    assert_ne!(out, text, "the fresh inv3 status row must be present");
+    let shipped = r#"name="INITIALISATION/inv3/INV" org.eventb.core.confidence="1000" org.eventb.core.poStamp="0" org.eventb.core.psManual="false""#;
+    let fresh = r#"name="INITIALISATION/inv3/INV" org.eventb.core.confidence="-99" org.eventb.core.poStamp="0" org.eventb.core.psManual="false""#;
+    let mut out = text.replacen(shipped, DISCHARGED_INV3, 1);
+    if out == text {
+        out = text.replacen(fresh, DISCHARGED_INV3, 1);
+    }
+    assert_ne!(out, text, "the inv3 status row must be present");
     out
 }
 
