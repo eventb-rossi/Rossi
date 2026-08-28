@@ -583,6 +583,658 @@ fn pred_sub_expr(pred: &Predicate, position: &Position) -> Option<Expression> {
     }
 }
 
+/// `RemoveNegation` (`rn`) — pushes one negation at the stored
+/// position: the level-0 auto-rewriter rules first, then the
+/// unfolding patterns (de Morgan, negated implication and
+/// quantifiers, non-emptiness as an existential).
+pub struct RemoveNegation;
+
+impl Reasoner for RemoveNegation {
+    fn replay(
+        &self,
+        seq: &ProverSequent,
+        stored: &StoredRule,
+        _hints: &ReplayHints,
+    ) -> Result<Rule, String> {
+        use rossi::formula::tag::{AtomicOp, BinaryPredOp, QuantPredOp};
+        let unfold = |sub: &Predicate| -> Option<Predicate> {
+            // super.rewrite: the auto rewriter's negation rules (all
+            // level 0 — the simplifier's ¬ arm ignores its options).
+            if let Some(new) = super::rewrites::simplify_predicate_node(
+                sub,
+                &super::rewrites::SimplifierOptions::all(),
+            )
+            .or_else(|| super::auto_rewriter::rewrite_not(sub))
+            {
+                return Some(new);
+            }
+            let PredicateKind::Not(inner) = sub.kind() else {
+                return None;
+            };
+            let ff = sub.factory();
+            let neg = |p: &Predicate| ff.not_predicate(p.clone(), None);
+            let is_empty_set =
+                |e: &Expression| matches!(e.kind(), ExpressionKind::Atomic(AtomicOp::EmptySet));
+            match inner.kind() {
+                // SIMP_NOT_NOT (already covered by the simplifier).
+                PredicateKind::Not(p) => Some(p.clone()),
+                // DEF_SPECIAL_NOT_EQUAL: ¬ S = ∅ == ∃x·x ∈ S
+                PredicateKind::Relational {
+                    op: RelationalOp::Equal,
+                    left,
+                    right,
+                } if is_empty_set(right) || is_empty_set(left) => {
+                    let set = if is_empty_set(right) { left } else { right };
+                    let (decls, member, shifted) = super::component_binder(set)?;
+                    let membership =
+                        ff.relational_predicate(RelationalOp::In, member, shifted, None);
+                    Some(ff.quantified_predicate(QuantPredOp::Exists, decls, membership, None))
+                }
+                // DISTRI_NOT_AND / DISTRI_NOT_OR: de Morgan.
+                PredicateKind::Associative { op, children } => {
+                    let dual = match op {
+                        AssocPredOp::LAnd => AssocPredOp::LOr,
+                        AssocPredOp::LOr => AssocPredOp::LAnd,
+                    };
+                    Some(ff.associative_predicate(dual, children.iter().map(neg).collect(), None))
+                }
+                // DERIV_NOT_IMP: ¬(P ⇒ Q) == P ∧ ¬Q
+                PredicateKind::Binary {
+                    op: BinaryPredOp::LImp,
+                    left,
+                    right,
+                } => Some(ff.associative_predicate(
+                    AssocPredOp::LAnd,
+                    vec![left.clone(), neg(right)],
+                    None,
+                )),
+                // DERIV_NOT_FORALL / DERIV_NOT_EXISTS.
+                PredicateKind::Quantified { op, decls, pred } => {
+                    let dual = match op {
+                        QuantPredOp::Forall => QuantPredOp::Exists,
+                        QuantPredOp::Exists => QuantPredOp::Forall,
+                    };
+                    Some(ff.quantified_predicate(dual, decls.clone(), neg(pred), None))
+                }
+                _ => None,
+            }
+        };
+        let rewrite = |pred: &Predicate, position: &Position| -> Option<Predicate> {
+            let rossi::formula::position::FormulaRef::Pred(sub) = pred.sub_formula(position)?
+            else {
+                return None;
+            };
+            if !matches!(sub.kind(), PredicateKind::Not(_)) {
+                return None;
+            }
+            let new_sub = unfold(sub)?;
+            pred.rewrite_sub_formula(
+                position,
+                rossi::formula::position::FormulaRef::Pred(&new_sub),
+            )
+            .ok()
+            .map(|p| super::as_parsed_pred(&p).unwrap_or(p))
+        };
+        let display = |hyp: Option<&Predicate>, position: &Position| match hyp {
+            None => "remove ¬ in goal".to_string(),
+            Some(hyp) => format!(
+                "remove ¬ in {}",
+                hyp.sub_formula(position)
+                    .and_then(|sub| match sub {
+                        rossi::formula::position::FormulaRef::Pred(p) => Some(display_pred(p)),
+                        _ => None,
+                    })
+                    .unwrap_or_default()
+            ),
+        };
+        manual_rewrite_rule(seq, stored, &rewrite, &|_, _, _| Some(Vec::new()), &display)
+    }
+}
+
+/// `RemoveMembershipL1` (`rmL1`) — unfolds one membership at the
+/// stored position, after the level-1 auto-rewriter relational rules.
+pub struct RemoveMembershipL1;
+
+/// The membership unfoldings for `rmL1`, in the reference pattern
+/// order.
+fn unfold_membership(sub: &Predicate) -> Option<Predicate> {
+    use rossi::formula::Type;
+    use rossi::formula::tag::{
+        AtomicOp, BinaryExprOp, BinaryPredOp, QuantExprOp, QuantPredOp, UnaryExprOp,
+    };
+    let PredicateKind::Relational {
+        op: RelationalOp::In,
+        left: element,
+        right: set,
+    } = sub.kind()
+    else {
+        return None;
+    };
+    let ff = sub.factory().clone();
+    let land =
+        |children: Vec<Predicate>| ff.associative_predicate(AssocPredOp::LAnd, children, None);
+    let is_in = |e: &Expression, s: &Expression| {
+        ff.relational_predicate(RelationalOp::In, e.clone(), s.clone(), None)
+    };
+    let maplet_sides = |e: &Expression| match e.kind() {
+        ExpressionKind::Binary {
+            op: BinaryExprOp::Mapsto,
+            left,
+            right,
+        } => Some((left.clone(), right.clone())),
+        _ => None,
+    };
+    let base_of = |e: &Expression| -> Option<Type> {
+        match e.ty()? {
+            Type::Pow(base) => Some((**base).clone()),
+            _ => None,
+        }
+    };
+    let source_of = |e: &Expression| -> Option<Type> {
+        match base_of(e)? {
+            Type::Prod(source, _) => Some((*source).clone()),
+            _ => None,
+        }
+    };
+    let target_of = |e: &Expression| -> Option<Type> {
+        match base_of(e)? {
+            Type::Prod(_, target) => Some((*target).clone()),
+            _ => None,
+        }
+    };
+    match set.kind() {
+        // DEF_IN_SETENUM (with the SIMP_MULTI_IN and singleton
+        // shortcuts folded into the unfolding itself).
+        ExpressionKind::SetExtension(members) => {
+            let mut equalities = Vec::with_capacity(members.len());
+            for member in members {
+                if member == element {
+                    return Some(ff.literal_predicate(LiteralPredOp::BTrue, None));
+                }
+                equalities.push(ff.relational_predicate(
+                    RelationalOp::Equal,
+                    element.clone(),
+                    member.clone(),
+                    None,
+                ));
+            }
+            Some(match equalities.len() {
+                1 => equalities.into_iter().next().unwrap(),
+                _ => ff.associative_predicate(AssocPredOp::LOr, equalities, None),
+            })
+        }
+        // DEF_IN_MAPSTO: E ↦ F ∈ S × T == E ∈ S ∧ F ∈ T
+        ExpressionKind::Binary {
+            op: BinaryExprOp::CProd,
+            left: s,
+            right: t,
+        } => {
+            let (e, f) = maplet_sides(element)?;
+            Some(land(vec![is_in(&e, s), is_in(&f, t)]))
+        }
+        // DEF_IN_POW: E ∈ ℙ(S) == E ⊆ S
+        ExpressionKind::Unary {
+            op: UnaryExprOp::Pow,
+            child,
+        } => Some(ff.relational_predicate(
+            RelationalOp::SubsetEq,
+            element.clone(),
+            child.clone(),
+            None,
+        )),
+        // DEF_IN_BUNION / DEF_IN_BINTER.
+        ExpressionKind::Associative { op, children } => {
+            let (dual, is_comp) = match op {
+                AssocExprOp::BUnion => (AssocPredOp::LOr, false),
+                AssocExprOp::BInter => (AssocPredOp::LAnd, false),
+                AssocExprOp::FComp => (AssocPredOp::LAnd, true),
+                _ => return None,
+            };
+            if is_comp {
+                // DEF_IN_FCOMP: one binder per intermediate type.
+                let (e, f) = maplet_sides(element)?;
+                let mut decls = Vec::new();
+                for rel in &children[..children.len() - 1] {
+                    let (segment, _) = super::type_binder(&ff, &target_of(rel)?);
+                    decls.extend(segment);
+                }
+                let max = decls.len() as u32;
+                let mut size = max;
+                let mut conjuncts = Vec::with_capacity(children.len());
+                let mut prev = e.shift_bound_identifiers(max as i32);
+                for rel in &children[..children.len() - 1] {
+                    let target = target_of(rel)?;
+                    let pattern = super::type_pattern(&ff, &target, size - 1);
+                    let (segment, _) = super::type_binder(&ff, &target);
+                    size -= segment.len() as u32;
+                    let map =
+                        ff.binary_expression(BinaryExprOp::Mapsto, prev, pattern.clone(), None);
+                    conjuncts.push(ff.relational_predicate(
+                        RelationalOp::In,
+                        map,
+                        rel.shift_bound_identifiers(max as i32),
+                        None,
+                    ));
+                    prev = pattern;
+                }
+                let last = children.last().expect("a composition has children");
+                let map = ff.binary_expression(
+                    BinaryExprOp::Mapsto,
+                    prev,
+                    f.shift_bound_identifiers(max as i32),
+                    None,
+                );
+                conjuncts.push(ff.relational_predicate(
+                    RelationalOp::In,
+                    map,
+                    last.shift_bound_identifiers(max as i32),
+                    None,
+                ));
+                return Some(ff.quantified_predicate(
+                    QuantPredOp::Exists,
+                    decls,
+                    land(conjuncts),
+                    None,
+                ));
+            }
+            Some(ff.associative_predicate(
+                dual,
+                children.iter().map(|child| is_in(element, child)).collect(),
+                None,
+            ))
+        }
+        // DEF_IN_SETMINUS: E ∈ S ∖ T == E ∈ S ∧ ¬ E ∈ T
+        ExpressionKind::Binary {
+            op: BinaryExprOp::SetMinus,
+            left: s,
+            right: t,
+        } => Some(land(vec![
+            is_in(element, s),
+            ff.not_predicate(is_in(element, t), None),
+        ])),
+        // DEF_IN_KUNION / DEF_IN_KINTER: a single binder `s`.
+        ExpressionKind::Unary {
+            op: op @ (UnaryExprOp::KUnion | UnaryExprOp::KInter),
+            child,
+        } => {
+            let base = base_of(child)?;
+            let decl = ff.bound_ident_decl("s", None, None, Some(base.clone()));
+            let ident = ff.bound_identifier(0, None, Some(base));
+            let p = is_in(&ident, &child.shift_bound_identifiers(1));
+            let q = is_in(&element.shift_bound_identifiers(1), &ident);
+            let body = if *op == UnaryExprOp::KUnion {
+                land(vec![p, q])
+            } else {
+                ff.binary_predicate(BinaryPredOp::LImp, p, q, None)
+            };
+            let quant = if *op == UnaryExprOp::KUnion {
+                QuantPredOp::Exists
+            } else {
+                QuantPredOp::Forall
+            };
+            Some(ff.quantified_predicate(quant, vec![decl], body, None))
+        }
+        // DEF_IN_QUNION / DEF_IN_QINTER.
+        ExpressionKind::Quantified {
+            op: op @ (QuantExprOp::QUnion | QuantExprOp::QInter),
+            decls,
+            pred: guard,
+            expr: value,
+            ..
+        } => {
+            let q = ff.relational_predicate(
+                RelationalOp::In,
+                element.shift_bound_identifiers(decls.len() as i32),
+                value.clone(),
+                None,
+            );
+            let (quant, body) = if *op == QuantExprOp::QUnion {
+                (QuantPredOp::Exists, land(vec![guard.clone(), q]))
+            } else {
+                (
+                    QuantPredOp::Forall,
+                    ff.binary_predicate(BinaryPredOp::LImp, guard.clone(), q, None),
+                )
+            };
+            Some(ff.quantified_predicate(quant, decls.clone(), body, None))
+        }
+        // DEF_IN_DOM / DEF_IN_RAN: bind the other side's components.
+        ExpressionKind::Unary {
+            op: op @ (UnaryExprOp::KDom | UnaryExprOp::KRan),
+            child: r,
+        } => {
+            let bound_ty = if *op == UnaryExprOp::KDom {
+                target_of(r)?
+            } else {
+                source_of(r)?
+            };
+            let (decls, pattern) = super::type_binder(&ff, &bound_ty);
+            let n = decls.len() as i32;
+            let shifted = element.shift_bound_identifiers(n);
+            let map = if *op == UnaryExprOp::KDom {
+                ff.binary_expression(BinaryExprOp::Mapsto, shifted, pattern, None)
+            } else {
+                ff.binary_expression(BinaryExprOp::Mapsto, pattern, shifted, None)
+            };
+            let body =
+                ff.relational_predicate(RelationalOp::In, map, r.shift_bound_identifiers(n), None);
+            Some(ff.quantified_predicate(QuantPredOp::Exists, decls, body, None))
+        }
+        // DEF_IN_CONVERSE: E ↦ F ∈ r∼ == F ↦ E ∈ r
+        ExpressionKind::Unary {
+            op: UnaryExprOp::Converse,
+            child: r,
+        } => {
+            let (e, f) = maplet_sides(element)?;
+            let map = ff.binary_expression(BinaryExprOp::Mapsto, f, e, None);
+            Some(ff.relational_predicate(RelationalOp::In, map, r.clone(), None))
+        }
+        // DEF_IN_DOMRES / DEF_IN_DOMSUB.
+        ExpressionKind::Binary {
+            op: op @ (BinaryExprOp::DomRes | BinaryExprOp::DomSub),
+            left: s,
+            right: r,
+        } => {
+            let (e, f) = maplet_sides(element)?;
+            let membership = if *op == BinaryExprOp::DomRes {
+                is_in(&e, s)
+            } else {
+                ff.relational_predicate(RelationalOp::NotIn, e.clone(), s.clone(), None)
+            };
+            let map = ff.binary_expression(BinaryExprOp::Mapsto, e, f, None);
+            let q = ff.relational_predicate(RelationalOp::In, map, r.clone(), None);
+            Some(land(vec![membership, q]))
+        }
+        // DEF_IN_RANRES / DEF_IN_RANSUB.
+        ExpressionKind::Binary {
+            op: op @ (BinaryExprOp::RanRes | BinaryExprOp::RanSub),
+            left: r,
+            right: t,
+        } => {
+            let (e, f) = maplet_sides(element)?;
+            let map = ff.binary_expression(BinaryExprOp::Mapsto, e, f.clone(), None);
+            let p = ff.relational_predicate(RelationalOp::In, map, r.clone(), None);
+            let membership = if *op == BinaryExprOp::RanRes {
+                is_in(&f, t)
+            } else {
+                ff.relational_predicate(RelationalOp::NotIn, f.clone(), t.clone(), None)
+            };
+            Some(land(vec![p, membership]))
+        }
+        // DEF_IN_REL (level 1): r ∈ S ↔ T == r ⊆ S × T
+        ExpressionKind::Binary {
+            op: BinaryExprOp::Rel,
+            left: s,
+            right: t,
+        } => Some(ff.relational_predicate(
+            RelationalOp::SubsetEq,
+            element.clone(),
+            ff.binary_expression(BinaryExprOp::CProd, s.clone(), t.clone(), None),
+            None,
+        )),
+        // DEF_IN_RELIMAGE: F ∈ r[S] == ∃x·x ∈ S ∧ x ↦ F ∈ r
+        ExpressionKind::Binary {
+            op: BinaryExprOp::RelImage,
+            left: r,
+            right: s,
+        } => {
+            let base = base_of(s)?;
+            let (decls, pattern) = super::type_binder(&ff, &base);
+            let n = decls.len() as i32;
+            let p = is_in(&pattern, &s.shift_bound_identifiers(n));
+            let map = ff.binary_expression(
+                BinaryExprOp::Mapsto,
+                pattern.clone(),
+                element.shift_bound_identifiers(n),
+                None,
+            );
+            let q =
+                ff.relational_predicate(RelationalOp::In, map, r.shift_bound_identifiers(n), None);
+            Some(ff.quantified_predicate(QuantPredOp::Exists, decls, land(vec![p, q]), None))
+        }
+        // DEF_IN_ID: E ↦ F ∈ id == E = F
+        ExpressionKind::Atomic(AtomicOp::KIdGen) => {
+            let (e, f) = maplet_sides(element)?;
+            Some(ff.relational_predicate(RelationalOp::Equal, e, f, None))
+        }
+        // DEF_IN_RELDOM / DEF_IN_RELRAN / DEF_IN_RELDOMRAN.
+        ExpressionKind::Binary {
+            op: op @ (BinaryExprOp::TRel | BinaryExprOp::SRel | BinaryExprOp::STRel),
+            left: s,
+            right: t,
+        } => {
+            let rel = ff.binary_expression(BinaryExprOp::Rel, s.clone(), t.clone(), None);
+            let mut conjuncts = vec![is_in(element, &rel)];
+            if matches!(op, BinaryExprOp::TRel | BinaryExprOp::STRel) {
+                let dom = ff.unary_expression(UnaryExprOp::KDom, element.clone(), None);
+                conjuncts.push(ff.relational_predicate(RelationalOp::Equal, dom, s.clone(), None));
+            }
+            if matches!(op, BinaryExprOp::SRel | BinaryExprOp::STRel) {
+                let ran = ff.unary_expression(UnaryExprOp::KRan, element.clone(), None);
+                conjuncts.push(ff.relational_predicate(RelationalOp::Equal, ran, t.clone(), None));
+            }
+            Some(land(conjuncts))
+        }
+        // DEF_IN_FCT: f ∈ S ⇸ T == f ∈ S ↔ T ∧ functionality.
+        ExpressionKind::Binary {
+            op: BinaryExprOp::PFun,
+            left: s,
+            right: t,
+        } => {
+            let rel = ff.binary_expression(BinaryExprOp::Rel, s.clone(), t.clone(), None);
+            let membership = is_in(element, &rel);
+            let s_base = base_of(s)?;
+            let t_base = base_of(t)?;
+            let (x, _) = super::type_binder(&ff, &s_base);
+            let (y, _) = super::type_binder(&ff, &t_base);
+            let (z, _) = super::type_binder(&ff, &t_base);
+            let length = (x.len() + y.len() + z.len()) as u32;
+            let f = element.shift_bound_identifiers(length as i32);
+            let x_pattern = super::type_pattern(&ff, &s_base, length - 1);
+            let y_pattern = super::type_pattern(&ff, &t_base, (y.len() + z.len()) as u32 - 1);
+            let z_pattern = super::type_pattern(&ff, &t_base, z.len() as u32 - 1);
+            let map1 = ff.binary_expression(
+                BinaryExprOp::Mapsto,
+                x_pattern.clone(),
+                y_pattern.clone(),
+                None,
+            );
+            let map2 =
+                ff.binary_expression(BinaryExprOp::Mapsto, x_pattern, z_pattern.clone(), None);
+            let functional = ff.binary_predicate(
+                BinaryPredOp::LImp,
+                land(vec![
+                    ff.relational_predicate(RelationalOp::In, map1, f.clone(), None),
+                    ff.relational_predicate(RelationalOp::In, map2, f, None),
+                ]),
+                ff.relational_predicate(RelationalOp::Equal, y_pattern, z_pattern, None),
+                None,
+            );
+            let mut decls = x;
+            decls.extend(y);
+            decls.extend(z);
+            let forall = ff.quantified_predicate(QuantPredOp::Forall, decls, functional, None);
+            Some(land(vec![membership, forall]))
+        }
+        // DEF_IN_TFCT / DEF_IN_INJ / DEF_IN_TINJ / DEF_IN_SURJ /
+        // DEF_IN_TSURJ / DEF_IN_BIJ: one weaker arrow plus a side
+        // condition.
+        ExpressionKind::Binary {
+            op:
+                op @ (BinaryExprOp::TFun
+                | BinaryExprOp::PInj
+                | BinaryExprOp::TInj
+                | BinaryExprOp::PSur
+                | BinaryExprOp::TSur
+                | BinaryExprOp::TBij),
+            left: s,
+            right: t,
+        } => {
+            let arrow = |weaker: BinaryExprOp, left: &Expression, right: &Expression| {
+                ff.binary_expression(weaker, left.clone(), right.clone(), None)
+            };
+            let dom_eq = |side: &Expression| {
+                let dom = ff.unary_expression(UnaryExprOp::KDom, element.clone(), None);
+                ff.relational_predicate(RelationalOp::Equal, dom, side.clone(), None)
+            };
+            let ran_eq = |side: &Expression| {
+                let ran = ff.unary_expression(UnaryExprOp::KRan, element.clone(), None);
+                ff.relational_predicate(RelationalOp::Equal, ran, side.clone(), None)
+            };
+            Some(match op {
+                BinaryExprOp::TFun => land(vec![
+                    is_in(element, &arrow(BinaryExprOp::PFun, s, t)),
+                    dom_eq(s),
+                ]),
+                BinaryExprOp::PInj => {
+                    let inv = ff.unary_expression(UnaryExprOp::Converse, element.clone(), None);
+                    land(vec![
+                        is_in(element, &arrow(BinaryExprOp::PFun, s, t)),
+                        ff.relational_predicate(
+                            RelationalOp::In,
+                            inv,
+                            arrow(BinaryExprOp::PFun, t, s),
+                            None,
+                        ),
+                    ])
+                }
+                BinaryExprOp::TInj => land(vec![
+                    is_in(element, &arrow(BinaryExprOp::PInj, s, t)),
+                    dom_eq(s),
+                ]),
+                BinaryExprOp::PSur => land(vec![
+                    is_in(element, &arrow(BinaryExprOp::PFun, s, t)),
+                    ran_eq(t),
+                ]),
+                BinaryExprOp::TSur => land(vec![
+                    is_in(element, &arrow(BinaryExprOp::PSur, s, t)),
+                    dom_eq(s),
+                ]),
+                BinaryExprOp::TBij => land(vec![
+                    is_in(element, &arrow(BinaryExprOp::TInj, s, t)),
+                    ran_eq(t),
+                ]),
+                _ => unreachable!("matched above"),
+            })
+        }
+        // DEF_IN_DPROD: E ↦ (F ↦ G) ∈ p ⊗ q.
+        ExpressionKind::Binary {
+            op: BinaryExprOp::DProd,
+            left: p,
+            right: q,
+        } => {
+            let (e, fg) = maplet_sides(element)?;
+            let (f, g) = maplet_sides(&fg)?;
+            let map1 = ff.binary_expression(BinaryExprOp::Mapsto, e.clone(), f, None);
+            let map2 = ff.binary_expression(BinaryExprOp::Mapsto, e, g, None);
+            Some(land(vec![
+                ff.relational_predicate(RelationalOp::In, map1, p.clone(), None),
+                ff.relational_predicate(RelationalOp::In, map2, q.clone(), None),
+            ]))
+        }
+        // DEF_IN_PPROD: (E ↦ G) ↦ (F ↦ H) ∈ p ∥ q.
+        ExpressionKind::Binary {
+            op: BinaryExprOp::PProd,
+            left: p,
+            right: q,
+        } => {
+            let (eg, fh) = maplet_sides(element)?;
+            let (e, g) = maplet_sides(&eg)?;
+            let (f, h) = maplet_sides(&fh)?;
+            let map1 = ff.binary_expression(BinaryExprOp::Mapsto, e, f, None);
+            let map2 = ff.binary_expression(BinaryExprOp::Mapsto, g, h, None);
+            Some(land(vec![
+                ff.relational_predicate(RelationalOp::In, map1, p.clone(), None),
+                ff.relational_predicate(RelationalOp::In, map2, q.clone(), None),
+            ]))
+        }
+        // DEF_IN_POW1: S ∈ ℙ1(T) == S ∈ ℙ(T) ∧ S ≠ ∅
+        ExpressionKind::Unary {
+            op: UnaryExprOp::Pow1,
+            child,
+        } => {
+            let pow = ff.unary_expression(UnaryExprOp::Pow, child.clone(), None);
+            let empty = ff.atomic_expression(AtomicOp::EmptySet, None, element.ty().cloned());
+            Some(land(vec![
+                is_in(element, &pow),
+                ff.relational_predicate(RelationalOp::NotEqual, element.clone(), empty, None),
+            ]))
+        }
+        // DEF_IN_UPTO: E ∈ a ‥ b == a ≤ E ∧ E ≤ b
+        ExpressionKind::Binary {
+            op: BinaryExprOp::UpTo,
+            left: a,
+            right: b,
+        } => Some(land(vec![
+            ff.relational_predicate(RelationalOp::Le, a.clone(), element.clone(), None),
+            ff.relational_predicate(RelationalOp::Le, element.clone(), b.clone(), None),
+        ])),
+        // DEF_IN_NATURAL / DEF_IN_NATURAL1 (level 1).
+        ExpressionKind::Atomic(AtomicOp::Natural) => Some(ff.relational_predicate(
+            RelationalOp::Le,
+            ff.integer_literal(0, None),
+            element.clone(),
+            None,
+        )),
+        ExpressionKind::Atomic(AtomicOp::Natural1) => Some(ff.relational_predicate(
+            RelationalOp::Le,
+            ff.integer_literal(1, None),
+            element.clone(),
+            None,
+        )),
+        _ => None,
+    }
+}
+
+impl Reasoner for RemoveMembershipL1 {
+    fn replay(
+        &self,
+        seq: &ProverSequent,
+        stored: &StoredRule,
+        _hints: &ReplayHints,
+    ) -> Result<Rule, String> {
+        let rewrite = |pred: &Predicate, position: &Position| -> Option<Predicate> {
+            let rossi::formula::position::FormulaRef::Pred(sub) = pred.sub_formula(position)?
+            else {
+                return None;
+            };
+            if !matches!(
+                sub.kind(),
+                PredicateKind::Relational {
+                    op: RelationalOp::In,
+                    ..
+                }
+            ) {
+                return None;
+            }
+            // The auto-rewriter pre-step (the reference runs it at
+            // level 1; these rules are the latest level, audited by
+            // the corpus gate).
+            let new_sub =
+                super::auto_rewriter::rewrite_relational(sub).or_else(|| unfold_membership(sub))?;
+            pred.rewrite_sub_formula(
+                position,
+                rossi::formula::position::FormulaRef::Pred(&new_sub),
+            )
+            .ok()
+            .map(|p| super::as_parsed_pred(&p).unwrap_or(p))
+        };
+        let display = |hyp: Option<&Predicate>, position: &Position| match hyp {
+            None => "remove ∈ in goal".to_string(),
+            Some(hyp) => format!(
+                "remove ∈ in {}",
+                hyp.sub_formula(position)
+                    .and_then(|sub| match sub {
+                        rossi::formula::position::FormulaRef::Pred(p) => Some(display_pred(p)),
+                        _ => None,
+                    })
+                    .unwrap_or_default()
+            ),
+        };
+        manual_rewrite_rule(seq, stored, &rewrite, &|_, _, _| Some(Vec::new()), &display)
+    }
+}
+
 /// Position-input recovery: the position from
 /// the `pos` string, the hypothesis (if any) from the needed
 /// hypotheses.
@@ -1090,6 +1742,74 @@ mod batch30_tests {
             Some(&pred(&env, "({a} ⩤ f)(x) = y"))
         );
         assert_eq!(rule.antecedents[1].added_hyps, vec![pred(&env, "¬ x = a")]);
+        assert!(rule.apply(&seq).is_some());
+    }
+
+    #[test]
+    fn remove_negation_unfolds_de_morgan_and_non_emptiness() {
+        let env = env(&[("S", "ℙ(ℤ)"), ("x", "ℤ"), ("y", "ℤ")]);
+        // De Morgan at a nested goal position (child 1 of ⇒).
+        let seq = sequent(&env, &[], "x > 0 ⇒ ¬(x > 1 ∧ y > 1)");
+        let rule = RemoveNegation
+            .replay(
+                &seq,
+                &stored_goal("rn", seq.goal().clone(), "1"),
+                &ReplayHints::default(),
+            )
+            .unwrap();
+        assert_eq!(
+            rule.antecedents[0].goal.as_ref(),
+            Some(&pred(&env, "x > 0 ⇒ (¬ x > 1 ∨ ¬ y > 1)"))
+        );
+        // Non-emptiness as an existential, at the root.
+        let seq = sequent(&env, &[], "¬ S = ∅");
+        let rule = RemoveNegation
+            .replay(
+                &seq,
+                &stored_goal("rn", seq.goal().clone(), ""),
+                &ReplayHints::default(),
+            )
+            .unwrap();
+        assert_eq!(
+            rule.antecedents[0].goal.as_ref(),
+            Some(&pred(&env, "∃x0·x0 ∈ S"))
+        );
+    }
+
+    #[test]
+    fn remove_membership_unfolds_function_and_interval() {
+        let env = env(&[("f", "ℙ(ℤ×ℤ)"), ("A", "ℙ(ℤ)"), ("B", "ℙ(ℤ)"), ("x", "ℤ")]);
+        // Total function at the root.
+        let seq = sequent(&env, &[], "f ∈ A → B");
+        let rule = RemoveMembershipL1
+            .replay(
+                &seq,
+                &stored_goal("rmL1", seq.goal().clone(), ""),
+                &ReplayHints::default(),
+            )
+            .unwrap();
+        let goals: Vec<Option<Predicate>> =
+            rule.antecedents.iter().map(|a| a.goal.clone()).collect();
+        assert_eq!(
+            goals,
+            vec![
+                Some(pred(&env, "f ∈ A ⇸ B")),
+                Some(pred(&env, "dom(f) = A")),
+            ]
+        );
+        // Interval membership at a nested position.
+        let seq = sequent(&env, &[], "x > 0 ⇒ x ∈ 1 ‥ 5");
+        let rule = RemoveMembershipL1
+            .replay(
+                &seq,
+                &stored_goal("rmL1", seq.goal().clone(), "1"),
+                &ReplayHints::default(),
+            )
+            .unwrap();
+        assert_eq!(
+            rule.antecedents[0].goal.as_ref(),
+            Some(&pred(&env, "x > 0 ⇒ 1 ≤ x ∧ x ≤ 5"))
+        );
         assert!(rule.apply(&seq).is_some());
     }
 

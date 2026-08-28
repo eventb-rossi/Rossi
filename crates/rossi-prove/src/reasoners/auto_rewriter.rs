@@ -283,7 +283,7 @@ fn rewrite_partition(pred: &Predicate, children: &[Expression]) -> Option<Predic
 
 /// The negation-pushing rules, after the
 /// simplifier's own `¬` rules failed.
-fn rewrite_not(pred: &Predicate) -> Option<Predicate> {
+pub(crate) fn rewrite_not(pred: &Predicate) -> Option<Predicate> {
     let PredicateKind::Not(inner) = pred.kind() else {
         return None;
     };
@@ -408,7 +408,7 @@ fn exists_singleton(set: &Expression) -> Option<Predicate> {
 }
 
 /// The relational-predicate rules, in the reference pattern order.
-fn rewrite_relational(pred: &Predicate) -> Option<Predicate> {
+pub(crate) fn rewrite_relational(pred: &Predicate) -> Option<Predicate> {
     use rossi::formula::tag::{AssocExprOp, BinaryExprOp};
     let PredicateKind::Relational { op, left, right } = pred.kind() else {
         return None;
