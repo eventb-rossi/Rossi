@@ -13,8 +13,13 @@
 //!
 //! Nodes whose reasoners are external provers (oracle), unimplemented,
 //! or untrusted are measured, not failed; descent stops where the
-//! stored rule no longer applies (broken proofs). Any `replayed_diff`
-//! or reasoner error on an unflagged model gates. When the corpus
+//! stored rule no longer applies (broken proofs). Stored rewrites
+//! whose recorded output round-trips to their input — only an
+//! in-memory shape the printer hides changed, such as an associative
+//! nesting built by the proof-obligation generator — are measured as
+//! `invisible_rewrite`: no replay from serialized formulas can
+//! reproduce them. Any `replayed_diff` or reasoner error on an
+//! unflagged model gates. When the corpus
 //! carries a `replay_results.tsv` baseline, per-model `replayed_eq`
 //! must also not regress.
 //!
@@ -52,6 +57,7 @@ struct Counts {
     apply_stop: usize,
     stale_selection: usize,
     kept_drift: usize,
+    invisible_rewrite: usize,
 }
 
 impl Counts {
@@ -66,6 +72,7 @@ impl Counts {
         self.apply_stop += other.apply_stop;
         self.stale_selection += other.stale_selection;
         self.kept_drift += other.kept_drift;
+        self.invisible_rewrite += other.invisible_rewrite;
     }
 }
 
@@ -166,6 +173,86 @@ fn rules_eq(produced: &Rule, stored: &Rule) -> bool {
             .all(|(x, y)| antecedents_eq(x, y))
 }
 
+/// A conjunction's conjuncts (or the predicate itself), duplicates
+/// and `⊤` dropped — what an auto-rewrite records as the inferred
+/// hypotheses of a rewritten hypothesis.
+fn split_conjuncts(pred: &rossi::formula::Predicate) -> Vec<rossi::formula::Predicate> {
+    use rossi::formula::PredicateKind;
+    use rossi::formula::tag::{AssocPredOp, LiteralPredOp};
+    let conjuncts: Vec<rossi::formula::Predicate> = match pred.kind() {
+        PredicateKind::Associative {
+            op: AssocPredOp::LAnd,
+            children,
+        } => children.clone(),
+        _ => vec![pred.clone()],
+    };
+    let mut out: Vec<rossi::formula::Predicate> = Vec::with_capacity(conjuncts.len());
+    for conjunct in conjuncts {
+        if matches!(
+            conjunct.kind(),
+            PredicateKind::Literal(LiteralPredOp::BTrue)
+        ) || out.contains(&conjunct)
+        {
+            continue;
+        }
+        out.push(conjunct);
+    }
+    out
+}
+
+/// An auto-rewrite hypothesis action whose output round-trips to its
+/// input: the rewritten hypothesis, split into conjuncts, is the
+/// hypothesis itself. These are recorded when only an in-memory
+/// normalization (associative flattening of a shape the printer hides,
+/// negative-literal folding) changed the formula — the serialized
+/// proof cannot expose what changed, so no replay from strings can
+/// reproduce the action.
+fn invisible_action(action: &HypAction) -> bool {
+    let HypAction::Rewrite {
+        hyps,
+        added_idents,
+        inferred,
+        disappearing,
+    } = action
+    else {
+        return false;
+    };
+    added_idents.is_empty()
+        && hyps.len() == 1
+        && disappearing == hyps
+        && hyp_set_eq(inferred, &split_conjuncts(&hyps[0]))
+}
+
+/// The stored rule with its serialization-invisible components
+/// removed: a goal antecedent equal to the sequent goal, and
+/// hypothesis rewrites that round-trip to their input.
+fn strip_invisible(stored: &Rule, seq_goal: &rossi::formula::Predicate) -> Rule {
+    let mut rule = stored.clone();
+    if rule.antecedents.len() == 1
+        && rule.goal.as_ref() == Some(seq_goal)
+        && rule.antecedents[0].goal.as_ref() == Some(seq_goal)
+    {
+        rule.goal = None;
+        rule.antecedents[0].goal = None;
+    }
+    for antecedent in &mut rule.antecedents {
+        antecedent
+            .hyp_actions
+            .retain(|action| !invisible_action(action));
+    }
+    rule
+}
+
+/// Nothing visible left: the stored rule recorded only invisible
+/// normalization, so a faithful replay finds no rewrite at all.
+fn strips_to_nothing(stripped: &Rule) -> bool {
+    stripped.goal.is_none()
+        && stripped.antecedents.len() == 1
+        && stripped.antecedents[0].goal.is_none()
+        && stripped.antecedents[0].added_hyps.is_empty()
+        && stripped.antecedents[0].hyp_actions.is_empty()
+}
+
 /// What differs, for the report.
 fn diff_summary(produced: &Rule, stored: &Rule) -> String {
     if produced.goal != stored.goal {
@@ -247,13 +334,19 @@ fn walk_proof(
                         let _ = err;
                     }
                     Err(err) => {
-                        counts.error += 1;
-                        problems.push(format!("{context}: {} failed: {err}", desc.id()));
+                        if strips_to_nothing(&strip_invisible(&stored.rule, seq.goal())) {
+                            counts.invisible_rewrite += 1;
+                        } else {
+                            counts.error += 1;
+                            problems.push(format!("{context}: {} failed: {err}", desc.id()));
+                        }
                     }
                     Ok(produced) => {
                         if rules_eq(&produced, &stored.rule) {
                             counts.replayed_eq += 1;
                             reasoner_row.replayed_eq += 1;
+                        } else if rules_eq(&produced, &strip_invisible(&stored.rule, seq.goal())) {
+                            counts.invisible_rewrite += 1;
                         } else if drifted {
                             // The recorded rule speaks about a selection
                             // state this obligation no longer produces;
@@ -550,6 +643,7 @@ fn replay_reproduces_recorded_rules() {
             "apply_stop",
             "stale_selection",
             "kept_drift",
+            "invisible_rewrite",
             "verdict",
             "notes",
         ],
@@ -574,8 +668,8 @@ fn replay_reproduces_recorded_rules() {
     );
     println!(
         "replay: {} nodes — {} replayed_eq, {} replayed_diff, {} oracle, {} unimplemented, \
-         {} untrusted, {} error, {} apply_stop, {} stale_selection, {} kept_drift; reports: \
-         {} and {}",
+         {} untrusted, {} error, {} apply_stop, {} stale_selection, {} kept_drift, \
+         {} invisible_rewrite; reports: {} and {}",
         total.nodes,
         total.replayed_eq,
         total.replayed_diff,
@@ -586,6 +680,7 @@ fn replay_reproduces_recorded_rules() {
         total.apply_stop,
         total.stale_selection,
         total.kept_drift,
+        total.invisible_rewrite,
         out.display(),
         coverage.display(),
     );
@@ -610,6 +705,7 @@ fn report_row(model: &str, counts: &Counts, verdict: &str, notes: &str) -> Vec<S
         counts.apply_stop.to_string(),
         counts.stale_selection.to_string(),
         counts.kept_drift.to_string(),
+        counts.invisible_rewrite.to_string(),
         verdict.to_string(),
         common::sanitize(notes),
     ]
