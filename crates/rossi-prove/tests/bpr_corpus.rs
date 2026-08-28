@@ -56,6 +56,9 @@ fn any_untrusted(skel: &Skeleton) -> bool {
 #[derive(Default)]
 struct Tally {
     files: usize,
+    /// Files the reader refuses wholesale — the pre-versioning
+    /// vintage without a `version` attribute on the file root.
+    legacy_files: usize,
     proofs: usize,
     loaded: usize,
     unattempted: usize,
@@ -135,10 +138,16 @@ fn scan_zip(path: &PathBuf, tally: &mut Tally) -> Result<(), String> {
         }
         let entry_name = entry.name().to_string();
         tally.files += 1;
-        let proofs = read_bpr(BufReader::new(entry), |_| Keep::Full)
-            .map_err(|err| format!("{}!{entry_name}: {err}", path.display()))?;
-        for proof in &proofs {
-            tally.record(proof);
+        match read_bpr(BufReader::new(entry), |_| Keep::Full) {
+            Ok(proofs) => {
+                for proof in &proofs {
+                    tally.record(proof);
+                }
+            }
+            // Pre-versioning files are a legacy vintage, accounted
+            // rather than failed; malformed XML still fails the scan.
+            Err(rossi_prove::bpr::BprError::Unsupported(_)) => tally.legacy_files += 1,
+            Err(err) => return Err(format!("{}!{entry_name}: {err}", path.display())),
         }
     }
     Ok(())
@@ -192,7 +201,7 @@ fn corpus_bpr_scan() {
     zips.sort();
 
     let mut report = String::from(
-        "model\tbpr_files\tproofs\tloaded\tunsupported\tclasses\tconf_match\tconf_capped\tconf_diff\n",
+        "model\tbpr_files\tlegacy_files\tproofs\tloaded\tunsupported\tclasses\tconf_match\tconf_capped\tconf_diff\n",
     );
     let mut failures = Vec::new();
     let mut total = Tally::default();
@@ -210,8 +219,9 @@ fn corpus_bpr_scan() {
             .collect::<Vec<_>>()
             .join(",");
         report.push_str(&format!(
-            "{model}\t{}\t{}\t{}\t{}\t{classes}\t{}\t{}\t{}\n",
+            "{model}\t{}\t{}\t{}\t{}\t{}\t{classes}\t{}\t{}\t{}\n",
             tally.files,
+            tally.legacy_files,
             tally.proofs,
             tally.loaded,
             tally.unsupported_total(),
@@ -220,6 +230,7 @@ fn corpus_bpr_scan() {
             tally.conf_diff,
         ));
         total.files += tally.files;
+        total.legacy_files += tally.legacy_files;
         total.proofs += tally.proofs;
         total.loaded += tally.loaded;
         total.unattempted += tally.unattempted;
@@ -236,9 +247,10 @@ fn corpus_bpr_scan() {
         .and_then(|mut f| f.write_all(report.as_bytes()))
         .expect("report written");
     println!(
-        "corpus: {} .bpr files, {} proofs, {} loaded ({} unattempted), {} unsupported {:?}, \
+        "corpus: {} .bpr files ({} legacy), {} proofs, {} loaded ({} unattempted), {} unsupported {:?}, \
          confidence {}/{}/{} (match/capped/diff); report: {}",
         total.files,
+        total.legacy_files,
         total.proofs,
         total.loaded,
         total.unattempted,
