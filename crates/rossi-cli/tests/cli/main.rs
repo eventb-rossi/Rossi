@@ -4,6 +4,7 @@ mod build;
 mod export_build;
 mod fmt;
 mod import_export;
+mod prove;
 mod stdin;
 mod validate;
 
