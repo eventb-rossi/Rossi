@@ -1170,6 +1170,7 @@ name = "rossi-prove"
 version = "0.2.0"
 dependencies = [
  "indoc",
+ "num-bigint",
  "quick-xml",
  "rossi",
  "stacker",

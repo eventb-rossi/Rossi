@@ -44,14 +44,13 @@ pub trait ReasonerProvider {
     fn implementation(&self, desc: &ReasonerDesc) -> Option<&dyn Reasoner>;
 }
 
-/// The registry-backed provider. No core reasoner is implemented in
-/// Rust yet, so every lookup answers `None`; entries flip as reasoner
-/// batches land.
+/// The registry-backed provider: serves the implemented reasoners from
+/// [`crate::reasoners`], for trusted descriptors only.
 pub struct RegistryProvider;
 
 impl ReasonerProvider for RegistryProvider {
-    fn implementation(&self, _desc: &ReasonerDesc) -> Option<&dyn Reasoner> {
-        None
+    fn implementation(&self, desc: &ReasonerDesc) -> Option<&dyn Reasoner> {
+        crate::reasoners::implementation(desc)
     }
 }
 
