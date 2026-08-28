@@ -62,6 +62,10 @@ pub fn implementation(desc: &ReasonerDesc) -> Option<&'static dyn Reasoner> {
         "autoRewritesL5" => &auto_rewriter::AutoRewritesL5,
         "genMPL4" => &genmp::GenMPL4,
         "partitionRewrites" => &manual::PartitionRewrites,
+        "funImgSimplifies" => &manual::FunImgSimplifies,
+        "totalDom" => &manual::TotalDom,
+        "isFunGoal" => &structural::IsFunGoal,
+        "finiteHypBoundedGoal" => &structural::FiniteHypBoundedGoal,
         _ => return None,
     };
     Some(imp)
