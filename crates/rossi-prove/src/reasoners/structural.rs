@@ -696,7 +696,7 @@ mod tests {
         // Registered but not implemented.
         assert!(
             RegistryProvider
-                .implementation(&desc("typeRewrites:1"))
+                .implementation(&desc("onePointRule:2"))
                 .is_none()
         );
         // Unknown id.

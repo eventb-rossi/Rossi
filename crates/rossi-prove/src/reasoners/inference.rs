@@ -14,6 +14,7 @@ use crate::rule::{Antecedent, Rule};
 use crate::sequent::ProverSequent;
 use crate::skeleton::StoredRule;
 
+use super::driver::{self, NodeRewriter};
 use super::{break_possible_conjunct, display_expr, display_pred, fresh_instantiation};
 
 /// An antecedent with the given goal and nothing else.
@@ -533,149 +534,47 @@ impl Reasoner for ExE {
     }
 }
 
-/// Equality rewriting under the flattening driver: bottom-up
-/// substitution of `from` by
-/// `to`, where a matching child run inside a larger same-operator
-/// associative expression is spliced, and only *rebuilt* nodes are
-/// flattened (merge same-operator associative children, fold the
-/// unary minus of an integer literal). A formula without occurrences
-/// answers `None` — the reference returns the identical reference,
-/// and its callers treat that as "nothing rewritten". Using the generic
-/// rewrite driver here would fold pre-existing `−(lit)` shapes into
-/// literals and register phantom rewrites that never occur.
-fn subst_expr(expr: &Expression, from: &Expression, to: &Expression) -> Option<Expression> {
-    let ff = expr.factory().clone();
-    let subst_vec = |exprs: &[Expression]| -> Option<Vec<Expression>> {
-        let mut changed = false;
-        let out: Vec<Expression> = exprs
-            .iter()
-            .map(|e| match subst_expr(e, from, to) {
-                Some(e2) => {
-                    changed = true;
-                    e2
-                }
-                None => e.clone(),
-            })
-            .collect();
-        changed.then_some(out)
-    };
+/// Equality rewriting: bottom-up substitution of `from` by `to` on
+/// the shared rewrite driver.
+/// A matching child run inside a larger same-operator associative
+/// expression is spliced; `None` means no occurrence.
+struct EqualitySubst<'a> {
+    from: &'a Expression,
+    to: &'a Expression,
+}
 
-    // The associative special case replaces the whole-node hook.
-    if let (
-        ExpressionKind::Associative { op, children },
-        ExpressionKind::Associative {
-            op: from_op,
-            children: from_children,
-        },
-    ) = (expr.kind(), from.kind())
-    {
-        if op == from_op {
-            // Children first, merging same-operator results (the
-            // flatten applied to rebuilt nodes).
-            let rebuilt = subst_vec(children);
-            let changed = rebuilt.is_some();
-            let mut current = rebuilt.unwrap_or_else(|| children.clone());
-            if changed
-                && current.iter().any(|c| {
-                    matches!(c.kind(),
-                ExpressionKind::Associative { op: inner, .. } if inner == op)
-                })
-            {
-                current = flatten_once(*op, current);
-            }
-            // Splice the first run of `from`'s children.
-            let window = from_children.len();
-            if let Some(start) = current.iter().position(|c| c == &from_children[0]) {
-                if start + window <= current.len()
-                    && (1..window).all(|k| current[start + k] == from_children[k])
+impl NodeRewriter for EqualitySubst<'_> {
+    fn expression(&mut self, expr: &Expression) -> Option<Expression> {
+        if let (
+            ExpressionKind::Associative { op, children },
+            ExpressionKind::Associative {
+                op: from_op,
+                children: from_children,
+            },
+        ) = (expr.kind(), self.from.kind())
+        {
+            if op == from_op {
+                // Splice the first run of `from`'s children; a full
+                // match reduces to `to` through the single-child path.
+                let window = from_children.len();
+                let start = children.iter().position(|c| c == &from_children[0])?;
+                if start + window > children.len()
+                    || (1..window).any(|k| children[start + k] != from_children[k])
                 {
-                    let mut new_children: Vec<Expression> = current[..start].to_vec();
-                    new_children.push(to.clone());
-                    new_children.extend(current[start + window..].iter().cloned());
-                    let flat = flatten_once(*op, new_children);
-                    if flat.len() == 1 {
-                        return Some(flat.into_iter().next().unwrap());
-                    }
-                    return Some(ff.associative_expression(*op, flat, None));
+                    return None;
                 }
+                let mut new_children: Vec<Expression> = children[..start].to_vec();
+                new_children.push(self.to.clone());
+                new_children.extend(children[start + window..].iter().cloned());
+                let flat = driver::flatten_once(*op, new_children);
+                if flat.len() == 1 {
+                    return Some(flat.into_iter().next().unwrap());
+                }
+                return Some(expr.factory().associative_expression(*op, flat, None));
             }
-            return changed.then(|| ff.associative_expression(*op, current, None));
         }
+        (expr == self.from).then(|| self.to.clone())
     }
-
-    let rebuilt: Option<Expression> = match expr.kind() {
-        ExpressionKind::FreeIdentifier(_)
-        | ExpressionKind::BoundIdentifier(_)
-        | ExpressionKind::IntegerLiteral(_)
-        | ExpressionKind::Atomic(_) => None,
-        ExpressionKind::SetExtension(members) => {
-            subst_vec(members).map(|m| ff.set_extension(m, None))
-        }
-        ExpressionKind::Bool(pred) => {
-            subst_pred(pred, from, to).map(|p| ff.bool_expression(p, None))
-        }
-        ExpressionKind::Binary { op, left, right } => {
-            let l = subst_expr(left, from, to);
-            let r = subst_expr(right, from, to);
-            (l.is_some() || r.is_some()).then(|| {
-                ff.binary_expression(
-                    *op,
-                    l.unwrap_or_else(|| left.clone()),
-                    r.unwrap_or_else(|| right.clone()),
-                    None,
-                )
-            })
-        }
-        ExpressionKind::Associative { op, children } => {
-            // `from` is not associative with this operator here.
-            subst_vec(children).map(|mut current| {
-                if current.iter().any(|c| {
-                    matches!(c.kind(),
-                    ExpressionKind::Associative { op: inner, .. } if inner == op)
-                }) {
-                    current = flatten_once(*op, current);
-                }
-                ff.associative_expression(*op, current, None)
-            })
-        }
-        ExpressionKind::Unary { op, child } => subst_expr(child, from, to).map(|c2| {
-            if *op == rossi::formula::tag::UnaryExprOp::UnMinus {
-                if let ExpressionKind::IntegerLiteral(value) = c2.kind() {
-                    return ff.integer_literal(-value.clone(), None);
-                }
-            }
-            ff.unary_expression(*op, c2, None)
-        }),
-        ExpressionKind::Quantified {
-            op,
-            decls,
-            pred,
-            expr: inner,
-            form,
-        } => {
-            let p = subst_pred(pred, from, to);
-            let x = subst_expr(inner, from, to);
-            (p.is_some() || x.is_some()).then(|| {
-                ff.quantified_expression(
-                    *op,
-                    decls.clone(),
-                    p.unwrap_or_else(|| pred.clone()),
-                    x.unwrap_or_else(|| inner.clone()),
-                    None,
-                    *form,
-                )
-            })
-        }
-        // Ascriptions are stripped from loaded proofs; extensions are
-        // out of scope in this crate.
-        ExpressionKind::Ascription { .. } | ExpressionKind::Extended { .. } => None,
-    };
-
-    let current = rebuilt.as_ref().unwrap_or(expr);
-    if current == from {
-        return Some(to.clone());
-    }
-    rebuilt
 }
 
 /// Normalizes freshly instantiated predicates to the parse-normal
@@ -695,7 +594,7 @@ fn parse_normal(pred: &Predicate) -> Predicate {
                 }) {
                     return expr.factory().associative_expression(
                         *op,
-                        flatten_once(*op, children.clone()),
+                        driver::flatten_once(*op, children.clone()),
                         None,
                     );
                 }
@@ -706,91 +605,9 @@ fn parse_normal(pred: &Predicate) -> Predicate {
     pred.rewrite(&mut MergeAssoc)
 }
 
-/// One-level merge of same-operator associative children.
-fn flatten_once(op: AssocExprOp, children: Vec<Expression>) -> Vec<Expression> {
-    let mut flat: Vec<Expression> = Vec::with_capacity(children.len());
-    for child in children {
-        match child.kind() {
-            ExpressionKind::Associative {
-                op: inner,
-                children: nested,
-            } if *inner == op => flat.extend(nested.iter().cloned()),
-            _ => flat.push(child),
-        }
-    }
-    flat
-}
-
 /// The predicate half of the substitution; `None` means unchanged.
 fn subst_pred(pred: &Predicate, from: &Expression, to: &Expression) -> Option<Predicate> {
-    let ff = pred.factory().clone();
-    match pred.kind() {
-        PredicateKind::Literal(_) | PredicateKind::PredicateVariable(_) => None,
-        PredicateKind::Relational { op, left, right } => {
-            let l = subst_expr(left, from, to);
-            let r = subst_expr(right, from, to);
-            (l.is_some() || r.is_some()).then(|| {
-                ff.relational_predicate(
-                    *op,
-                    l.unwrap_or_else(|| left.clone()),
-                    r.unwrap_or_else(|| right.clone()),
-                    None,
-                )
-            })
-        }
-        PredicateKind::Binary { op, left, right } => {
-            let l = subst_pred(left, from, to);
-            let r = subst_pred(right, from, to);
-            (l.is_some() || r.is_some()).then(|| {
-                ff.binary_predicate(
-                    *op,
-                    l.unwrap_or_else(|| left.clone()),
-                    r.unwrap_or_else(|| right.clone()),
-                    None,
-                )
-            })
-        }
-        PredicateKind::Associative { op, children } => {
-            let mut changed = false;
-            let out: Vec<Predicate> = children
-                .iter()
-                .map(|c| match subst_pred(c, from, to) {
-                    Some(c2) => {
-                        changed = true;
-                        c2
-                    }
-                    None => c.clone(),
-                })
-                .collect();
-            changed.then(|| ff.associative_predicate(*op, out, None))
-        }
-        PredicateKind::Not(inner) => subst_pred(inner, from, to).map(|p| ff.not_predicate(p, None)),
-        PredicateKind::Quantified {
-            op,
-            decls,
-            pred: body,
-        } => {
-            subst_pred(body, from, to).map(|p| ff.quantified_predicate(*op, decls.clone(), p, None))
-        }
-        PredicateKind::Simple(child) => {
-            subst_expr(child, from, to).map(|e| ff.simple_predicate(e, None))
-        }
-        PredicateKind::Multiple(children) => {
-            let mut changed = false;
-            let out: Vec<Expression> = children
-                .iter()
-                .map(|c| match subst_expr(c, from, to) {
-                    Some(c2) => {
-                        changed = true;
-                        c2
-                    }
-                    None => c.clone(),
-                })
-                .collect();
-            changed.then(|| ff.multiple_predicate(out, None))
-        }
-        PredicateKind::Application { .. } | PredicateKind::Extended { .. } => None,
-    }
+    driver::rewrite_pred(pred, &mut EqualitySubst { from, to })
 }
 
 /// The `EqHe` level-2 body shared by `EqL2` and `HeL2`: rewrite the

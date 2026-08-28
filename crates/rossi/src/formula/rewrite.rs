@@ -12,6 +12,7 @@
 use super::assignment::{Assignment, AssignmentKind};
 use super::decl::BoundIdentDecl;
 use super::expression::{Expression, ExpressionKind};
+use super::factory::FormulaFactory;
 use super::predicate::{Predicate, PredicateKind};
 use super::subst::remove_unused_decls;
 use super::tag::UnaryExprOp;
@@ -104,6 +105,83 @@ impl Assignment {
     pub fn flatten(&self) -> Assignment {
         self.rewrite(&mut Flattener)
     }
+}
+
+/// Merges a directly nested quantifier of the same kind into `decls`,
+/// when its declaration annotations permit; `true` iff merged.
+///
+/// An inner declaration's annotation is scoped under the outer
+/// binders; in the merged declaration list it must read in the
+/// enclosing scope instead. A reference to an outer binder cannot be
+/// expressed there — the nesting is kept in that case — and a
+/// reference to an enclosing binder renumbers past the departed outer
+/// frame.
+fn merge_nested_quantifier(
+    ff: &FormulaFactory,
+    op: super::tag::QuantPredOp,
+    decls: &mut Vec<BoundIdentDecl>,
+    body: &mut Predicate,
+) -> bool {
+    let nested = match body.kind() {
+        PredicateKind::Quantified {
+            op: inner,
+            decls: inner_decls,
+            pred: inner_pred,
+        } if *inner == op => Some((inner_decls.clone(), inner_pred.clone())),
+        _ => None,
+    };
+    let Some((inner_decls, inner_pred)) = nested else {
+        return false;
+    };
+    let n_outer = decls.len() as u32;
+    let mergeable = inner_decls.iter().all(|d| {
+        d.annotation()
+            .is_none_or(|a| a.dangling_bound_indices().iter().all(|&i| i >= n_outer))
+    });
+    if !mergeable {
+        return false;
+    }
+    decls.extend(inner_decls.iter().map(|d| match d.annotation() {
+        Some(a) if !a.dangling_bound_indices().is_empty() => ff.bound_ident_decl(
+            d.name(),
+            d.span(),
+            Some(a.shift_bound_identifiers(-(n_outer as i32))),
+            d.ty().cloned(),
+        ),
+        _ => d.clone(),
+    }));
+    *body = inner_pred;
+    true
+}
+
+/// The flattening normalization of one quantified-predicate node:
+/// declarations the body does not reference are dropped (the
+/// quantifier disappearing when none remain), and a directly nested
+/// quantifier of the same kind is merged into the declaration list.
+/// `None` when the node is already normal. The body itself is not
+/// visited — this is the per-node effect the flattening rewriter
+/// applies to every quantifier it traverses.
+pub fn normalize_quantified_predicate(p: &Predicate) -> Option<Predicate> {
+    let PredicateKind::Quantified { op, decls, pred } = p.kind() else {
+        return None;
+    };
+    let ff = p.factory().clone();
+    let mut decls2 = decls.clone();
+    let mut body = pred.clone();
+    let mut changed = false;
+    match remove_unused_decls(&decls2, &body) {
+        Some((kept, new_body)) if kept.is_empty() => return Some(new_body),
+        Some((kept, new_body)) => {
+            decls2 = kept;
+            body = new_body;
+            changed = true;
+        }
+        None => {}
+    }
+    if merge_nested_quantifier(&ff, *op, &mut decls2, &mut body) {
+        changed = true;
+    }
+    changed.then(|| ff.quantified_predicate(*op, decls2, body, p.span()))
 }
 
 fn same_expr(a: &Expression, b: &Expression) -> bool {
@@ -360,43 +438,8 @@ pub(super) fn rewrite_pred(p: &Predicate, rw: &mut dyn FormulaRewriter) -> Predi
                     }
                     None => {}
                 }
-                // Merge a directly nested quantifier of the same kind.
-                let nested = match p2.kind() {
-                    PredicateKind::Quantified {
-                        op: inner,
-                        decls: inner_decls,
-                        pred: inner_pred,
-                    } if inner == op => Some((inner_decls.clone(), inner_pred.clone())),
-                    _ => None,
-                };
-                if let Some((inner_decls, inner_pred)) = nested {
-                    // An inner declaration's annotation is scoped under the
-                    // outer binders; in the merged declaration list it must
-                    // read in the enclosing scope instead. A reference to an
-                    // outer binder cannot be expressed there — keep the
-                    // nesting in that case — and a reference to an enclosing
-                    // binder renumbers past the departed outer frame.
-                    let n_outer = decls2.len() as u32;
-                    let mergeable = inner_decls.iter().all(|d| {
-                        d.annotation().is_none_or(|a| {
-                            a.dangling_bound_indices().iter().all(|&i| i >= n_outer)
-                        })
-                    });
-                    if mergeable {
-                        decls2.extend(inner_decls.iter().map(|d| match d.annotation() {
-                            Some(a) if !a.dangling_bound_indices().is_empty() => {
-                                ff.bound_ident_decl(
-                                    d.name(),
-                                    d.span(),
-                                    Some(a.shift_bound_identifiers(-(n_outer as i32))),
-                                    d.ty().cloned(),
-                                )
-                            }
-                            _ => d.clone(),
-                        }));
-                        p2 = inner_pred;
-                        changed = true;
-                    }
+                if merge_nested_quantifier(&ff, *op, &mut decls2, &mut p2) {
+                    changed = true;
                 }
             }
 

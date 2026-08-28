@@ -33,7 +33,7 @@ pub use factory::{ExtensionError, FactoryError, FormulaFactory};
 pub use fresh::FreshNameSolver;
 pub use position::{FormulaRef, Position, PositionError};
 pub use predicate::{Predicate, PredicateKind};
-pub use rewrite::FormulaRewriter;
+pub use rewrite::{FormulaRewriter, normalize_quantified_predicate};
 pub use typecheck::{ProblemKind, TypeCheckProblem, TypeCheckResult};
 pub use typenv::{InferredTypeEnvironment, SealedTypeEnvironment, TypeEnvironmentBuilder};
 pub use types::Type;

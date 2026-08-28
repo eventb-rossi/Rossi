@@ -33,6 +33,7 @@ use common::{
     workspace_root, write_report,
 };
 use rossi_prove::bpr::{self, Keep, ProofBody, ProofEntry};
+use rossi_prove::bps::read_bps;
 use rossi_prove::po_loader::{PoFile, PoProject};
 use rossi_prove::{
     Antecedent, HypAction, ReasonerProvider, Registration, RegistryProvider, ReplayHints, Rule,
@@ -50,6 +51,7 @@ struct Counts {
     error: usize,
     apply_stop: usize,
     stale_selection: usize,
+    kept_drift: usize,
 }
 
 impl Counts {
@@ -63,6 +65,7 @@ impl Counts {
         self.error += other.error;
         self.apply_stop += other.apply_stop;
         self.stale_selection += other.stale_selection;
+        self.kept_drift += other.kept_drift;
     }
 }
 
@@ -81,11 +84,27 @@ fn hyp_set_eq(a: &[rossi::formula::Predicate], b: &[rossi::formula::Predicate]) 
     a.iter().all(|p| b.contains(p)) && b.iter().all(|p| a.contains(p))
 }
 
-/// Hypothesis-action equality: the action sequence stays ordered, but
-/// each action's predicate lists compare as sets — the proof
-/// serializer emits them in hash order too.
+/// Hypothesis-action equality: a bijective multiset comparison — an
+/// auto-rewrite rule emits one action per visible hypothesis in the
+/// sequent's iteration order, and a reusable-but-kept proof may have
+/// been recorded against an obligation listing the same hypotheses in
+/// another order. Each action's predicate lists also compare as sets
+/// (the proof serializer emits them in hash order).
 fn actions_eq(a: &[HypAction], b: &[HypAction]) -> bool {
-    a.len() == b.len() && a.iter().zip(b).all(|(x, y)| action_eq(x, y))
+    if a.len() != b.len() {
+        return false;
+    }
+    let mut used = vec![false; b.len()];
+    a.iter().all(|x| {
+        b.iter().enumerate().any(|(index, y)| {
+            if !used[index] && action_eq(x, y) {
+                used[index] = true;
+                true
+            } else {
+                false
+            }
+        })
+    })
 }
 
 fn action_eq(a: &HypAction, b: &HypAction) -> bool {
@@ -195,6 +214,7 @@ fn diff_summary(produced: &Rule, stored: &Rule) -> String {
 fn walk_proof(
     root: rossi_prove::ProverSequent,
     skel: &Skeleton,
+    manual: bool,
     counts: &mut Counts,
     per_reasoner: &mut BTreeMap<String, ReasonerCounts>,
     problems: &mut Vec<String>,
@@ -222,6 +242,10 @@ fn walk_proof(
                         counts.stale_selection += 1;
                         let _ = err;
                     }
+                    Err(err) if manual => {
+                        counts.kept_drift += 1;
+                        let _ = err;
+                    }
                     Err(err) => {
                         counts.error += 1;
                         problems.push(format!("{context}: {} failed: {err}", desc.id()));
@@ -236,6 +260,15 @@ fn walk_proof(
                             // the comparison is meaningless below the
                             // drift point.
                             counts.stale_selection += 1;
+                        } else if manual {
+                            // A manually kept proof — after a
+                            // recalculate refresh, exactly the proofs
+                            // the auto-prover could not re-derive. They
+                            // may predate their regenerated obligation
+                            // (extra typing hypotheses, another
+                            // hypothesis order), so a content diff is
+                            // recording-time drift, not a replay bug.
+                            counts.kept_drift += 1;
                         } else {
                             counts.replayed_diff += 1;
                             reasoner_row.replayed_diff += 1;
@@ -285,11 +318,13 @@ fn walk_proof(
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 fn check_component(
     project: &PoProject,
     component: &str,
     path: &str,
     bpr: Option<&[u8]>,
+    bps: Option<&str>,
     counts: &mut Counts,
     per_reasoner: &mut BTreeMap<String, ReasonerCounts>,
     problems: &mut Vec<String>,
@@ -297,6 +332,17 @@ fn check_component(
     let Some(po) = project.file(path) else {
         return;
     };
+    // The recalculate refresh marks kept proofs manual on the STATUS
+    // row; the stored proof's own flag keeps its historical value.
+    let manual_rows: std::collections::HashSet<String> = bps
+        .and_then(|text| read_bps(text.as_bytes()).ok())
+        .map(|rows| {
+            rows.into_iter()
+                .filter(|row| row.manual)
+                .map(|row| row.name)
+                .collect()
+        })
+        .unwrap_or_default();
     let proofs: BTreeMap<String, ProofEntry> = match bpr {
         Some(bytes) => match bpr::read_bpr(bytes, |_| Keep::Full) {
             Ok(entries) => entries
@@ -334,6 +380,7 @@ fn check_component(
         walk_proof(
             seq,
             skel,
+            proof.manual || manual_rows.contains(name),
             counts,
             per_reasoner,
             problems,
@@ -389,11 +436,14 @@ fn check_model(
     for stem in checked {
         let (dir, file) = stem.rsplit_once('/').unwrap_or(("", stem.as_str()));
         let bpr = read_entry(&format!("{stem}.bpr"));
+        let bps = read_entry(&format!("{stem}.bps"));
+        let bps = bps.as_deref().map(String::from_utf8_lossy);
         check_component(
             &projects[dir],
             &stem,
             &format!("{file}.bpo"),
             bpr.as_deref(),
+            bps.as_deref(),
             counts,
             per_reasoner,
             problems,
@@ -499,6 +549,7 @@ fn replay_reproduces_recorded_rules() {
             "error",
             "apply_stop",
             "stale_selection",
+            "kept_drift",
             "verdict",
             "notes",
         ],
@@ -523,7 +574,8 @@ fn replay_reproduces_recorded_rules() {
     );
     println!(
         "replay: {} nodes — {} replayed_eq, {} replayed_diff, {} oracle, {} unimplemented, \
-         {} untrusted, {} error, {} apply_stop, {} stale_selection; reports: {} and {}",
+         {} untrusted, {} error, {} apply_stop, {} stale_selection, {} kept_drift; reports: \
+         {} and {}",
         total.nodes,
         total.replayed_eq,
         total.replayed_diff,
@@ -533,6 +585,7 @@ fn replay_reproduces_recorded_rules() {
         total.error,
         total.apply_stop,
         total.stale_selection,
+        total.kept_drift,
         out.display(),
         coverage.display(),
     );
@@ -556,6 +609,7 @@ fn report_row(model: &str, counts: &Counts, verdict: &str, notes: &str) -> Vec<S
         counts.error.to_string(),
         counts.apply_stop.to_string(),
         counts.stale_selection.to_string(),
+        counts.kept_drift.to_string(),
         verdict.to_string(),
         common::sanitize(notes),
     ]

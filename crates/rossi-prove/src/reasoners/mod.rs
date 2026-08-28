@@ -7,7 +7,9 @@
 //! only trusted descriptors resolve, so a version-conflicting or
 //! unknown reasoner never replays.
 
+pub(crate) mod driver;
 pub mod inference;
+pub mod rewrites;
 pub mod structural;
 
 use rossi::formula::tag::AssocPredOp;
@@ -52,6 +54,7 @@ pub fn implementation(desc: &ReasonerDesc) -> Option<&'static dyn Reasoner> {
         "allD" => &inference::AllD,
         "allmpD" => &inference::AllmpD,
         "allmtD" => &inference::AllmtD,
+        "typeRewrites" => &rewrites::TypeRewrites,
         _ => return None,
     };
     Some(imp)
