@@ -12,6 +12,7 @@ categories = ["development-tools", "parser-implementations"]
 
 [dependencies]
 rossi.workspace = true
+rossi-prove.workspace = true
 thiserror.workspace = true
 quick-xml.workspace = true
 walkdir.workspace = true
@@ -19,7 +20,6 @@ zip.workspace = true
 
 [dev-dependencies]
 proptest.workspace = true
-rossi-prove.workspace = true
 serde_json.workspace = true
 
 [features]
