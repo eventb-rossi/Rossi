@@ -25,8 +25,10 @@ use common::{
 };
 use rossi_prove::bpr::{self, Keep, ProofBody, ProofEntry};
 use rossi_prove::bps::{PsStatus, read_bps};
+use rossi_prove::confidence::Confidence;
 use rossi_prove::po_loader::{PoFile, PoProject};
 use rossi_prove::status::compute_status;
+use rossi_prove::tree::ProofTreeNode;
 
 #[derive(Default)]
 struct Counts {
@@ -42,6 +44,7 @@ struct Counts {
     load_error: usize,
     missing_proof: usize,
     broken_mismatch: usize,
+    reuse_ok: usize,
     diverge: usize,
 }
 
@@ -59,6 +62,7 @@ impl Counts {
         self.load_error += other.load_error;
         self.missing_proof += other.missing_proof;
         self.broken_mismatch += other.broken_mismatch;
+        self.reuse_ok += other.reuse_ok;
         self.diverge += other.diverge;
     }
 }
@@ -96,7 +100,7 @@ fn check_component(
         None => BTreeMap::new(),
     };
     let proofs: BTreeMap<String, ProofEntry> = match bpr {
-        Some(bytes) => match bpr::read_bpr(bytes, |_| Keep::Deps) {
+        Some(bytes) => match bpr::read_bpr(bytes, |_| Keep::Full) {
             Ok(entries) => entries
                 .into_iter()
                 .map(|entry| (entry.name.clone(), entry))
@@ -170,6 +174,24 @@ fn check_component(
                                 counts.unattempted += 1;
                             } else {
                                 counts.matched += 1;
+                                // The strongest check: apply every
+                                // stored rule structurally and require
+                                // the reused tree to reproduce the
+                                // recorded confidence.
+                                if let Some(skel) = &loaded.skeleton {
+                                    let mut tree = ProofTreeNode::open(seq.clone());
+                                    let complete = rossi_prove::builder::reuse(&mut tree, skel);
+                                    let conf = tree.confidence();
+                                    if complete && conf == Confidence(computed.unwrap_or(0)) {
+                                        counts.reuse_ok += 1;
+                                    } else {
+                                        counts.diverge += 1;
+                                        problems.push(format!(
+                                            "{component} {name}: tree reuse {} at {conf:?},                                              recorded {computed:?}",
+                                            if complete { "complete" } else { "incomplete" },
+                                        ));
+                                    }
+                                }
                             }
                         } else {
                             counts.diverge += 1;
@@ -277,6 +299,7 @@ fn reuse_reproduces_recorded_statuses() {
             "load_error",
             "missing_proof",
             "broken_mismatch",
+            "reuse_ok",
             "diverge",
             "verdict",
             "notes",
@@ -286,7 +309,7 @@ fn reuse_reproduces_recorded_statuses() {
     println!(
         "reuse: {} POs — {} match, {} broken_match, {} unattempted, {} stale, {} ctx, \
          {} version_conflict, {} unsupported, {} legacy, {} load_error, {} missing_proof, \
-         {} broken_mismatch, {} diverge; report: {}",
+         {} broken_mismatch, {} reuse_ok, {} diverge; report: {}",
         total.pos,
         total.matched,
         total.broken_match,
@@ -299,6 +322,7 @@ fn reuse_reproduces_recorded_statuses() {
         total.load_error,
         total.missing_proof,
         total.broken_mismatch,
+        total.reuse_ok,
         total.diverge,
         out.display(),
     );
@@ -325,6 +349,7 @@ fn report_row(model: &str, counts: &Counts, verdict: &str, notes: &str) -> Vec<S
         counts.load_error.to_string(),
         counts.missing_proof.to_string(),
         counts.broken_mismatch.to_string(),
+        counts.reuse_ok.to_string(),
         counts.diverge.to_string(),
         verdict.to_string(),
         common::sanitize(notes),

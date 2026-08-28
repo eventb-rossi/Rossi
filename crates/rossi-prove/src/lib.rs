@@ -11,6 +11,7 @@
 
 pub mod bpr;
 pub mod bps;
+pub mod builder;
 pub mod confidence;
 pub mod deps;
 pub mod hyp_action;
@@ -24,6 +25,9 @@ pub mod tree;
 
 pub use bpr::{BprError, Keep, ProofBody, ProofEntry, StoredProof, read_bpr};
 pub use bps::{PsStatus, read_bps};
+pub use builder::{
+    Reasoner, ReasonerProvider, RegistryProvider, ReplayHints, rebuild, replay, reuse,
+};
 pub use confidence::Confidence;
 pub use deps::{ProofDependencies, is_proof_reusable};
 pub use hyp_action::HypAction;
