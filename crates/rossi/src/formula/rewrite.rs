@@ -491,3 +491,39 @@ pub(super) fn rewrite_assign(a: &Assignment, rw: &mut dyn FormulaRewriter) -> As
         }
     }
 }
+
+/// Unwraps `E ⦂ T` to `E` everywhere, bottom-up.
+struct StripAscriptions;
+
+impl FormulaRewriter for StripAscriptions {
+    fn rewrite_expression(&mut self, expr: &Expression) -> Expression {
+        match expr.kind() {
+            ExpressionKind::Ascription { expr: inner, .. } => inner.clone(),
+            _ => expr.clone(),
+        }
+    }
+}
+
+impl Predicate {
+    /// This predicate with every type ascription `E ⦂ T` unwrapped to
+    /// `E`.
+    ///
+    /// Type-inference artifacts are emitted into formula strings
+    /// (`∅ ⦂ ℙ(T)`, `∀x⦂T·P`); semantic comparison and hypothesis
+    /// identity need the ascription nodes dropped. On a type-checked
+    /// formula the solved types survive: stripping removes only the
+    /// wrapper node.
+    #[must_use]
+    pub fn strip_ascriptions(&self) -> Predicate {
+        self.rewrite(&mut StripAscriptions)
+    }
+}
+
+impl Assignment {
+    /// This assignment with every type ascription `E ⦂ T` unwrapped to
+    /// `E` — see [`Predicate::strip_ascriptions`].
+    #[must_use]
+    pub fn strip_ascriptions(&self) -> Assignment {
+        self.rewrite(&mut StripAscriptions)
+    }
+}
