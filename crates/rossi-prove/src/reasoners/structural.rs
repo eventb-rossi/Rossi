@@ -2,18 +2,17 @@
 //! propositional introductions, and the bookkeeping steps.
 
 use rossi::formula::tag::{AssocPredOp, BinaryPredOp, LiteralPredOp, QuantPredOp};
-use rossi::formula::{FreshNameSolver, Predicate, PredicateKind};
-use rossi::pretty::PrettyPrinter;
+use rossi::formula::{Predicate, PredicateKind};
 
 use crate::builder::{Reasoner, ReplayHints};
 use crate::confidence::Confidence;
 use crate::hyp_action::HypAction;
 use crate::rule::{Antecedent, Rule};
-use crate::sequent::{ProverSequent, TypedIdent};
+use crate::sequent::ProverSequent;
 use crate::skeleton::StoredRule;
 use crate::variations;
 
-use super::{break_possible_conjunct, dedup_preserving_order};
+use super::{break_possible_conjunct, dedup_preserving_order, display_pred, fresh_instantiation};
 
 /// A closed rule (no antecedents) at maximum confidence.
 fn closing_rule(
@@ -30,11 +29,6 @@ fn closing_rule(
         display,
         antecedents: Vec::new(),
     }
-}
-
-/// The predicate's stored string form, used inside display strings.
-fn display_pred(pred: &Predicate) -> String {
-    PrettyPrinter::rodin_formula_string().print_formula_predicate(pred)
 }
 
 /// `TrueGoal` — discharges a `⊤` goal.
@@ -176,19 +170,8 @@ impl Reasoner for AllI {
             _ => Vec::new(),
         };
 
-        let mut solver =
-            FreshNameSolver::new(seq.type_env().iter().map(|(name, _)| name.to_string()));
-        let ff = goal.factory().clone();
-        let mut added_idents = Vec::with_capacity(decls.len());
-        let mut replacements = Vec::with_capacity(decls.len());
-        for (index, decl) in decls.iter().enumerate() {
-            let hint = suggested.get(index).copied().unwrap_or(decl.name());
-            let ty = decl.ty().ok_or("untyped bound declaration")?.clone();
-            let fresh = solver.solve_and_add(hint);
-            replacements.push(Some(ff.free_identifier(&fresh, None, Some(ty.clone()))));
-            added_idents.push(TypedIdent::new(fresh, ty));
-        }
-        let instantiated = goal.instantiate(&replacements);
+        let (added_idents, instantiated) =
+            fresh_instantiation(decls, goal, seq.type_env(), &suggested)?;
 
         let names: Vec<&str> = added_idents.iter().map(|i| i.name.as_str()).collect();
         let display = format!("∀ goal (frees {})", names.join(","));
@@ -443,6 +426,7 @@ impl Reasoner for MngHyp {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::sequent::TypedIdent;
     use crate::skeleton::StoredInput;
     use crate::test_util::{desc, env, pred};
 
@@ -710,7 +694,11 @@ mod tests {
                 .is_none()
         );
         // Registered but not implemented.
-        assert!(RegistryProvider.implementation(&desc("cut")).is_none());
+        assert!(
+            RegistryProvider
+                .implementation(&desc("typeRewrites:1"))
+                .is_none()
+        );
         // Unknown id.
         assert!(
             RegistryProvider
