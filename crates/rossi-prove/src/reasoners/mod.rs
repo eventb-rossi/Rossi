@@ -65,6 +65,8 @@ pub fn implementation(desc: &ReasonerDesc) -> Option<&'static dyn Reasoner> {
         "funImgSimplifies" => &manual::FunImgSimplifies,
         "totalDom" => &manual::TotalDom,
         "funImgGoal" => &manual::FunImageGoal,
+        "rn" => &manual::RemoveNegation,
+        "rmL1" => &manual::RemoveMembershipL1,
         "funOvr" => &manual::FunOvr,
         "onePointRule" => &inference::OnePointRule,
         "isFunGoal" => &structural::IsFunGoal,
@@ -296,19 +298,6 @@ pub(crate) fn component_binder(
             _ => 1,
         }
     }
-    fn pattern(ff: &rossi::formula::FormulaFactory, ty: &Type, next: &mut u32) -> Expression {
-        match ty {
-            Type::Prod(left, right) => {
-                let l = pattern(ff, left, next);
-                let r = pattern(ff, right, next);
-                ff.binary_expression(rossi::formula::tag::BinaryExprOp::Mapsto, l, r, None)
-            }
-            _ => {
-                *next -= 1;
-                ff.bound_identifier(*next, None, Some(ty.clone()))
-            }
-        }
-    }
     fn decls_for(
         ff: &rossi::formula::FormulaFactory,
         ty: &Type,
@@ -330,9 +319,58 @@ pub(crate) fn component_binder(
     let mut solver = FreshNameSolver::new(set.free_identifiers().iter().cloned());
     let mut decls = Vec::with_capacity(n as usize);
     decls_for(ff, element, &mut solver, &mut decls);
-    let mut next = n;
-    let member = pattern(ff, element, &mut next);
+    let member = type_pattern(ff, element, n - 1);
     Some((decls, member, set.shift_bound_identifiers(n as i32)))
+}
+
+/// The bound declarations and expression over a bare
+/// type: one declaration per scalar component (all named `x` like
+/// the stored ones — declaration names are alpha-irrelevant), and
+/// the maplet
+/// pattern over indices `n-1‥0`.
+pub(crate) fn type_binder(
+    ff: &rossi::formula::FormulaFactory,
+    ty: &rossi::formula::Type,
+) -> (Vec<BoundIdentDecl>, Expression) {
+    use rossi::formula::Type;
+    fn decls_for(ff: &rossi::formula::FormulaFactory, ty: &Type, out: &mut Vec<BoundIdentDecl>) {
+        match ty {
+            Type::Prod(left, right) => {
+                decls_for(ff, left, out);
+                decls_for(ff, right, out);
+            }
+            _ => out.push(ff.bound_ident_decl("x", None, None, Some(ty.clone()))),
+        }
+    }
+    let mut decls = Vec::new();
+    decls_for(ff, ty, &mut decls);
+    let member = type_pattern(ff, ty, decls.len() as u32 - 1);
+    (decls, member)
+}
+
+/// The maplet pattern over a type with indices descending from
+/// `start`.
+pub(crate) fn type_pattern(
+    ff: &rossi::formula::FormulaFactory,
+    ty: &rossi::formula::Type,
+    start: u32,
+) -> Expression {
+    use rossi::formula::Type;
+    fn build(ff: &rossi::formula::FormulaFactory, ty: &Type, next: &mut u32) -> Expression {
+        match ty {
+            Type::Prod(left, right) => {
+                let l = build(ff, left, next);
+                let r = build(ff, right, next);
+                ff.binary_expression(rossi::formula::tag::BinaryExprOp::Mapsto, l, r, None)
+            }
+            _ => {
+                *next -= 1;
+                ff.bound_identifier(*next, None, Some(ty.clone()))
+            }
+        }
+    }
+    let mut next = start + 1;
+    build(ff, ty, &mut next)
 }
 
 /// Insertion-ordered set semantics: first occurrence wins, order kept.
