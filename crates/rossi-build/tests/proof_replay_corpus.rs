@@ -35,7 +35,8 @@ use common::{
 use rossi_prove::bpr::{self, Keep, ProofBody, ProofEntry};
 use rossi_prove::po_loader::{PoFile, PoProject};
 use rossi_prove::{
-    Antecedent, ReasonerProvider, Registration, RegistryProvider, ReplayHints, Rule, Skeleton,
+    Antecedent, HypAction, ReasonerProvider, Registration, RegistryProvider, ReplayHints, Rule,
+    Skeleton,
 };
 
 #[derive(Default)]
@@ -48,6 +49,7 @@ struct Counts {
     untrusted: usize,
     error: usize,
     apply_stop: usize,
+    stale_selection: usize,
 }
 
 impl Counts {
@@ -60,6 +62,7 @@ impl Counts {
         self.untrusted += other.untrusted;
         self.error += other.error;
         self.apply_stop += other.apply_stop;
+        self.stale_selection += other.stale_selection;
     }
 }
 
@@ -78,6 +81,49 @@ fn hyp_set_eq(a: &[rossi::formula::Predicate], b: &[rossi::formula::Predicate]) 
     a.iter().all(|p| b.contains(p)) && b.iter().all(|p| a.contains(p))
 }
 
+/// Hypothesis-action equality: the action sequence stays ordered, but
+/// each action's predicate lists compare as sets — the proof
+/// serializer emits them in hash order too.
+fn actions_eq(a: &[HypAction], b: &[HypAction]) -> bool {
+    a.len() == b.len() && a.iter().zip(b).all(|(x, y)| action_eq(x, y))
+}
+
+fn action_eq(a: &HypAction, b: &HypAction) -> bool {
+    match (a, b) {
+        (HypAction::Select(x), HypAction::Select(y))
+        | (HypAction::Deselect(x), HypAction::Deselect(y))
+        | (HypAction::Hide(x), HypAction::Hide(y))
+        | (HypAction::Show(x), HypAction::Show(y)) => hyp_set_eq(x, y),
+        (
+            HypAction::ForwardInf {
+                hyps: h1,
+                added_idents: i1,
+                inferred: f1,
+            },
+            HypAction::ForwardInf {
+                hyps: h2,
+                added_idents: i2,
+                inferred: f2,
+            },
+        ) => hyp_set_eq(h1, h2) && i1 == i2 && hyp_set_eq(f1, f2),
+        (
+            HypAction::Rewrite {
+                hyps: h1,
+                added_idents: i1,
+                inferred: f1,
+                disappearing: d1,
+            },
+            HypAction::Rewrite {
+                hyps: h2,
+                added_idents: i2,
+                inferred: f2,
+                disappearing: d2,
+            },
+        ) => hyp_set_eq(h1, h2) && i1 == i2 && hyp_set_eq(f1, f2) && hyp_set_eq(d1, d2),
+        _ => false,
+    }
+}
+
 fn antecedents_eq(a: &Antecedent, b: &Antecedent) -> bool {
     // Added hypotheses (and the unselected subset) compare as sets:
     // The proof serializer emits them in hash order.
@@ -85,7 +131,7 @@ fn antecedents_eq(a: &Antecedent, b: &Antecedent) -> bool {
         && hyp_set_eq(&a.added_hyps, &b.added_hyps)
         && hyp_set_eq(&a.unselected_added, &b.unselected_added)
         && a.added_idents == b.added_idents
-        && a.hyp_actions == b.hyp_actions
+        && actions_eq(&a.hyp_actions, &b.hyp_actions)
 }
 
 /// The deep rule comparison: everything but the display string.
@@ -132,7 +178,7 @@ fn diff_summary(produced: &Rule, stored: &Rule) -> String {
                 "added_hyps"
             } else if x.added_idents != y.added_idents {
                 "added_idents"
-            } else if x.hyp_actions != y.hyp_actions {
+            } else if !actions_eq(&x.hyp_actions, &y.hyp_actions) {
                 "hyp_actions"
             } else {
                 "unselected_added"
@@ -154,8 +200,8 @@ fn walk_proof(
     problems: &mut Vec<String>,
     context: &str,
 ) {
-    let mut stack: Vec<(rossi_prove::ProverSequent, &Skeleton)> = vec![(root, skel)];
-    while let Some((seq, node)) = stack.pop() {
+    let mut stack: Vec<(rossi_prove::ProverSequent, &Skeleton, bool)> = vec![(root, skel, false)];
+    while let Some((seq, node, drifted)) = stack.pop() {
         let Some(stored) = &node.rule else {
             continue;
         };
@@ -172,6 +218,10 @@ fn walk_proof(
             match RegistryProvider.implementation(desc) {
                 None => counts.unimplemented += 1,
                 Some(imp) => match imp.replay(&seq, stored, &ReplayHints::default()) {
+                    Err(err) if drifted => {
+                        counts.stale_selection += 1;
+                        let _ = err;
+                    }
                     Err(err) => {
                         counts.error += 1;
                         problems.push(format!("{context}: {} failed: {err}", desc.id()));
@@ -180,6 +230,12 @@ fn walk_proof(
                         if rules_eq(&produced, &stored.rule) {
                             counts.replayed_eq += 1;
                             reasoner_row.replayed_eq += 1;
+                        } else if drifted {
+                            // The recorded rule speaks about a selection
+                            // state this obligation no longer produces;
+                            // the comparison is meaningless below the
+                            // drift point.
+                            counts.stale_selection += 1;
                         } else {
                             counts.replayed_diff += 1;
                             reasoner_row.replayed_diff += 1;
@@ -194,10 +250,32 @@ fn walk_proof(
             }
         }
 
+        // Selection drift: a stored hypothesis action referencing a
+        // hypothesis this sequent does not have proves the proof was
+        // recorded against a differently shaped obligation. Such
+        // actions apply on the intersection and the dependency
+        // check ignores selection entirely, so the proof stays
+        // reusable — but every selection-sensitive rule below compares
+        // against a different sequent than the recorded one.
+        let drift_here = stored.rule.antecedents.iter().any(|antecedent| {
+            antecedent.hyp_actions.iter().any(|action| {
+                matches!(
+                    action,
+                    HypAction::Select(_)
+                        | HypAction::Deselect(_)
+                        | HypAction::Hide(_)
+                        | HypAction::Show(_)
+                ) && action
+                    .hyps()
+                    .iter()
+                    .any(|hyp| !seq.contains_hypothesis(hyp))
+            })
+        });
+
         match stored.rule.apply(&seq) {
             Some(children) if children.len() == node.children.len() => {
                 for (child_seq, child_skel) in children.into_iter().zip(&node.children) {
-                    stack.push((child_seq, child_skel));
+                    stack.push((child_seq, child_skel, drifted || drift_here));
                 }
             }
             // The stored rule no longer applies here (a broken proof):
@@ -420,6 +498,7 @@ fn replay_reproduces_recorded_rules() {
             "untrusted",
             "error",
             "apply_stop",
+            "stale_selection",
             "verdict",
             "notes",
         ],
@@ -444,7 +523,7 @@ fn replay_reproduces_recorded_rules() {
     );
     println!(
         "replay: {} nodes — {} replayed_eq, {} replayed_diff, {} oracle, {} unimplemented, \
-         {} untrusted, {} error, {} apply_stop; reports: {} and {}",
+         {} untrusted, {} error, {} apply_stop, {} stale_selection; reports: {} and {}",
         total.nodes,
         total.replayed_eq,
         total.replayed_diff,
@@ -453,6 +532,7 @@ fn replay_reproduces_recorded_rules() {
         total.untrusted,
         total.error,
         total.apply_stop,
+        total.stale_selection,
         out.display(),
         coverage.display(),
     );
@@ -475,6 +555,7 @@ fn report_row(model: &str, counts: &Counts, verdict: &str, notes: &str) -> Vec<S
         counts.untrusted.to_string(),
         counts.error.to_string(),
         counts.apply_stop.to_string(),
+        counts.stale_selection.to_string(),
         verdict.to_string(),
         common::sanitize(notes),
     ]
