@@ -11,6 +11,7 @@ mod commands {
     pub mod fmt;
     pub mod import;
     pub mod proofs;
+    pub mod prove;
     pub mod sarif;
     pub mod style;
     pub mod validate;
@@ -45,6 +46,10 @@ enum Command {
     /// Static-check a Rodin project and emit `.bcc` / `.bcm` output.
     #[command(about = "Static-check a Rodin project and emit .bcc/.bcm output")]
     Build(commands::build::BuildArgs),
+    /// Check the stored proofs of an Event-B project against its
+    /// obligations.
+    #[command(about = "Check stored proofs against their proof obligations")]
+    Prove(commands::prove::ProveArgs),
     /// Generate a shell completion script (bash, zsh, fish, …).
     #[command(about = "Generate a shell completion script")]
     Completions(commands::completions::CompletionsArgs),
@@ -57,6 +62,7 @@ fn main() -> ExitCode {
         Command::Export(args) => commands::export::run(args),
         Command::Fmt(args) => commands::fmt::run(args),
         Command::Build(args) => commands::build::run_build_command(args),
+        Command::Prove(args) => commands::prove::run(args),
         // Derive the completion script from the same clap command tree the CLI
         // parses with, so it can never drift from the real interface.
         Command::Completions(args) => commands::completions::run(args, &mut Cli::command()),
