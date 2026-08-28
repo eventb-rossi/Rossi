@@ -262,12 +262,23 @@ static BY_ID: LazyLock<HashMap<&'static str, &'static Entry>> =
     LazyLock::new(|| TABLE.iter().map(|entry| (entry.id, entry)).collect());
 
 /// A stored reasoner reference resolved against the registry.
+///
+/// Equality is reasoner identity — `(id, stored version)` — the pair
+/// rules are compared by.
 #[derive(Debug, Clone)]
 pub struct ReasonerDesc {
     id: String,
     stored_version: Option<u32>,
     entry: Option<&'static Entry>,
 }
+
+impl PartialEq for ReasonerDesc {
+    fn eq(&self, other: &ReasonerDesc) -> bool {
+        self.id == other.id && self.stored_version == other.stored_version
+    }
+}
+
+impl Eq for ReasonerDesc {}
 
 /// Resolves a stored reasoner id, decoding an `:version` suffix.
 /// Unknown ids resolve to an untrusted dummy descriptor rather than

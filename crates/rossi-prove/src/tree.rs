@@ -93,7 +93,7 @@ impl ProofTreeNode {
 mod tests {
     use super::*;
     use crate::rule::Antecedent;
-    use crate::test_util::{env, pred};
+    use crate::test_util::{desc, env, pred};
 
     fn seq(goal: &str) -> ProverSequent {
         let env = env(&[("x", "ℤ")]);
@@ -103,6 +103,7 @@ mod tests {
 
     fn branching(confidence: Confidence, branches: usize) -> Rule {
         Rule {
+            reasoner: desc("hyp"),
             goal: None,
             needed_hyps: Vec::new(),
             confidence,

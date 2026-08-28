@@ -10,6 +10,7 @@
 //! combines.
 
 pub mod confidence;
+pub mod deps;
 pub mod hyp_action;
 pub mod registry;
 pub mod rule;
@@ -17,6 +18,7 @@ pub mod sequent;
 pub mod tree;
 
 pub use confidence::Confidence;
+pub use deps::{ProofDependencies, is_proof_reusable};
 pub use hyp_action::HypAction;
 pub use registry::{ReasonerDesc, Registration};
 pub use rule::{Antecedent, Rule};
@@ -44,5 +46,10 @@ pub(crate) mod test_util {
             .type_check(env)
             .typed
             .expect("test predicate types")
+    }
+
+    /// A core seqprover reasoner descriptor by short id.
+    pub fn desc(short: &str) -> crate::registry::ReasonerDesc {
+        crate::registry::resolve(&format!("org.eventb.core.seqprover.{short}"))
     }
 }
