@@ -26,6 +26,15 @@ use crate::builder::Reasoner;
 use crate::registry::ReasonerDesc;
 use crate::sequent::TypedIdent;
 
+/// The `autoRewritesL5` rewriter fixpoint on a single predicate —
+/// exactly the rewriting the fixpoint pass iterates, without the
+/// surrounding rule construction. `None` when the first pass changes
+/// nothing. Public for harnesses diffing the rewriter against a live
+/// reference one.
+pub fn auto_rewrite_fixpoint(pred: &Predicate) -> Option<Predicate> {
+    driver::recursive_rewrite(pred, &mut auto_rewriter::AutoRewriter::latest())
+}
+
 /// The implementation for `desc`, when the descriptor is trusted and a
 /// Rust implementation exists at its version.
 pub fn implementation(desc: &ReasonerDesc) -> Option<&'static dyn Reasoner> {
