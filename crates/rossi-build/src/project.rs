@@ -346,9 +346,11 @@ enum ProjectDiscoveryEntry {
 
 /// Whether project discovery may read an archive entry's contents.
 ///
-/// Rodin source and checked components may occur anywhere in a project group.
-/// A `.project` descriptor is read only at the archive root or directly below
-/// a group's top-level directory.
+/// Classification looks at the filename alone; [`discover_projects`]
+/// additionally reads only direct children of a group's top-level
+/// directory — nothing nested deeper is built. A `.project`
+/// descriptor is read only at the archive root or directly below a
+/// group's top-level directory.
 #[must_use]
 pub fn is_project_discovery_entry(name: &str) -> bool {
     classify_project_discovery_entry(name).is_some()
@@ -392,6 +394,13 @@ pub fn discover_projects(zip_bytes: &[u8], fallback_name: &str) -> Result<Vec<Di
             continue;
         };
         let prefix = archive_prefix(&name).to_string();
+        // Components are direct children of their project;
+        // a source in a nested directory is a stray file the builder
+        // never touches (corpus witness: a machine two levels deep
+        // that the builder leaves unbuilt).
+        if name[prefix.len()..].contains('/') {
+            continue;
+        }
 
         match entry_kind {
             ProjectDiscoveryEntry::Source => {
@@ -791,6 +800,22 @@ mod tests {
         // (c) neither checked nor `.project` -> the top-level dir segment.
         let c = make_zip(&[("dir/M.bum", mch_xml().as_bytes())]);
         assert_eq!(discover_projects(&c, "fb").unwrap()[0].name, "dir");
+    }
+
+    #[test]
+    fn discover_skips_nested_sources() {
+        // Components are direct children of their project dir; a
+        // source two levels deep is a stray file the builder never
+        // touches, so discovery must not turn it into a component.
+        let zip = make_zip(&[
+            ("A/.project", project_xml("A").as_bytes()),
+            ("A/M.bum", mch_xml().as_bytes()),
+            ("A/sub/N.bum", mch_xml().as_bytes()),
+        ]);
+        let projects = discover_projects(&zip, "fb").unwrap();
+        assert_eq!(projects.len(), 1);
+        assert_eq!(projects[0].components.len(), 1);
+        assert_eq!(projects[0].components[0].filename, "M.bum");
     }
 
     #[test]

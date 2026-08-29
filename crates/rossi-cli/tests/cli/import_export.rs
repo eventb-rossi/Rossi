@@ -187,10 +187,7 @@ fn import_contains_path_traversal_project_name() {
     let machine_xml = std::fs::read("../rossi/examples/counter.bum").unwrap();
     write_zip(
         &zip_path,
-        &[
-            ("../escape/M.bum", &machine_xml),
-            ("safe/N.bum", &machine_xml),
-        ],
+        &[("../M.bum", &machine_xml), ("safe/N.bum", &machine_xml)],
     );
 
     let output = rossi_command()
@@ -213,7 +210,7 @@ fn import_contains_path_traversal_project_name() {
     assert!(out_dir.join("safe").join("N.eventb").exists());
     assert!(out_dir.join("project").join("M.eventb").exists());
     assert!(
-        !tmp.join("escape").exists(),
+        !tmp.join("M.eventb").exists(),
         "import escaped the output directory"
     );
 
