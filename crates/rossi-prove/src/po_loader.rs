@@ -149,6 +149,13 @@ impl PoProject {
             .ok_or_else(|| format!("no obligation named `{name}`"))?;
         let total_sets: usize = self.files.values().map(|f| f.sets.len()).sum();
 
+        // Handles resolve to basenames while the loose multi-project
+        // layout keys files with a directory prefix; chains never
+        // cross projects, so a basename resolves inside the loaded
+        // file's directory, falling back to the bare basename for
+        // unprefixed projects.
+        let dir = &path[..path.rfind('/').map_or(0, |slash| slash + 1)];
+
         // The hypothesis-set chain, root first, ending at the local set.
         let mut chain: Vec<(SetKey, &PoSet)> = vec![(SetKey::Local, &entry.local)];
         let mut parent = entry.local.parent.as_ref();
@@ -158,7 +165,8 @@ impl PoProject {
             }
             let set = self
                 .files
-                .get(&reference.file)
+                .get(&format!("{dir}{}", reference.file))
+                .or_else(|| self.files.get(&reference.file))
                 .and_then(|file| file.sets.get(&reference.set))
                 .ok_or_else(|| {
                     format!(
@@ -615,6 +623,10 @@ mod tests {
     /// universally quantified one in the sequent's local set (its WD
     /// is skipped by the no-forall filter).
     fn fixture(sequents: &str) -> PoProject {
+        fixture_at("M.bpo", sequents)
+    }
+
+    fn fixture_at(path: &str, sequents: &str) -> PoProject {
         let xml = formatdoc!(
             r#"<?xml version="1.0" encoding="UTF-8" standalone="no"?>
             <org.eventb.core.poFile org.eventb.core.poStamp="0">
@@ -631,10 +643,7 @@ mod tests {
             </org.eventb.core.poFile>"#
         );
         let mut project = PoProject::default();
-        project.insert(
-            "M.bpo",
-            PoFile::read(xml.as_bytes()).expect("readable file"),
-        );
+        project.insert(path, PoFile::read(xml.as_bytes()).expect("readable file"));
         project
     }
 
@@ -692,6 +701,34 @@ mod tests {
         assert!(seq.is_selected(&pred(&ints, "y≥1")));
         assert!(!seq.is_selected(&pred(&ints, "y≠0")));
         assert!(!seq.is_selected(&pred(&ints, "∀z·z÷y=1")));
+    }
+
+    /// A file registered under a directory-prefixed path (the loose
+    /// multi-project layout) still resolves its basename parent-set
+    /// handles: the handle is looked up inside the referring file's
+    /// directory.
+    #[test]
+    fn parent_sets_resolve_inside_the_referring_files_directory() {
+        let sequents = formatdoc!(
+            r#"<org.eventb.core.poSequent name="evt/inv1/INV" org.eventb.core.poStamp="0">
+            <org.eventb.core.poPredicateSet name="SEQHYP" org.eventb.core.parentSet="{SET_PREFIX}ALLHYP"/>
+            <org.eventb.core.poPredicate name="SEQG" org.eventb.core.predicate="x=1"/>
+            </org.eventb.core.poSequent>"#
+        );
+        let file = fixture_at("proj/M.bpo", &sequents);
+        let seq = file.load("proj/M.bpo", "evt/inv1/INV").expect("loads");
+        let ints = ints();
+        assert_eq!(seq.goal(), &pred(&ints, "x=1"));
+        let hyps: Vec<_> = seq.hyp_iter().cloned().collect();
+        assert_eq!(
+            hyps,
+            vec![
+                pred(&ints, "y≥1"),
+                pred(&ints, "x÷y=1"),
+                pred(&ints, "y≠0"),
+                pred(&ints, "x=1"),
+            ]
+        );
     }
 
     #[test]
