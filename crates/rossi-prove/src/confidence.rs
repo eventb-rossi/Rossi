@@ -25,11 +25,55 @@ impl Confidence {
     pub const REVIEWED_MAX: Confidence = Confidence(500);
     /// Upper bound of the scale: fully discharged.
     pub const DISCHARGED_MAX: Confidence = Confidence(1000);
+
+    /// Classifies a raw confidence into its reporting bucket,
+    /// eventb-checker's thresholds over the scale above: `None` or
+    /// anything below [`Confidence::PENDING`] reads as unattempted.
+    pub fn classify(confidence: Option<i64>) -> Bucket {
+        match confidence {
+            None => Bucket::Unattempted,
+            Some(c) if c > i64::from(Self::REVIEWED_MAX.0) => Bucket::Discharged,
+            Some(c) if c > i64::from(Self::UNCERTAIN_MAX.0) => Bucket::Reviewed,
+            Some(c) if c >= i64::from(Self::PENDING.0) => Bucket::Pending,
+            Some(_) => Bucket::Unattempted,
+        }
+    }
+}
+
+/// The reporting bucket a confidence value falls into — the result of
+/// [`Confidence::classify`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Bucket {
+    Discharged,
+    Reviewed,
+    Pending,
+    Unattempted,
 }
 
 #[cfg(test)]
 mod tests {
-    use super::Confidence;
+    use super::{Bucket, Confidence};
+
+    #[test]
+    fn classify_matches_eventb_checker_thresholds() {
+        assert_eq!(Confidence::classify(Some(1000)), Bucket::Discharged);
+        assert_eq!(Confidence::classify(Some(501)), Bucket::Discharged);
+        assert_eq!(Confidence::classify(Some(500)), Bucket::Reviewed);
+        assert_eq!(Confidence::classify(Some(101)), Bucket::Reviewed);
+        assert_eq!(Confidence::classify(Some(100)), Bucket::Pending);
+        assert_eq!(Confidence::classify(Some(0)), Bucket::Pending);
+        // The whole negative range is unattempted, including the zone
+        // strictly between UNATTEMPTED and PENDING — a raw `-99` bound
+        // once misread it as pending.
+        assert_eq!(Confidence::classify(Some(-1)), Bucket::Unattempted);
+        assert_eq!(Confidence::classify(Some(-98)), Bucket::Unattempted);
+        assert_eq!(
+            Confidence::classify(Some(i64::from(Confidence::UNATTEMPTED.0))),
+            Bucket::Unattempted
+        );
+        assert_eq!(Confidence::classify(Some(-100)), Bucket::Unattempted);
+        assert_eq!(Confidence::classify(None), Bucket::Unattempted);
+    }
 
     #[test]
     fn ordering_follows_the_scale() {

@@ -70,7 +70,7 @@ impl Counts {
 /// Normalizes a recorded or computed confidence: anything at or below
 /// unattempted reads as "no confidence".
 fn norm(confidence: Option<i32>) -> Option<i32> {
-    confidence.filter(|c| *c > -99)
+    confidence.filter(|c| *c > Confidence::UNATTEMPTED.0)
 }
 
 fn check_component(
