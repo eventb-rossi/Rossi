@@ -28,7 +28,9 @@ use quick_xml::events::Event;
 
 use crate::ScFile;
 use crate::po_view::PoView;
-use crate::proofs::Confidence;
+use rossi_prove::confidence::Bucket;
+
+use crate::proofs::cap_if_broken;
 use crate::xml_out::{DOC_HEADER, attr, tag as xtag};
 
 /// Reconcile every generated `.bpo` / `.bps` pair in `files` against
@@ -195,8 +197,10 @@ pub fn reset_stale_statuses(files: &mut [ScFile]) -> Vec<(String, usize)> {
             .iter()
             .filter(|row| {
                 stamp_valid(row)
-                    && Confidence::classify(row.confidence).cap_if_broken(row.broken)
-                        == Confidence::Discharged
+                    && cap_if_broken(
+                        rossi_prove::Confidence::classify(row.confidence),
+                        row.broken,
+                    ) == Bucket::Discharged
             })
             .count();
 
@@ -266,8 +270,9 @@ pub fn sequent_stamps(bpo: &str) -> HashMap<String, String> {
 
 /// A fresh unattempted status row in the generator's exact shape
 /// (`pog::model::into_sc_files`), escaped by the same
-/// [`crate::xml_out::escape_attr`] the generator uses.
-pub(crate) fn fresh_status_row(name: &str, stamp: &str) -> String {
+/// [`crate::xml_out::escape_attr`] the generator uses. Public so the
+/// golden gates fabricate expectations from the same source of truth.
+pub fn fresh_status_row(name: &str, stamp: &str) -> String {
     let mut row = format!("<{} {}=\"", xtag::PS_STATUS, attr::NAME);
     crate::xml_out::escape_attr(name, &mut row);
     row.push_str(&format!(
@@ -479,7 +484,8 @@ pub(crate) fn parse_status_rows(bps: &str) -> Vec<StatusRow> {
 
 /// Render a `.bps` document from finished rows, matching the
 /// generator's byte format.
-pub(crate) fn assemble_status(rows: &[String]) -> String {
+/// See [`fresh_status_row`] for why this is public.
+pub fn assemble_status(rows: &[String]) -> String {
     let mut out = String::from(DOC_HEADER);
     if rows.is_empty() {
         out.push_str(&format!("<{}/>\n", xtag::PS_FILE));
