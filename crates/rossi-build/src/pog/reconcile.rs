@@ -227,7 +227,7 @@ pub fn reset_stale_statuses(files: &mut [ScFile]) -> Vec<(String, usize)> {
 /// recorded discharge). A sequent without a stamp reads as `"0"`, the
 /// generator's default. Malformed XML stops the scan; the missing entries
 /// then read as open and their rows reset — conservative, never unsafe.
-pub(crate) fn sequent_stamps(bpo: &str) -> HashMap<String, String> {
+pub fn sequent_stamps(bpo: &str) -> HashMap<String, String> {
     let mut reader = Reader::from_str(bpo);
     let mut buf = Vec::new();
     let mut stamps = HashMap::new();
