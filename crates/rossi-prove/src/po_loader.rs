@@ -21,6 +21,7 @@ use rossi::formula::{Predicate, PredicateKind, Type, TypeEnvironmentBuilder};
 use rossi::parse_predicate_str;
 
 use crate::sequent::ProverSequent;
+use crate::xml::{attrs, get};
 
 const PO_FILE: &str = "org.eventb.core.poFile";
 const PO_PREDICATE_SET: &str = "org.eventb.core.poPredicateSet";
@@ -43,6 +44,10 @@ const SEL_HINT_SND: &str = "org.eventb.core.poSelHintSnd";
 pub struct PoFile {
     sets: BTreeMap<String, PoSet>,
     sequents: Vec<PoSequentEntry>,
+    /// First position of each obligation name — `sequent` is called
+    /// once per obligation over a component, so lookups must not
+    /// re-scan the list.
+    by_name: BTreeMap<String, usize>,
 }
 
 #[derive(Debug, Default)]
@@ -115,7 +120,14 @@ impl PoFile {
 
     /// The named obligation, if present.
     pub fn sequent(&self, name: &str) -> Option<&PoSequentEntry> {
-        self.sequents.iter().find(|entry| entry.name == name)
+        self.by_name.get(name).map(|&index| &self.sequents[index])
+    }
+
+    fn push_sequent(&mut self, entry: PoSequentEntry) {
+        self.by_name
+            .entry(entry.name.clone())
+            .or_insert(self.sequents.len());
+        self.sequents.push(entry);
     }
 }
 
@@ -436,7 +448,7 @@ fn read_bpo(reader: impl BufRead) -> Result<PoFile, PoError> {
                 Ctx::Set(name, set) => {
                     file.sets.insert(name, set);
                 }
-                Ctx::Sequent(entry) => file.sequents.push(entry),
+                Ctx::Sequent(entry) => file.push_sequent(entry),
                 Ctx::LocalSet | Ctx::Other => {}
             }
         } else {
@@ -455,7 +467,7 @@ fn read_bpo(reader: impl BufRead) -> Result<PoFile, PoError> {
                         Ctx::Set(name, set) => {
                             file.sets.insert(name, set);
                         }
-                        Ctx::Sequent(entry) => file.sequents.push(entry),
+                        Ctx::Sequent(entry) => file.push_sequent(entry),
                         Ctx::LocalSet | Ctx::Other => {}
                     }
                 }
@@ -480,29 +492,6 @@ fn record_set_child(name: &[u8], attrs: &[(String, String)], set: &mut PoSet) {
             get(attrs, PREDICATE).unwrap_or_default().to_string(),
         ));
     }
-}
-
-/// The attributes of one element, unescaped, in document order.
-fn attrs(e: &BytesStart<'_>) -> Vec<(String, String)> {
-    e.attributes()
-        .flatten()
-        .map(|attr| {
-            let key = String::from_utf8_lossy(attr.key.as_ref()).into_owned();
-            let raw = String::from_utf8_lossy(&attr.value);
-            let value = match quick_xml::escape::unescape(&raw) {
-                Ok(cow) => cow.into_owned(),
-                Err(_) => raw.into_owned(),
-            };
-            (key, value)
-        })
-        .collect()
-}
-
-fn get<'a>(attrs: &'a [(String, String)], key: &str) -> Option<&'a str> {
-    attrs
-        .iter()
-        .find(|(k, _)| k == key)
-        .map(|(_, v)| v.as_str())
 }
 
 /// Splits on unescaped occurrences of `sep`, keeping escapes intact

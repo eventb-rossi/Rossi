@@ -20,20 +20,10 @@ use crate::skeleton::StoredRule;
 
 use super::driver::{NodeRewriter, rewrite_pred};
 use super::one_point;
-use super::rewrites::{SimplifierOptions, auto_rewrite_rule, simplify_predicate_node};
+use super::rewrites::{auto_rewrite_rule, simplify_predicate_node};
 
 /// The L5 rewriter as a rewriting hook.
-pub(crate) struct AutoRewriter {
-    options: SimplifierOptions,
-}
-
-impl AutoRewriter {
-    pub(crate) fn latest() -> AutoRewriter {
-        AutoRewriter {
-            options: SimplifierOptions::all(),
-        }
-    }
-}
+pub(crate) struct AutoRewriter;
 
 /// `AutoRewrites` at level L5 (`autoRewritesL5`) — automatic
 /// simplification rewrites.
@@ -49,8 +39,7 @@ impl Reasoner for AutoRewritesL5 {
         auto_rewrite_rule(
             seq,
             stored,
-            &mut AutoRewriter::latest(),
-            true,
+            &mut AutoRewriter,
             true,
             "simplification rewrites",
         )
@@ -63,11 +52,9 @@ impl NodeRewriter for AutoRewriter {
             // Handled by the propositional simplifier alone.
             PredicateKind::Associative { .. }
             | PredicateKind::Binary { .. }
-            | PredicateKind::Quantified { .. } => simplify_predicate_node(pred, &self.options),
+            | PredicateKind::Quantified { .. } => simplify_predicate_node(pred),
             // Overridden with a super call first.
-            PredicateKind::Not(_) => {
-                simplify_predicate_node(pred, &self.options).or_else(|| rewrite_not(pred))
-            }
+            PredicateKind::Not(_) => simplify_predicate_node(pred).or_else(|| rewrite_not(pred)),
             PredicateKind::Simple(child) => rewrite_finite(pred, child),
             PredicateKind::Multiple(children) => rewrite_partition(pred, children),
             PredicateKind::Relational { .. } => rewrite_relational(pred),
@@ -347,22 +334,6 @@ pub(crate) fn rewrite_not(pred: &Predicate) -> Option<Predicate> {
     }
 }
 
-/// A literal value, seeing through the unary minus this crate's
-/// parse-normal form keeps (the reference parser folds them).
-fn as_literal(expr: &Expression) -> Option<num_bigint::BigInt> {
-    match expr.kind() {
-        ExpressionKind::IntegerLiteral(value) => Some(value.clone()),
-        ExpressionKind::Unary {
-            op: UnaryExprOp::UnMinus,
-            child,
-        } => match child.kind() {
-            ExpressionKind::IntegerLiteral(value) => Some(-value.clone()),
-            _ => None,
-        },
-        _ => None,
-    }
-}
-
 /// `makeIsNotEmpty`: `¬ E = ∅`.
 fn is_not_empty(expr: &Expression) -> Predicate {
     let inner = is_empty(expr);
@@ -590,7 +561,7 @@ pub(crate) fn rewrite_relational(pred: &Predicate) -> Option<Predicate> {
         }
     }
     // SIMP_LIT_* — literal comparisons by computation.
-    if let (Some(i), Some(j)) = (as_literal(left), as_literal(right)) {
+    if let (Some(i), Some(j)) = (super::as_literal(left), super::as_literal(right)) {
         let truth = |verdict: bool| if verdict { btrue(pred) } else { bfalse(pred) };
         match op {
             RelationalOp::Equal => return truth(i == j),
@@ -614,7 +585,7 @@ pub(crate) fn rewrite_relational(pred: &Predicate) -> Option<Predicate> {
     match op {
         RelationalOp::Equal => {
             // SIMP_SPECIAL_EQUAL_CARD / SIMP_LIT_EQUAL_CARD_1
-            if let (Some(set), Some(value)) = (card_arg(left), as_literal(right)) {
+            if let (Some(set), Some(value)) = (card_arg(left), super::as_literal(right)) {
                 if value == zero {
                     return Some(is_empty(&set));
                 }
@@ -622,7 +593,7 @@ pub(crate) fn rewrite_relational(pred: &Predicate) -> Option<Predicate> {
                     return exists_singleton(&set);
                 }
             }
-            if let (Some(value), Some(set)) = (as_literal(left), card_arg(right)) {
+            if let (Some(value), Some(set)) = (super::as_literal(left), card_arg(right)) {
                 if value == zero {
                     return Some(is_empty(&set));
                 }
@@ -654,7 +625,7 @@ pub(crate) fn rewrite_relational(pred: &Predicate) -> Option<Predicate> {
         }
         // SIMP_LIT_GT_CARD_0: card(S) > 0 == ¬ S = ∅
         RelationalOp::Gt => {
-            if let (Some(set), Some(value)) = (card_arg(left), as_literal(right)) {
+            if let (Some(set), Some(value)) = (card_arg(left), super::as_literal(right)) {
                 if value == zero {
                     return Some(is_not_empty(&set));
                 }
@@ -662,7 +633,7 @@ pub(crate) fn rewrite_relational(pred: &Predicate) -> Option<Predicate> {
         }
         // SIMP_LIT_LT_CARD_0: 0 < card(S) == ¬ S = ∅
         RelationalOp::Lt => {
-            if let (Some(value), Some(set)) = (as_literal(left), card_arg(right)) {
+            if let (Some(value), Some(set)) = (super::as_literal(left), card_arg(right)) {
                 if value == zero {
                     return Some(is_not_empty(&set));
                 }
@@ -846,7 +817,7 @@ fn batch2_relational(
             }
             // SIMP_LIT_IN_NATURAL(1) and the negated-literal forms
             // (level 2) — a negative literal is −(lit) in this crate.
-            if let Some(value) = as_literal(left) {
+            if let Some(value) = super::as_literal(left) {
                 if is_atomic(right, AtomicOp::Natural) {
                     return if value >= zero {
                         btrue(pred)
@@ -1686,7 +1657,7 @@ fn simplify_min_max(members: &[Expression], keep_min: bool) -> Option<Expression
     let mut extremum: Option<(Expression, num_bigint::BigInt, usize)> = None;
     let mut n_literals = 0usize;
     for member in members {
-        let Some(value) = as_literal(member) else {
+        let Some(value) = super::as_literal(member) else {
             kept.push(member.clone());
             continue;
         };
@@ -2235,7 +2206,7 @@ fn lambda_computer(expr: &Expression) -> Option<Expression> {
     let equals =
         ff.relational_predicate(RelationalOp::Equal, y_mapsto_a, inner_value.clone(), None);
     let mut pred = ff.quantified_predicate(QuantPredOp::Exists, decls.clone(), equals, None);
-    let mut rewriter = AutoRewriter::latest();
+    let mut rewriter = AutoRewriter;
     loop {
         let mut changed = false;
         if let Some(next) = rewrite_pred(&pred, &mut rewriter) {
@@ -3084,7 +3055,7 @@ fn rewrite_binary_expr(expr: &Expression) -> Option<Expression> {
         }
         BinaryExprOp::UpTo => {
             // SIMP_LIT_UPTO: i‥j == ∅ when j < i (literals)
-            if let (Some(i), Some(j)) = (as_literal(left), as_literal(right)) {
+            if let (Some(i), Some(j)) = (super::as_literal(left), super::as_literal(right)) {
                 if i > j {
                     return Some(typed_empty(expr));
                 }
@@ -3521,8 +3492,7 @@ mod tests {
 
     /// The fixpoint of the L5 rewriter over one predicate.
     fn rewritten(env: &SealedTypeEnvironment, input: &str) -> Predicate {
-        recursive_rewrite(&pred(env, input), &mut AutoRewriter::latest())
-            .expect("a rewrite should fire")
+        recursive_rewrite(&pred(env, input), &mut AutoRewriter).expect("a rewrite should fire")
     }
 
     fn assert_rewrites(env: &SealedTypeEnvironment, input: &str, expected: &str) {

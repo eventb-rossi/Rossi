@@ -299,12 +299,12 @@ impl Reasoner for PartitionRewrites {
                 return None;
             };
             let expanded = expand_partition(sub)?;
-            pred.rewrite_sub_formula(
+            super::rewrite_at(
+                pred,
                 position,
                 rossi::formula::position::FormulaRef::Pred(&expanded),
             )
             .ok()
-            .map(|p| super::as_parsed_pred(&p).unwrap_or(p))
         };
         let display = |hyp: Option<&Predicate>, position: &Position| match hyp {
             None => "Partition rewrites in goal".to_string(),
@@ -417,12 +417,12 @@ impl Reasoner for FunImgSimplifies {
             let replacement =
                 pred.factory()
                     .binary_expression(BinaryExprOp::FunImage, fun, arg.clone(), None);
-            pred.rewrite_sub_formula(
+            super::rewrite_at(
+                pred,
                 position,
                 rossi::formula::position::FormulaRef::Expr(&replacement),
             )
             .ok()
-            .map(|p| super::as_parsed_pred(&p).unwrap_or(p))
         };
         let needed = |seq: &ProverSequent,
                       pred: &Predicate,
@@ -529,13 +529,12 @@ impl Reasoner for TotalDom {
             }
         }
         let needed_hyp = needed_hyp.ok_or_else(failure)?;
-        let rewritten = to_rewrite
-            .rewrite_sub_formula(
-                &position,
-                rossi::formula::position::FormulaRef::Expr(&substitute),
-            )
-            .map_err(|_| failure())?;
-        let rewritten = super::as_parsed_pred(&rewritten).unwrap_or(rewritten);
+        let rewritten = super::rewrite_at(
+            to_rewrite,
+            &position,
+            rossi::formula::position::FormulaRef::Expr(&substitute),
+        )
+        .map_err(|_| failure())?;
 
         let display_sub = |hyp: &Predicate| {
             format!(
@@ -610,12 +609,9 @@ impl Reasoner for RemoveNegation {
         use rossi::formula::tag::{AtomicOp, BinaryPredOp, QuantPredOp};
         let unfold = |sub: &Predicate| -> Option<Predicate> {
             // super.rewrite: the auto rewriter's negation rules (all
-            // level 0 — the simplifier's ¬ arm ignores its options).
-            if let Some(new) = super::rewrites::simplify_predicate_node(
-                sub,
-                &super::rewrites::SimplifierOptions::all(),
-            )
-            .or_else(|| super::auto_rewriter::rewrite_not(sub))
+            // level 0).
+            if let Some(new) = super::rewrites::simplify_predicate_node(sub)
+                .or_else(|| super::auto_rewriter::rewrite_not(sub))
             {
                 return Some(new);
             }
@@ -679,12 +675,12 @@ impl Reasoner for RemoveNegation {
                 return None;
             }
             let new_sub = unfold(sub)?;
-            pred.rewrite_sub_formula(
+            super::rewrite_at(
+                pred,
                 position,
                 rossi::formula::position::FormulaRef::Pred(&new_sub),
             )
             .ok()
-            .map(|p| super::as_parsed_pred(&p).unwrap_or(p))
         };
         let display = |hyp: Option<&Predicate>, position: &Position| match hyp {
             None => "remove ¬ in goal".to_string(),
@@ -1230,12 +1226,12 @@ impl Reasoner for RemoveMembershipL1 {
             // the corpus gate).
             let new_sub =
                 super::auto_rewriter::rewrite_relational(sub).or_else(|| unfold_membership(sub))?;
-            pred.rewrite_sub_formula(
+            super::rewrite_at(
+                pred,
                 position,
                 rossi::formula::position::FormulaRef::Pred(&new_sub),
             )
             .ok()
-            .map(|p| super::as_parsed_pred(&p).unwrap_or(p))
         };
         let display = |hyp: Option<&Predicate>, position: &Position| match hyp {
             None => "remove ∈ in goal".to_string(),
@@ -1315,12 +1311,12 @@ impl Reasoner for RemoveInclusion {
                     None,
                 ))
             })?;
-            pred.rewrite_sub_formula(
+            super::rewrite_at(
+                pred,
                 position,
                 rossi::formula::position::FormulaRef::Pred(&new_sub),
             )
             .ok()
-            .map(|p| super::as_parsed_pred(&p).unwrap_or(p))
         };
         let display = |hyp: Option<&Predicate>, position: &Position| match hyp {
             None => "remove ⊆ in goal".to_string(),
@@ -1379,12 +1375,12 @@ impl Reasoner for EqvRewrites {
                 ],
                 None,
             );
-            pred.rewrite_sub_formula(
+            super::rewrite_at(
+                pred,
                 position,
                 rossi::formula::position::FormulaRef::Pred(&new_sub),
             )
             .ok()
-            .map(|p| super::as_parsed_pred(&p).unwrap_or(p))
         };
         let display = |hyp: Option<&Predicate>, position: &Position| match hyp {
             None => "rewrites equivalence in goal".to_string(),
@@ -1450,12 +1446,12 @@ impl Reasoner for RelImgUnionRight {
                 })
                 .collect();
             let new_sub = ff.associative_expression(AssocExprOp::BUnion, images, None);
-            pred.rewrite_sub_formula(
+            super::rewrite_at(
+                pred,
                 position,
                 rossi::formula::position::FormulaRef::Expr(&new_sub),
             )
             .ok()
-            .map(|p| super::as_parsed_pred(&p).unwrap_or(p))
         };
         let display = |hyp: Option<&Predicate>, position: &Position| match hyp {
             None => "relational image with ∪ right in goal".to_string(),
@@ -1530,12 +1526,12 @@ impl Reasoner for DisjToImpl {
             }
             let new_sub = super::driver::rewrite_pred(sub, &mut DisjToImplHook)
                 .unwrap_or_else(|| sub.clone());
-            pred.rewrite_sub_formula(
+            super::rewrite_at(
+                pred,
                 position,
                 rossi::formula::position::FormulaRef::Pred(&new_sub),
             )
             .ok()
-            .map(|p| super::as_parsed_pred(&p).unwrap_or(p))
         };
         let display = |hyp: Option<&Predicate>, position: &Position| match hyp {
             None => "∨ to ⇒ in goal".to_string(),
@@ -1611,13 +1607,12 @@ impl Reasoner for FunSingletonImg {
         let ff = target.factory();
         let image = ff.binary_expression(BinaryExprOp::FunImage, r, e, None);
         let setext = ff.set_extension(vec![image], None);
-        let inferred = target
-            .rewrite_sub_formula(
-                &position,
-                rossi::formula::position::FormulaRef::Expr(&setext),
-            )
-            .map_err(|_| failure())?;
-        let inferred = super::as_parsed_pred(&inferred).unwrap_or(inferred);
+        let inferred = super::rewrite_at(
+            &target,
+            &position,
+            rossi::formula::position::FormulaRef::Expr(&setext),
+        )
+        .map_err(|_| failure())?;
         let wd_antecedent = Antecedent {
             goal: Some(inferred.wd_lemma()),
             added_hyps: Vec::new(),
@@ -1707,12 +1702,15 @@ impl Reasoner for LocalEq {
                 let Some(replacement) = equality_side(equality, target, &position) else {
                     return false;
                 };
-                target
-                    .rewrite_sub_formula(
-                        &position,
-                        rossi::formula::position::FormulaRef::Expr(&replacement),
-                    )
-                    .is_ok_and(|rewritten| &rewritten == result)
+                // The stored result is round-trip normal, so the
+                // candidate must be normalized the same way the rule
+                // construction below normalizes its product.
+                super::rewrite_at(
+                    target,
+                    &position,
+                    rossi::formula::position::FormulaRef::Expr(&replacement),
+                )
+                .is_ok_and(|rewritten| &rewritten == result)
             };
             // Recovery runs on the stored predicates, as Rodin's `makeInput`
             // does; only the rewritten hypothesis is then renamed. That is
@@ -1753,13 +1751,12 @@ impl Reasoner for LocalEq {
                 }
             )
         })?;
-        let result = target
-            .rewrite_sub_formula(
-                &position,
-                rossi::formula::position::FormulaRef::Expr(&replacement),
-            )
-            .map_err(|_| "Input position out of range".to_string())?;
-        let result = super::as_parsed_pred(&result).unwrap_or(result);
+        let result = super::rewrite_at(
+            &target,
+            &position,
+            rossi::formula::position::FormulaRef::Expr(&replacement),
+        )
+        .map_err(|_| "Input position out of range".to_string())?;
         match target_hyp {
             None => Ok(Rule {
                 reasoner: stored.rule.reasoner.clone(),
@@ -1997,13 +1994,12 @@ impl Reasoner for FunOvr {
             _ => assoc_as_parsed(AssocExprOp::Ovr, prefix.to_vec()),
         };
         let rewrite_to = |replacement: &Expression| {
-            target
-                .rewrite_sub_formula(
-                    &position,
-                    rossi::formula::position::FormulaRef::Expr(replacement),
-                )
-                .ok()
-                .map(|p| super::as_parsed_pred(&p).unwrap_or(p))
+            super::rewrite_at(
+                &target,
+                &position,
+                rossi::formula::position::FormulaRef::Expr(replacement),
+            )
+            .ok()
         };
         let rest_image = |dom_sub_by: Expression| {
             let restricted =

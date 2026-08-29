@@ -32,7 +32,7 @@ use crate::sequent::TypedIdent;
 /// nothing. Public for harnesses diffing the rewriter against a live
 /// reference one.
 pub fn auto_rewrite_fixpoint(pred: &Predicate) -> Option<Predicate> {
-    driver::recursive_rewrite(pred, &mut auto_rewriter::AutoRewriter::latest())
+    driver::recursive_rewrite(pred, &mut auto_rewriter::AutoRewriter)
 }
 
 /// The implementation for `desc`, when the descriptor is trusted and a
@@ -96,6 +96,45 @@ pub fn implementation(desc: &ReasonerDesc) -> Option<&'static dyn Reasoner> {
     Some(imp)
 }
 
+/// A literal value, seeing through the unary minus this crate's
+/// parse-normal form keeps (the reference parser folds them).
+pub(crate) fn as_literal(expr: &Expression) -> Option<num_bigint::BigInt> {
+    use rossi::formula::ExpressionKind;
+    use rossi::formula::tag::UnaryExprOp;
+    match expr.kind() {
+        ExpressionKind::IntegerLiteral(value) => Some(value.clone()),
+        ExpressionKind::Unary {
+            op: UnaryExprOp::UnMinus,
+            child,
+        } => match child.kind() {
+            ExpressionKind::IntegerLiteral(value) => Some(-value.clone()),
+            _ => None,
+        },
+        _ => None,
+    }
+}
+
+/// `rewrite_sub_formula` followed by the round-trip normalization
+/// every produced rule needs: a replacement product can violate the
+/// print→parse shape stored rules exist in (see [`as_parsed_pred`]),
+/// so a rewrite-at-position must never escape unnormalized.
+pub(crate) fn rewrite_at(
+    pred: &Predicate,
+    position: &rossi::formula::position::Position,
+    replacement: rossi::formula::position::FormulaRef<'_>,
+) -> Result<Predicate, rossi::formula::position::PositionError> {
+    let rewritten = pred.rewrite_sub_formula(position, replacement)?;
+    Ok(as_parsed_pred(&rewritten).unwrap_or(rewritten))
+}
+
+/// Negate, removing an existing negation. One shared helper.
+pub(crate) fn make_neg(pred: &Predicate) -> Predicate {
+    if let PredicateKind::Not(inner) = pred.kind() {
+        return inner.clone();
+    }
+    pred.factory().not_predicate(pred.clone(), None)
+}
+
 /// The conjuncts of a conjunction (or the
 /// predicate itself), duplicates removed keeping first positions.
 pub(crate) fn break_possible_conjunct(pred: &Predicate) -> Vec<Predicate> {
@@ -115,7 +154,10 @@ pub(crate) fn break_possible_conjunct(pred: &Predicate) -> Vec<Predicate> {
 /// same-operator children keep their parentheses. Formulas parsed
 /// from stored output are already in this shape; substitution and
 /// position-replacement products may not be, and stored rules only
-/// exist post-round-trip. `None` means already normal.
+/// exist post-round-trip. `None` means already normal. Contrast
+/// `inference::parse_normal`, which models the constructor-level
+/// flattening (every same-operator child merges) for instantiation
+/// products.
 pub(crate) fn as_parsed_pred(pred: &Predicate) -> Option<Predicate> {
     use rossi::formula::PredicateKind;
     let ff = pred.factory().clone();

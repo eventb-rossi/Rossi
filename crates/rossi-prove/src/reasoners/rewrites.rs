@@ -29,7 +29,6 @@ pub(crate) fn auto_rewrite_rule(
     seq: &ProverSequent,
     stored: &StoredRule,
     rewriter: &mut (impl NodeRewriter + ?Sized),
-    hide_original: bool,
     remove_true_in_post: bool,
     display: &str,
 ) -> Result<Rule, String> {
@@ -47,62 +46,39 @@ pub(crate) fn auto_rewrite_rule(
         }
         inferred_hyps.retain(|pred| !is_true(pred));
 
-        if inferred_hyps.is_empty() && hide_original {
+        if inferred_hyps.is_empty() {
             hyp_actions.push(HypAction::Hide(vec![hyp.clone()]));
-            continue;
-        }
-        if !inferred_hyps.is_empty() {
-            if hide_original {
-                hyp_actions.push(HypAction::Rewrite {
-                    hyps: vec![hyp.clone()],
-                    added_idents: Vec::new(),
-                    inferred: inferred_hyps,
-                    disappearing: vec![hyp.clone()],
-                });
-            } else {
-                hyp_actions.push(HypAction::ForwardInf {
-                    hyps: vec![hyp.clone()],
-                    added_idents: Vec::new(),
-                    inferred: inferred_hyps,
-                });
-            }
+        } else {
+            hyp_actions.push(HypAction::Rewrite {
+                hyps: vec![hyp.clone()],
+                added_idents: Vec::new(),
+                inferred: inferred_hyps,
+                disappearing: vec![hyp.clone()],
+            });
         }
     }
 
     let new_goal = recursive_rewrite(seq.goal(), rewriter);
-    if let Some(new_goal) = new_goal {
-        return Ok(Rule {
-            reasoner: stored.rule.reasoner.clone(),
-            goal: Some(seq.goal().clone()),
-            needed_hyps: Vec::new(),
-            confidence: Confidence::DISCHARGED_MAX,
-            display: display.into(),
-            antecedents: vec![Antecedent {
-                goal: Some(new_goal),
-                added_hyps: Vec::new(),
-                unselected_added: Vec::new(),
-                added_idents: Vec::new(),
-                hyp_actions,
-            }],
-        });
+    if new_goal.is_none() && hyp_actions.is_empty() {
+        return Err("No rewrites applicable".into());
     }
-    if !hyp_actions.is_empty() {
-        return Ok(Rule {
-            reasoner: stored.rule.reasoner.clone(),
-            goal: None,
-            needed_hyps: Vec::new(),
-            confidence: Confidence::DISCHARGED_MAX,
-            display: display.into(),
-            antecedents: vec![Antecedent {
-                goal: None,
-                added_hyps: Vec::new(),
-                unselected_added: Vec::new(),
-                added_idents: Vec::new(),
-                hyp_actions,
-            }],
-        });
-    }
-    Err("No rewrites applicable".into())
+    // A changed goal makes the rule goal-dependent; hypothesis-only
+    // rewrites apply at any goal.
+    let rule_goal = new_goal.as_ref().map(|_| seq.goal().clone());
+    Ok(Rule {
+        reasoner: stored.rule.reasoner.clone(),
+        goal: rule_goal,
+        needed_hyps: Vec::new(),
+        confidence: Confidence::DISCHARGED_MAX,
+        display: display.into(),
+        antecedents: vec![Antecedent {
+            goal: new_goal,
+            added_hyps: Vec::new(),
+            unselected_added: Vec::new(),
+            added_idents: Vec::new(),
+            hyp_actions,
+        }],
+    })
 }
 
 /// `TypeRewriterImpl` — the four type-simplification rules, applied
@@ -163,14 +139,246 @@ impl Reasoner for TypeRewrites {
         stored: &StoredRule,
         _hints: &ReplayHints,
     ) -> Result<Rule, String> {
-        auto_rewrite_rule(
-            seq,
-            stored,
-            &mut TypeRewriterImpl,
-            true,
-            false,
-            "type rewrites",
-        )
+        auto_rewrite_rule(seq, stored, &mut TypeRewriterImpl, false, "type rewrites")
+    }
+}
+
+fn literal(pred: &Predicate, op: LiteralPredOp) -> Predicate {
+    pred.factory().literal_predicate(op, None)
+}
+
+fn is_literal(pred: &Predicate, op: LiteralPredOp) -> bool {
+    matches!(pred.kind(), PredicateKind::Literal(found) if *found == op)
+}
+
+/// Associative simplification for ∧ and ∨: neutral
+/// children drop, a determinant child decides everything, and with
+/// `do_multi` duplicates collapse and a contradiction decides.
+fn simplify_assoc_pred(
+    pred: &Predicate,
+    children: &[Predicate],
+    neutral: LiteralPredOp,
+    determinant: LiteralPredOp,
+    do_multi: bool,
+) -> Option<Predicate> {
+    let mut out: Vec<Predicate> = Vec::new();
+    let mut changed = false;
+    for child in children {
+        if is_literal(child, neutral) {
+            changed = true;
+        } else if is_literal(child, determinant)
+            || (do_multi && out.contains(&super::make_neg(child)))
+        {
+            return Some(literal(pred, determinant));
+        } else if do_multi && out.contains(child) {
+            // A duplicate: the insertion-ordered set drops it silently; the
+            // shorter child list marks the change.
+        } else {
+            out.push(child.clone());
+        }
+    }
+    match out.len() {
+        0 => Some(literal(pred, neutral)),
+        1 => Some(out.into_iter().next().unwrap()),
+        len if changed || len != children.len() => {
+            let op = match pred.kind() {
+                PredicateKind::Associative { op, .. } => *op,
+                _ => unreachable!("associative input"),
+            };
+            Some(pred.factory().associative_predicate(op, out, None))
+        }
+        _ => None,
+    }
+}
+
+/// One propositional simplification step on a node whose children
+/// are already rewritten, patterns in the reference order,
+/// with every option flag fixed at its L5 value (`optionsForLevel`
+/// enables them all, and only latest-level reasoners replay here).
+/// `None` when no rule fires.
+pub(crate) fn simplify_predicate_node(pred: &Predicate) -> Option<Predicate> {
+    use LiteralPredOp::{BFalse, BTrue};
+    match pred.kind() {
+        PredicateKind::Associative { op, children } => match op {
+            AssocPredOp::LAnd => simplify_assoc_pred(pred, children, BTrue, BFalse, true),
+            AssocPredOp::LOr => simplify_assoc_pred(pred, children, BFalse, BTrue, true),
+        },
+        PredicateKind::Binary { op, left, right } => match op {
+            rossi::formula::tag::BinaryPredOp::LImp => {
+                // SIMP_SPECIAL_IMP_BTRUE_L: ⊤ ⇒ P == P
+                if is_literal(left, BTrue) {
+                    return Some(right.clone());
+                }
+                // SIMP_SPECIAL_IMP_BFALSE_L: ⊥ ⇒ P == ⊤
+                if is_literal(left, BFalse) {
+                    return Some(literal(pred, BTrue));
+                }
+                // SIMP_SPECIAL_IMP_BTRUE_R: P ⇒ ⊤ == ⊤
+                if is_literal(right, BTrue) {
+                    return Some(right.clone());
+                }
+                // SIMP_SPECIAL_IMP_BFALSE_R: P ⇒ ⊥ == ¬P
+                if is_literal(right, BFalse) {
+                    return Some(super::make_neg(left));
+                }
+                // SIMP_MULTI_IMP: P ⇒ P == ⊤
+                if left == right {
+                    return Some(literal(pred, BTrue));
+                }
+                // SIMP_MULTI_IMP_AND: P ∧ … ∧ Q ∧ … ⇒ Q == ⊤
+                // SIMP_MULTI_IMP_AND_NOT_R/L: … ⇒ ¬Q with Q among the
+                // conjuncts (or the mirrored form) == ¬(left)
+                if let PredicateKind::Associative {
+                    op: AssocPredOp::LAnd,
+                    children,
+                } = left.kind()
+                {
+                    if children.contains(right) {
+                        return Some(literal(pred, BTrue));
+                    }
+                    if children.contains(&super::make_neg(right)) {
+                        return Some(super::make_neg(left));
+                    }
+                }
+                // SIMP_MULTI_IMP_NOT_L: ¬P ⇒ P == P
+                if let PredicateKind::Not(inner) = left.kind()
+                    && inner == right
+                {
+                    return Some(right.clone());
+                }
+                // SIMP_MULTI_IMP_NOT_R: P ⇒ ¬P == ¬P
+                if let PredicateKind::Not(inner) = right.kind()
+                    && inner == left
+                {
+                    return Some(right.clone());
+                }
+                None
+            }
+            rossi::formula::tag::BinaryPredOp::LEqv => {
+                // SIMP_SPECIAL_EQV_BTRUE: P ⇔ ⊤ == P, ⊤ ⇔ P == P
+                if is_literal(right, BTrue) {
+                    return Some(left.clone());
+                }
+                if is_literal(left, BTrue) {
+                    return Some(right.clone());
+                }
+                // SIMP_MULTI_EQV: P ⇔ P == ⊤
+                if left == right {
+                    return Some(literal(pred, BTrue));
+                }
+                // SIMP_SPECIAL_EQV_BFALSE: P ⇔ ⊥ == ¬P, ⊥ ⇔ P == ¬P
+                if is_literal(right, BFalse) {
+                    return Some(super::make_neg(left));
+                }
+                if is_literal(left, BFalse) {
+                    return Some(super::make_neg(right));
+                }
+                // SIMP_MULTI_EQV_NOT: P ⇔ ¬P == ⊥ (either side)
+                if let PredicateKind::Not(inner) = right.kind()
+                    && inner == left
+                {
+                    return Some(literal(pred, BFalse));
+                }
+                if let PredicateKind::Not(inner) = left.kind()
+                    && inner == right
+                {
+                    return Some(literal(pred, BFalse));
+                }
+                None
+            }
+        },
+        PredicateKind::Not(inner) => {
+            // SIMP_SPECIAL_NOT_BTRUE / BFALSE, SIMP_NOT_NOT
+            if is_literal(inner, BTrue) {
+                return Some(literal(pred, BFalse));
+            }
+            if is_literal(inner, BFalse) {
+                return Some(literal(pred, BTrue));
+            }
+            if let PredicateKind::Not(nested) = inner.kind() {
+                return Some(nested.clone());
+            }
+            None
+        }
+        PredicateKind::Quantified {
+            op,
+            decls,
+            pred: body,
+        } => {
+            use rossi::formula::tag::QuantPredOp;
+            let ff = pred.factory();
+            match (op, body.kind()) {
+                // SIMP_FORALL_AND: ∀x·P ∧ … == (∀x·P) ∧ …
+                (
+                    QuantPredOp::Forall,
+                    PredicateKind::Associative {
+                        op: AssocPredOp::LAnd,
+                        children,
+                    },
+                ) => Some(
+                    ff.associative_predicate(
+                        AssocPredOp::LAnd,
+                        children
+                            .iter()
+                            .map(|c| {
+                                ff.quantified_predicate(
+                                    QuantPredOp::Forall,
+                                    decls.clone(),
+                                    c.clone(),
+                                    None,
+                                )
+                            })
+                            .collect(),
+                        None,
+                    ),
+                ),
+                // SIMP_EXISTS_OR: ∃x·P ∨ … == (∃x·P) ∨ …
+                (
+                    QuantPredOp::Exists,
+                    PredicateKind::Associative {
+                        op: AssocPredOp::LOr,
+                        children,
+                    },
+                ) => Some(
+                    ff.associative_predicate(
+                        AssocPredOp::LOr,
+                        children
+                            .iter()
+                            .map(|c| {
+                                ff.quantified_predicate(
+                                    QuantPredOp::Exists,
+                                    decls.clone(),
+                                    c.clone(),
+                                    None,
+                                )
+                            })
+                            .collect(),
+                        None,
+                    ),
+                ),
+                // SIMP_EXISTS_IMP: ∃x·P ⇒ Q == (∀x·P) ⇒ (∃x·Q)
+                (
+                    QuantPredOp::Exists,
+                    PredicateKind::Binary {
+                        op: rossi::formula::tag::BinaryPredOp::LImp,
+                        left,
+                        right,
+                    },
+                ) => Some(ff.binary_predicate(
+                    rossi::formula::tag::BinaryPredOp::LImp,
+                    ff.quantified_predicate(QuantPredOp::Forall, decls.clone(), left.clone(), None),
+                    ff.quantified_predicate(
+                        QuantPredOp::Exists,
+                        decls.clone(),
+                        right.clone(),
+                        None,
+                    ),
+                    None,
+                )),
+                _ => None,
+            }
+        }
+        _ => None,
     }
 }
 
@@ -262,295 +470,5 @@ mod tests {
             };
             assert_eq!(inferred, &vec![pred(&env, "⊥")]);
         }
-    }
-}
-
-/// The option flags of the propositional simplifier.
-#[derive(Debug, Clone, Copy, Default)]
-pub(crate) struct SimplifierOptions {
-    /// `MULTI_IMP`: `P ⇒ P == ⊤`.
-    pub multi_imp: bool,
-    /// `MULTI_EQV_NOT`: `P ⇔ ¬P == ⊥`.
-    pub multi_eqv_not: bool,
-    /// `MULTI_IMP_NOT`: `¬P ⇒ P == P` and `P ⇒ ¬P == ¬P`.
-    pub multi_imp_not: bool,
-    /// `MULTI_IMP_AND`: `… ∧ Q ∧ … ⇒ Q == ⊤` and the negated forms.
-    pub multi_imp_and: bool,
-    /// `QUANT_DISTR`: distribute `∀`/`∃` over `∧`/`∨`.
-    pub quant_distr: bool,
-    /// `EXISTS_IMP`: `∃x·P ⇒ Q == (∀x·P) ⇒ (∃x·Q)`.
-    pub exists_imp: bool,
-    /// `MULTI_AND_OR`: duplicates and contradictions inside `∧`/`∨`.
-    pub multi_and_or: bool,
-}
-
-impl SimplifierOptions {
-    /// `optionsForLevel(L5)` — every option enabled.
-    pub(crate) fn all() -> SimplifierOptions {
-        SimplifierOptions {
-            multi_imp: true,
-            multi_eqv_not: true,
-            multi_imp_not: true,
-            multi_imp_and: true,
-            quant_distr: true,
-            exists_imp: true,
-            multi_and_or: true,
-        }
-    }
-}
-
-fn literal(pred: &Predicate, op: LiteralPredOp) -> Predicate {
-    pred.factory().literal_predicate(op, None)
-}
-
-fn is_literal(pred: &Predicate, op: LiteralPredOp) -> bool {
-    matches!(pred.kind(), PredicateKind::Literal(found) if *found == op)
-}
-
-/// Negate, removing an existing negation.
-fn make_neg(pred: &Predicate) -> Predicate {
-    if let PredicateKind::Not(inner) = pred.kind() {
-        return inner.clone();
-    }
-    pred.factory().not_predicate(pred.clone(), None)
-}
-
-/// Associative simplification for ∧ and ∨: neutral
-/// children drop, a determinant child decides everything, and with
-/// `do_multi` duplicates collapse and a contradiction decides.
-fn simplify_assoc_pred(
-    pred: &Predicate,
-    children: &[Predicate],
-    neutral: LiteralPredOp,
-    determinant: LiteralPredOp,
-    do_multi: bool,
-) -> Option<Predicate> {
-    let mut out: Vec<Predicate> = Vec::new();
-    let mut changed = false;
-    for child in children {
-        if is_literal(child, neutral) {
-            changed = true;
-        } else if is_literal(child, determinant) || (do_multi && out.contains(&make_neg(child))) {
-            return Some(literal(pred, determinant));
-        } else if do_multi && out.contains(child) {
-            // A duplicate: the insertion-ordered set drops it silently; the
-            // shorter child list marks the change.
-        } else {
-            out.push(child.clone());
-        }
-    }
-    match out.len() {
-        0 => Some(literal(pred, neutral)),
-        1 => Some(out.into_iter().next().unwrap()),
-        len if changed || len != children.len() => {
-            let op = match pred.kind() {
-                PredicateKind::Associative { op, .. } => *op,
-                _ => unreachable!("associative input"),
-            };
-            Some(pred.factory().associative_predicate(op, out, None))
-        }
-        _ => None,
-    }
-}
-
-/// One propositional simplification step on a node whose children
-/// are already rewritten, patterns in the reference order.
-/// `None` when no rule fires.
-pub(crate) fn simplify_predicate_node(
-    pred: &Predicate,
-    options: &SimplifierOptions,
-) -> Option<Predicate> {
-    use LiteralPredOp::{BFalse, BTrue};
-    match pred.kind() {
-        PredicateKind::Associative { op, children } => match op {
-            AssocPredOp::LAnd => {
-                simplify_assoc_pred(pred, children, BTrue, BFalse, options.multi_and_or)
-            }
-            AssocPredOp::LOr => {
-                simplify_assoc_pred(pred, children, BFalse, BTrue, options.multi_and_or)
-            }
-        },
-        PredicateKind::Binary { op, left, right } => match op {
-            rossi::formula::tag::BinaryPredOp::LImp => {
-                // SIMP_SPECIAL_IMP_BTRUE_L: ⊤ ⇒ P == P
-                if is_literal(left, BTrue) {
-                    return Some(right.clone());
-                }
-                // SIMP_SPECIAL_IMP_BFALSE_L: ⊥ ⇒ P == ⊤
-                if is_literal(left, BFalse) {
-                    return Some(literal(pred, BTrue));
-                }
-                // SIMP_SPECIAL_IMP_BTRUE_R: P ⇒ ⊤ == ⊤
-                if is_literal(right, BTrue) {
-                    return Some(right.clone());
-                }
-                // SIMP_SPECIAL_IMP_BFALSE_R: P ⇒ ⊥ == ¬P
-                if is_literal(right, BFalse) {
-                    return Some(make_neg(left));
-                }
-                // SIMP_MULTI_IMP: P ⇒ P == ⊤
-                if options.multi_imp && left == right {
-                    return Some(literal(pred, BTrue));
-                }
-                // SIMP_MULTI_IMP_AND: P ∧ … ∧ Q ∧ … ⇒ Q == ⊤
-                // SIMP_MULTI_IMP_AND_NOT_R/L: … ⇒ ¬Q with Q among the
-                // conjuncts (or the mirrored form) == ¬(left)
-                if let PredicateKind::Associative {
-                    op: AssocPredOp::LAnd,
-                    children,
-                } = left.kind()
-                {
-                    if options.multi_imp_and {
-                        if children.contains(right) {
-                            return Some(literal(pred, BTrue));
-                        }
-                        if children.contains(&make_neg(right)) {
-                            return Some(make_neg(left));
-                        }
-                    }
-                }
-                // SIMP_MULTI_IMP_NOT_L: ¬P ⇒ P == P
-                if options.multi_imp_not {
-                    if let PredicateKind::Not(inner) = left.kind() {
-                        if inner == right {
-                            return Some(right.clone());
-                        }
-                    }
-                    // SIMP_MULTI_IMP_NOT_R: P ⇒ ¬P == ¬P
-                    if let PredicateKind::Not(inner) = right.kind() {
-                        if inner == left {
-                            return Some(right.clone());
-                        }
-                    }
-                }
-                None
-            }
-            rossi::formula::tag::BinaryPredOp::LEqv => {
-                // SIMP_SPECIAL_EQV_BTRUE: P ⇔ ⊤ == P, ⊤ ⇔ P == P
-                if is_literal(right, BTrue) {
-                    return Some(left.clone());
-                }
-                if is_literal(left, BTrue) {
-                    return Some(right.clone());
-                }
-                // SIMP_MULTI_EQV: P ⇔ P == ⊤
-                if left == right {
-                    return Some(literal(pred, BTrue));
-                }
-                // SIMP_SPECIAL_EQV_BFALSE: P ⇔ ⊥ == ¬P, ⊥ ⇔ P == ¬P
-                if is_literal(right, BFalse) {
-                    return Some(make_neg(left));
-                }
-                if is_literal(left, BFalse) {
-                    return Some(make_neg(right));
-                }
-                // SIMP_MULTI_EQV_NOT: P ⇔ ¬P == ⊥ (either side)
-                if options.multi_eqv_not {
-                    if let PredicateKind::Not(inner) = right.kind() {
-                        if inner == left {
-                            return Some(literal(pred, BFalse));
-                        }
-                    }
-                    if let PredicateKind::Not(inner) = left.kind() {
-                        if inner == right {
-                            return Some(literal(pred, BFalse));
-                        }
-                    }
-                }
-                None
-            }
-        },
-        PredicateKind::Not(inner) => {
-            // SIMP_SPECIAL_NOT_BTRUE / BFALSE, SIMP_NOT_NOT
-            if is_literal(inner, BTrue) {
-                return Some(literal(pred, BFalse));
-            }
-            if is_literal(inner, BFalse) {
-                return Some(literal(pred, BTrue));
-            }
-            if let PredicateKind::Not(nested) = inner.kind() {
-                return Some(nested.clone());
-            }
-            None
-        }
-        PredicateKind::Quantified {
-            op,
-            decls,
-            pred: body,
-        } => {
-            use rossi::formula::tag::QuantPredOp;
-            let ff = pred.factory();
-            match (op, body.kind()) {
-                // SIMP_FORALL_AND: ∀x·P ∧ … == (∀x·P) ∧ …
-                (
-                    QuantPredOp::Forall,
-                    PredicateKind::Associative {
-                        op: AssocPredOp::LAnd,
-                        children,
-                    },
-                ) if options.quant_distr => Some(
-                    ff.associative_predicate(
-                        AssocPredOp::LAnd,
-                        children
-                            .iter()
-                            .map(|c| {
-                                ff.quantified_predicate(
-                                    QuantPredOp::Forall,
-                                    decls.clone(),
-                                    c.clone(),
-                                    None,
-                                )
-                            })
-                            .collect(),
-                        None,
-                    ),
-                ),
-                // SIMP_EXISTS_OR: ∃x·P ∨ … == (∃x·P) ∨ …
-                (
-                    QuantPredOp::Exists,
-                    PredicateKind::Associative {
-                        op: AssocPredOp::LOr,
-                        children,
-                    },
-                ) if options.quant_distr => Some(
-                    ff.associative_predicate(
-                        AssocPredOp::LOr,
-                        children
-                            .iter()
-                            .map(|c| {
-                                ff.quantified_predicate(
-                                    QuantPredOp::Exists,
-                                    decls.clone(),
-                                    c.clone(),
-                                    None,
-                                )
-                            })
-                            .collect(),
-                        None,
-                    ),
-                ),
-                // SIMP_EXISTS_IMP: ∃x·P ⇒ Q == (∀x·P) ⇒ (∃x·Q)
-                (
-                    QuantPredOp::Exists,
-                    PredicateKind::Binary {
-                        op: rossi::formula::tag::BinaryPredOp::LImp,
-                        left,
-                        right,
-                    },
-                ) if options.exists_imp => Some(ff.binary_predicate(
-                    rossi::formula::tag::BinaryPredOp::LImp,
-                    ff.quantified_predicate(QuantPredOp::Forall, decls.clone(), left.clone(), None),
-                    ff.quantified_predicate(
-                        QuantPredOp::Exists,
-                        decls.clone(),
-                        right.clone(),
-                        None,
-                    ),
-                    None,
-                )),
-                _ => None,
-            }
-        }
-        _ => None,
     }
 }

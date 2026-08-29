@@ -534,7 +534,6 @@ mod tests {
 
     #[test]
     fn replay_hints_rename_introduced_identifiers() {
-        let env = env(&[("x", "ℤ")]);
         let mut hints = ReplayHints::default();
         let old = Antecedent {
             goal: None,
@@ -562,6 +561,5 @@ mod tests {
         let mut none = ReplayHints::default();
         none.add_hints(&old, &retyped);
         assert!(none.is_empty());
-        let _ = env;
     }
 }
