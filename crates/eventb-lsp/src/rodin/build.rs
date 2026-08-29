@@ -131,6 +131,16 @@ pub fn build_rodin_project(
     }
     // Previous state comes from the destination — the files being replaced —
     // which is where Rodin recorded its stamps and proof statuses.
+    //
+    // Deliberately no status update pass here, unlike repack and the CLI
+    // flows: this destination only ever feeds a running editor (the
+    // save rebuild is gated on one holding the workspace, and the open
+    // command
+    // launches one), whose own builder recomputes every stale row the
+    // moment these files land. Recomputing here would duplicate that work
+    // inside the save loop — minutes on the largest models — and race
+    // its own `.bps` writes. The stale stamps left by reconciliation
+    // are exactly the signal its updater keys on.
     reconcile_build_files(&mut files, |name| {
         std::fs::read_to_string(project_dir.join(name)).ok()
     });
