@@ -1738,7 +1738,7 @@ fn parse_expression(
             }
             // Unary wrapper. Prefix op present = real unary (handled below);
             // otherwise = passthrough to function_application.
-            Rule::unary_expr => {
+            Rule::unary_expr | Rule::exponent_operand => {
                 let mut probe = pair.clone().into_inner();
                 let first = probe.next().ok_or(ParseError::EmptyExpression)?;
                 if rule_to_unary_op(first.as_rule()).is_some() {
@@ -1818,7 +1818,7 @@ fn parse_expression(
             }
             Err(ParseError::MissingPredicate)
         }
-        Rule::unary_expr => {
+        Rule::unary_expr | Rule::exponent_operand => {
             // Reached only when the iterative loop above detected a real
             // prefix unary operator at this level.
             let mut inner = pair.into_inner();
@@ -4956,6 +4956,87 @@ fn recover_actions_in_range(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Unary minus takes a whole multiplicative term (kernel_lang
+    /// §3.3.4): `−a∗b` is `−(a∗b)`, while an
+    /// additive continuation stays outside the sign. A parenthesized
+    /// operand keeps the sign tight.
+    #[test]
+    fn unary_minus_binds_at_additive_precedence() {
+        use crate::formula::ExpressionKind;
+        use crate::formula::tag::UnaryExprOp;
+        let right_side = |src: &str| {
+            let parsed = parse_predicate_str(src).expect(src);
+            let crate::formula::PredicateKind::Relational { right, .. } = parsed.kind() else {
+                panic!("expected a relational predicate for {src:?}");
+            };
+            right.clone()
+        };
+        let is_unminus_of_assoc = |e: &crate::formula::Expression| {
+            matches!(
+                e.kind(),
+                ExpressionKind::Unary { op: UnaryExprOp::UnMinus, child }
+                    if matches!(child.kind(), ExpressionKind::Associative { .. } | ExpressionKind::Binary { .. })
+            )
+        };
+        // The sign covers the multiplicative/exponent chain…
+        assert!(is_unminus_of_assoc(&right_side("x=−2∗3")));
+        assert!(is_unminus_of_assoc(&right_side("x=−2^2")));
+        // …but an additive continuation and an interval stay outside,
+        // and explicit parens keep the sign on the operand.
+        for src in ["x=−2+3", "x=−1‥3", "x=(−2)∗3"] {
+            let e = right_side(src);
+            let first = match e.kind() {
+                ExpressionKind::Associative { children, .. } => children[0].clone(),
+                ExpressionKind::Binary { left, .. } => left.clone(),
+                other => panic!("expected a compound head for {src:?}, got {other:?}"),
+            };
+            assert!(
+                matches!(
+                    first.kind(),
+                    ExpressionKind::Unary {
+                        op: UnaryExprOp::UnMinus,
+                        ..
+                    }
+                ),
+                "the sign should stay on the first operand for {src:?}"
+            );
+        }
+    }
+
+    /// The right operand of the non-associative `^` binds a minus
+    /// tightly: `2^−3` stays `2^(−3)`, and the sign must not re-open
+    /// the exponent level — `2^−3^4` is a parse error.
+    #[test]
+    fn exponent_right_operand_keeps_nonassociativity() {
+        use crate::formula::ExpressionKind;
+        use crate::formula::tag::{BinaryExprOp, UnaryExprOp};
+        assert!(parse_predicate_str("x=2^3^4").is_err());
+        assert!(parse_predicate_str("x=2^−3^4").is_err());
+        let parsed = parse_predicate_str("x=2^−3").expect("x=2^−3");
+        let crate::formula::PredicateKind::Relational { right, .. } = parsed.kind() else {
+            panic!("expected a relational predicate");
+        };
+        let ExpressionKind::Binary {
+            op: BinaryExprOp::Expn,
+            right: exponent,
+            ..
+        } = right.kind()
+        else {
+            panic!("expected an exponentiation, got {:?}", right.kind());
+        };
+        assert!(
+            matches!(
+                exponent.kind(),
+                ExpressionKind::Unary {
+                    op: UnaryExprOp::UnMinus,
+                    ..
+                }
+            ),
+            "the exponent should keep the tight sign, got {:?}",
+            exponent.kind()
+        );
+    }
 
     /// EB026: a predicate string that is really an assignment is reported as
     /// [`ParseError::AssignmentInPredicate`], carrying the offending operator,
