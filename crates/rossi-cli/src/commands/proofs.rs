@@ -205,7 +205,7 @@ fn zip_proofs_any_prefix(zip_bytes: &[u8]) -> CmdResult<Vec<(String, Vec<u8>)>> 
 /// are skipped, and an entry `want` rejects is skipped **before** its bytes
 /// are inflated — so a caller filtering by prefix never pays to decompress
 /// the other projects' proofs.
-fn visit_zip_proofs(
+pub(crate) fn visit_zip_proofs(
     zip_bytes: &[u8],
     mut want: impl FnMut(&str) -> bool,
     mut visit: impl FnMut(&str, Vec<u8>) -> CmdResult<()>,

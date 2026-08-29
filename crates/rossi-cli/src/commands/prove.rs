@@ -20,7 +20,6 @@
 //! proof is an error.
 
 use std::collections::BTreeMap;
-use std::io::Read;
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 
@@ -166,6 +165,7 @@ fn prove(input: &Path, verbose: bool, replay: bool) -> Result<Summary, Box<dyn s
         for entry in po.sequents() {
             let name = &entry.name;
             let mut note = String::new();
+            let mut replay_failed = false;
             let status = match proofs.get(name) {
                 None => "unattempted",
                 Some(proof) => match &proof.body {
@@ -189,6 +189,7 @@ fn prove(input: &Path, verbose: bool, replay: bool) -> Result<Summary, Box<dyn s
                                             " (replayed)".into()
                                         } else {
                                             summary.replay_failed += 1;
+                                            replay_failed = true;
                                             " (replay FAILED)".into()
                                         }
                                     }
@@ -217,10 +218,7 @@ fn prove(input: &Path, verbose: bool, replay: bool) -> Result<Summary, Box<dyn s
                 "unsupported" => summary.unsupported += 1,
                 _ => summary.errors += 1,
             }
-            if verbose
-                || matches!(status, "broken" | "unsupported" | "error")
-                || note.contains("FAILED")
-            {
+            if verbose || matches!(status, "broken" | "unsupported" | "error") || replay_failed {
                 println!("{stem} {name}: {status}{note}");
             }
         }
@@ -229,49 +227,39 @@ fn prove(input: &Path, verbose: bool, replay: bool) -> Result<Summary, Box<dyn s
 }
 
 /// Collects the `.bpo` and `.bpr` files of a `.zip` archive or a
-/// project directory, keyed by component stem.
+/// project directory, keyed by component stem — through the shared
+/// proof-file walkers, so the extension set and the unsafe-basename
+/// filter stay in one place.
 fn collect(input: &Path) -> Result<(FileMap, FileMap), Box<dyn std::error::Error>> {
     let mut bpos = FileMap::new();
     let mut bprs = FileMap::new();
-    if input.is_dir() {
-        for entry in std::fs::read_dir(input)? {
-            let path = entry?.path();
-            let (Some(stem), Some(ext)) = (
-                path.file_stem().and_then(|s| s.to_str()),
-                path.extension().and_then(|s| s.to_str()),
-            ) else {
-                continue;
-            };
+    let mut insert = |name: &str, bytes: Vec<u8>| {
+        if let Some((stem, ext)) = name.rsplit_once('.') {
             match ext {
                 "bpo" => {
-                    bpos.insert(stem.to_string(), std::fs::read(&path)?);
+                    bpos.insert(stem.to_string(), bytes);
                 }
                 "bpr" => {
-                    bprs.insert(stem.to_string(), std::fs::read(&path)?);
+                    bprs.insert(stem.to_string(), bytes);
                 }
                 _ => {}
             }
         }
-    } else {
-        let file = std::fs::File::open(input)?;
-        let mut archive = zip::ZipArchive::new(file)?;
-        for index in 0..archive.len() {
-            let mut entry = archive.by_index(index)?;
-            let name = entry.name().to_string();
-            let Some((stem, ext)) = name.rsplit_once('.') else {
-                continue;
-            };
-            if ext != "bpo" && ext != "bpr" {
-                continue;
-            }
-            let mut bytes = Vec::new();
-            entry.read_to_end(&mut bytes)?;
-            if ext == "bpo" {
-                bpos.insert(stem.to_string(), bytes);
-            } else {
-                bprs.insert(stem.to_string(), bytes);
-            }
+    };
+    if input.is_dir() {
+        for (basename, bytes) in super::proofs::proofs_in_dir(input)? {
+            insert(&basename, bytes);
         }
+    } else {
+        let bytes = std::fs::read(input)?;
+        super::proofs::visit_zip_proofs(
+            &bytes,
+            |_| true,
+            |name, bytes| {
+                insert(name, bytes);
+                Ok(())
+            },
+        )?;
     }
     if bpos.is_empty() {
         return Err(format!("no .bpo files found in {}", input.display()).into());
