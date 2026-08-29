@@ -27,6 +27,15 @@ impl Confidence {
     pub const DISCHARGED_MAX: Confidence = Confidence(1000);
 
     /// Classifies a raw confidence into its reporting bucket,
+    /// Whether a recorded confidence marks a really attempted proof —
+    /// The status-update revival threshold: strictly above
+    /// [`Confidence::UNATTEMPTED`]. Deliberately different from
+    /// [`Confidence::classify`]'s unattempted range (every negative):
+    /// the `(-99, 0)` zone is attempted-but-uncertain here.
+    pub fn is_attempted(confidence: Option<i64>) -> bool {
+        confidence.is_some_and(|c| c > i64::from(Self::UNATTEMPTED.0))
+    }
+
     /// eventb-checker's thresholds over the scale above: `None` or
     /// anything below [`Confidence::PENDING`] reads as unattempted.
     pub fn classify(confidence: Option<i64>) -> Bucket {

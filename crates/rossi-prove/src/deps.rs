@@ -22,9 +22,6 @@ use crate::tree::ProofTreeNode;
 /// What a proof needs from the sequent it is reused against.
 #[derive(Debug, Clone)]
 pub struct ProofDependencies {
-    /// False for a proof recording no dependencies at all — such a
-    /// proof is reusable against any sequent.
-    pub has_deps: bool,
     /// The goal the proof discharges; `None` when every rule goal in
     /// the proof is a wildcard, matching any goal.
     pub goal: Option<Predicate>,
@@ -45,6 +42,16 @@ impl ProofDependencies {
         node_deps(root).finished()
     }
 
+    /// Whether the proof records any dependency at all — a proof
+    /// without dependencies is reusable against any sequent.
+    pub fn has_deps(&self) -> bool {
+        self.goal.is_some()
+            || !self.used_hypotheses.is_empty()
+            || !self.used_free_idents.is_empty()
+            || !self.introduced_free_idents.is_empty()
+            || !self.used_reasoners.is_empty()
+    }
+
     /// Whether any used reasoner depends on context beyond its
     /// sequent, so reuse must re-check its stored rules.
     pub fn is_context_dependent(&self) -> bool {
@@ -63,39 +70,13 @@ impl ProofDependencies {
 /// reusable (their datatype rules are re-run against the origin;
 /// rossi does not replay those).
 pub fn is_proof_reusable(deps: &ProofDependencies, seq: &ProverSequent) -> bool {
-    if !deps.has_deps {
-        return true;
-    }
-    if let Some(goal) = &deps.goal
-        && goal != seq.goal()
-    {
-        return false;
-    }
-    if !seq.contains_hypotheses(&deps.used_hypotheses) {
-        return false;
-    }
-    for ident in &deps.used_free_idents {
-        if seq.type_env().get(&ident.name) != Some(&ident.ty) {
-            return false;
-        }
-    }
-    if deps
-        .introduced_free_idents
-        .iter()
-        .any(|name| seq.type_env().contains(name))
-    {
-        return false;
-    }
-    if deps.used_reasoners.iter().any(|desc| !desc.is_trusted()) {
-        return false;
-    }
-    !deps.is_context_dependent()
+    explain_reuse_failure(deps, seq).is_none()
 }
 
 /// Explains why [`is_proof_reusable`] answers no — the first failing
 /// check with the offending item, for harness triage.
 pub fn explain_reuse_failure(deps: &ProofDependencies, seq: &ProverSequent) -> Option<String> {
-    if !deps.has_deps {
+    if !deps.has_deps() {
         return None;
     }
     if let Some(goal) = &deps.goal
@@ -140,13 +121,7 @@ struct Builder {
 
 impl Builder {
     fn finished(self) -> ProofDependencies {
-        let has_deps = self.goal.is_some()
-            || !self.used_hypotheses.is_empty()
-            || !self.used_free_idents.is_empty()
-            || !self.introduced.is_empty()
-            || !self.used_reasoners.is_empty();
         ProofDependencies {
-            has_deps,
             goal: self.goal,
             used_hypotheses: self.used_hypotheses,
             used_free_idents: self.used_free_idents,
@@ -422,7 +397,7 @@ mod tests {
         )));
 
         let deps = ProofDependencies::from_tree(&node);
-        assert!(deps.has_deps);
+        assert!(deps.has_deps());
         assert_eq!(deps.goal.as_ref(), Some(seq.goal()));
         assert_eq!(deps.used_hypotheses, vec![needed]);
         assert_eq!(deps.used_free_idents, vec![ident("x")]);
@@ -435,7 +410,7 @@ mod tests {
     fn open_tree_has_no_dependencies_and_is_always_reusable() {
         let node = ProofTreeNode::open(base());
         let deps = ProofDependencies::from_tree(&node);
-        assert!(!deps.has_deps);
+        assert!(!deps.has_deps());
         assert!(is_proof_reusable(&deps, &base()));
     }
 

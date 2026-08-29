@@ -24,6 +24,7 @@ pub mod skeleton;
 pub mod status;
 pub mod tree;
 mod variations;
+mod xml;
 
 pub use bpr::{BprError, Keep, ProofBody, ProofEntry, StoredProof, read_bpr};
 pub use bps::{PsStatus, read_bps};

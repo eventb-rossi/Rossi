@@ -213,7 +213,7 @@ impl Reasoner for DoCase {
     ) -> Result<Rule, String> {
         let true_case = single_pred_input(stored, hints)?;
         let wd = true_case.wd_lemma();
-        let negated = make_neg(&true_case);
+        let negated = super::make_neg(&true_case);
 
         let mut on_true = goal_antecedent(None);
         on_true.added_hyps = vec![true_case.clone()];
@@ -228,14 +228,6 @@ impl Reasoner for DoCase {
             antecedents: vec![goal_antecedent(Some(wd)), on_true, on_false],
         })
     }
-}
-
-/// Negate, removing an existing negation.
-fn make_neg(pred: &Predicate) -> Predicate {
-    if let PredicateKind::Not(inner) = pred.kind() {
-        return inner.clone();
-    }
-    pred.factory().not_predicate(pred.clone(), None)
 }
 
 /// `DisjE` — case analysis on a disjunctive hypothesis, or on a
@@ -405,10 +397,10 @@ impl Reasoner for ModusTollens {
             hints,
             |hyp| format!("⇒ hyp mt ({})", display_pred(hyp)),
             |left, right, hide| {
-                let mut prove_neg_right = goal_antecedent(Some(make_neg(right)));
+                let mut prove_neg_right = goal_antecedent(Some(super::make_neg(right)));
                 prove_neg_right.hyp_actions = vec![hide.clone()];
                 let mut use_neg_left = goal_antecedent(None);
-                use_neg_left.added_hyps = break_possible_conjunct(&make_neg(left));
+                use_neg_left.added_hyps = break_possible_conjunct(&super::make_neg(left));
                 use_neg_left.hyp_actions = vec![hide];
                 vec![prove_neg_right, use_neg_left]
             },
@@ -577,12 +569,14 @@ impl NodeRewriter for EqualitySubst<'_> {
     }
 }
 
-/// Normalizes freshly instantiated predicates to the parse-normal
-/// form stored rules re-load as: merges nested same-operator
-/// associative expressions that substituting an associative
-/// instantiation into an associative context creates. (Serialized
-/// rules round-trip through strings, whose re-parse is
-/// n-ary and flat.)
+/// Normalizes freshly instantiated predicates to the shape the
+/// constructors give them: EVERY nested same-operator associative
+/// expression merges into its parent, because the n-ary constructors
+/// flatten at construction and instantiation builds through them.
+/// Deliberately stronger than [`super::as_parsed_pred`], which models
+/// the print→parse round
+/// trip instead (only a first child splices there); an instantiation
+/// product needs the factory form, a rewrite product the parsed one.
 fn parse_normal(pred: &Predicate) -> Predicate {
     struct MergeAssoc;
     impl rossi::formula::FormulaRewriter for MergeAssoc {
@@ -1125,13 +1119,13 @@ impl Reasoner for AllmtD {
                 };
                 let mut wd_goal = goal_antecedent(Some(make_conj(univ, &wd_preds)));
                 wd_goal.hyp_actions = vec![deselect(univ)];
-                let mut prove_neg_right = goal_antecedent(Some(make_neg(right)));
+                let mut prove_neg_right = goal_antecedent(Some(super::make_neg(right)));
                 prove_neg_right.added_hyps = wd_preds.clone();
                 prove_neg_right.unselected_added = wd_preds.clone();
                 prove_neg_right.hyp_actions = vec![deselect(univ)];
                 let mut use_neg_left = goal_antecedent(None);
                 use_neg_left.added_hyps = wd_preds.clone();
-                use_neg_left.added_hyps.push(make_neg(left));
+                use_neg_left.added_hyps.push(super::make_neg(left));
                 use_neg_left.unselected_added = wd_preds;
                 use_neg_left.hyp_actions = vec![deselect(univ)];
                 Ok(vec![wd_goal, prove_neg_right, use_neg_left])

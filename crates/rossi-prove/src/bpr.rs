@@ -30,6 +30,7 @@ use crate::registry::{self, ReasonerDesc};
 use crate::rule::{Antecedent, Rule};
 use crate::sequent::TypedIdent;
 use crate::skeleton::{Skeleton, StoredInput, StoredRule};
+use crate::xml::{attrs, get};
 
 /// How much of one proof to materialize.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
@@ -190,28 +191,6 @@ pub fn read_bpr(
 }
 
 /// The attributes of one element, unescaped, in document order.
-fn attrs(e: &BytesStart<'_>) -> Vec<(String, String)> {
-    e.attributes()
-        .flatten()
-        .map(|attr| {
-            let key = String::from_utf8_lossy(attr.key.as_ref()).into_owned();
-            let raw = String::from_utf8_lossy(&attr.value);
-            let value = match quick_xml::escape::unescape(&raw) {
-                Ok(cow) => cow.into_owned(),
-                Err(_) => raw.into_owned(),
-            };
-            (key, value)
-        })
-        .collect()
-}
-
-fn get<'a>(attrs: &'a [(String, String)], key: &str) -> Option<&'a str> {
-    attrs
-        .iter()
-        .find(|(k, _)| k == key)
-        .map(|(_, v)| v.as_str())
-}
-
 /// Splits a comma-separated attribute; an empty attribute is empty.
 fn csv(s: &str) -> Vec<String> {
     if s.is_empty() {
@@ -363,6 +342,21 @@ fn open(
         // A self-closing root is a complete, proof-less file.
         if empty {
             *root_closed = true;
+        }
+        return Ok(());
+    }
+
+    // A skipped proof needs nothing below its root attributes: swallow
+    // every child subtree without materializing attributes or intern
+    // tables (the bulk of a `.bpr`), exactly as if each child were a
+    // poisoned region. `resolve_proof` maps `Keep::Skip` to
+    // `ProofBody::Skipped` unconditionally, so nothing read here could
+    // ever be consulted.
+    if let Some(Frame::Proof(proof)) = stack.last()
+        && proof.keep == Keep::Skip
+    {
+        if !empty {
+            stack.push(Frame::Skip(0));
         }
         return Ok(());
     }
@@ -636,6 +630,26 @@ fn resolve_proof(raw: RawProof) -> ProofEntry {
     }
 }
 
+/// The entry's parse environment: the shared base when it declares no
+/// identifiers of its own (an O(1) `Arc` clone), otherwise the base
+/// extended with them.
+fn entry_env(
+    base: &rossi::formula::SealedTypeEnvironment,
+    idents: &[(String, String)],
+) -> Result<rossi::formula::SealedTypeEnvironment, String> {
+    if idents.is_empty() {
+        return Ok(base.clone());
+    }
+    let mut env = base.to_builder();
+    for (name, ty) in idents {
+        env.insert(
+            name,
+            Type::parse_rodin(ty).ok_or_else(|| format!("identifier type `{ty}`"))?,
+        );
+    }
+    Ok(env.make_snapshot())
+}
+
 fn resolve_body(raw: RawProof) -> Result<StoredProof, String> {
     if let Some(reason) = raw.poison {
         return Err(reason);
@@ -659,34 +673,22 @@ fn resolve_body(raw: RawProof) -> Result<StoredProof, String> {
     // with each entry's own identifiers.
     let mut preds: BTreeMap<String, Predicate> = BTreeMap::new();
     for entry in &raw.preds {
-        let mut env = base_env.to_builder();
-        for (name, ty) in &entry.idents {
-            env.insert(
-                name,
-                Type::parse_rodin(ty).ok_or_else(|| format!("identifier type `{ty}`"))?,
-            );
-        }
+        let env = entry_env(&base_env, &entry.idents)?;
         let parsed = parse_predicate_str(&entry.formula)
             .map_err(|err| format!("predicate `{}`: {err}", entry.formula))?;
         let typed = parsed
-            .type_check(&env.make_snapshot())
+            .type_check(&env)
             .typed
             .ok_or_else(|| format!("predicate `{}` does not type-check", entry.formula))?;
         preds.insert(entry.name.clone(), typed.strip_ascriptions());
     }
     let mut exprs = BTreeMap::new();
     for entry in &raw.exprs {
-        let mut env = base_env.to_builder();
-        for (name, ty) in &entry.idents {
-            env.insert(
-                name,
-                Type::parse_rodin(ty).ok_or_else(|| format!("identifier type `{ty}`"))?,
-            );
-        }
+        let env = entry_env(&base_env, &entry.idents)?;
         let parsed = parse_expression_str(&entry.formula)
             .map_err(|err| format!("expression `{}`: {err}", entry.formula))?;
         let typed = parsed
-            .type_check(&env.make_snapshot())
+            .type_check(&env)
             .typed
             .ok_or_else(|| format!("expression `{}` does not type-check", entry.formula))?;
         exprs.insert(entry.name.clone(), typed.strip_ascriptions());
@@ -731,13 +733,7 @@ fn resolve_body(raw: RawProof) -> Result<StoredProof, String> {
             used_reasoners.push(desc);
         }
     }
-    let has_deps = goal.is_some()
-        || !used_hypotheses.is_empty()
-        || !used_free_idents.is_empty()
-        || !introduced_free_idents.is_empty()
-        || !used_reasoners.is_empty();
     let deps = ProofDependencies {
-        has_deps,
         goal,
         used_hypotheses,
         used_free_idents,
@@ -1036,7 +1032,7 @@ mod tests {
 
         let proof = loaded(entry);
         let empty = env(&[]);
-        assert!(proof.deps.has_deps);
+        assert!(proof.deps.has_deps());
         assert_eq!(proof.deps.goal.as_ref(), Some(&pred(&empty, "0∈ℕ")));
         assert!(proof.deps.used_hypotheses.is_empty());
         assert!(proof.deps.used_free_idents.is_empty());
@@ -1090,7 +1086,7 @@ mod tests {
 
         let entries = read(&file(MODERN), Keep::Deps);
         let proof = loaded(&entries[0]);
-        assert!(proof.deps.has_deps);
+        assert!(proof.deps.has_deps());
         assert!(proof.skeleton.is_none());
     }
 
@@ -1269,7 +1265,7 @@ mod tests {
         let entry = &entries[0];
         assert_eq!(entry.confidence, None);
         let proof = loaded(entry);
-        assert!(!proof.deps.has_deps);
+        assert!(!proof.deps.has_deps());
         assert_eq!(
             proof.skeleton.as_ref().map(|s| s.rule.is_none()),
             Some(true)

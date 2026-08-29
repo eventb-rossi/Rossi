@@ -211,7 +211,7 @@ fn add_equivalent_positive(
             }
         }
         RelationalOp::Lt => {
-            if let Some(value) = int_lit(lhs) {
+            if let Some(value) = crate::reasoners::as_literal(lhs) {
                 if value == BigInt::ZERO {
                     variations.push(rel(RelationalOp::In, rhs, &nat1(rhs)));
                 } else if value == BigInt::from(-1) {
@@ -221,7 +221,7 @@ fn add_equivalent_positive(
                 variations.push(rel(RelationalOp::Le, &plus, rhs));
                 variations.push(rel(RelationalOp::Ge, rhs, &plus));
             }
-            if let Some(value) = int_lit(rhs) {
+            if let Some(value) = crate::reasoners::as_literal(rhs) {
                 if value == BigInt::ZERO {
                     variations.push(neg(&rel(RelationalOp::In, lhs, &nat(lhs))));
                 } else if value == BigInt::from(1) {
@@ -233,7 +233,7 @@ fn add_equivalent_positive(
             }
         }
         RelationalOp::Le => {
-            if let Some(value) = int_lit(lhs) {
+            if let Some(value) = crate::reasoners::as_literal(lhs) {
                 if value == BigInt::ZERO {
                     variations.push(rel(RelationalOp::In, rhs, &nat(rhs)));
                 } else if value == BigInt::from(1) {
@@ -243,7 +243,7 @@ fn add_equivalent_positive(
                 variations.push(rel(RelationalOp::Lt, &minus, rhs));
                 variations.push(rel(RelationalOp::Gt, rhs, &minus));
             }
-            if let Some(value) = int_lit(rhs) {
+            if let Some(value) = crate::reasoners::as_literal(rhs) {
                 if value == BigInt::ZERO {
                     variations.push(neg(&rel(RelationalOp::In, lhs, &nat1(lhs))));
                 } else if value == BigInt::from(-1) {
@@ -255,7 +255,7 @@ fn add_equivalent_positive(
             }
         }
         RelationalOp::Gt => {
-            if let Some(value) = int_lit(lhs) {
+            if let Some(value) = crate::reasoners::as_literal(lhs) {
                 if value == BigInt::ZERO {
                     variations.push(neg(&rel(RelationalOp::In, rhs, &nat(rhs))));
                 } else if value == BigInt::from(1) {
@@ -265,7 +265,7 @@ fn add_equivalent_positive(
                 variations.push(rel(RelationalOp::Ge, &minus, rhs));
                 variations.push(rel(RelationalOp::Le, rhs, &minus));
             }
-            if let Some(value) = int_lit(rhs) {
+            if let Some(value) = crate::reasoners::as_literal(rhs) {
                 if value == BigInt::ZERO {
                     variations.push(rel(RelationalOp::In, lhs, &nat1(lhs)));
                 } else if value == BigInt::from(-1) {
@@ -277,7 +277,7 @@ fn add_equivalent_positive(
             }
         }
         RelationalOp::Ge => {
-            if let Some(value) = int_lit(lhs) {
+            if let Some(value) = crate::reasoners::as_literal(lhs) {
                 if value == BigInt::ZERO {
                     variations.push(neg(&rel(RelationalOp::In, rhs, &nat1(rhs))));
                 } else if value == BigInt::from(-1) {
@@ -287,7 +287,7 @@ fn add_equivalent_positive(
                 variations.push(rel(RelationalOp::Gt, &plus, rhs));
                 variations.push(rel(RelationalOp::Lt, rhs, &plus));
             }
-            if let Some(value) = int_lit(rhs) {
+            if let Some(value) = crate::reasoners::as_literal(rhs) {
                 if value == BigInt::ZERO {
                     variations.push(rel(RelationalOp::In, lhs, &nat(lhs)));
                 } else if value == BigInt::from(1) {
@@ -406,32 +406,16 @@ fn is_atomic(expr: &Expression, op: AtomicOp) -> bool {
     matches!(expr.kind(), ExpressionKind::Atomic(found) if *found == op)
 }
 
-/// A literal value, seeing through the unary minus this crate's
-/// parse-normal form keeps (the reference parser folds them).
-fn int_lit(expr: &Expression) -> Option<BigInt> {
-    match expr.kind() {
-        ExpressionKind::IntegerLiteral(value) => Some(value.clone()),
-        ExpressionKind::Unary {
-            op: UnaryExprOp::UnMinus,
-            child,
-        } => match child.kind() {
-            ExpressionKind::IntegerLiteral(value) => Some(-value.clone()),
-            _ => None,
-        },
-        _ => None,
-    }
-}
-
 fn is_zero(expr: &Expression) -> bool {
-    int_lit(expr).is_some_and(|value| value == BigInt::ZERO)
+    crate::reasoners::as_literal(expr).is_some_and(|value| value == BigInt::ZERO)
 }
 
 fn is_positive_int_lit(expr: &Expression) -> bool {
-    int_lit(expr).is_some_and(|value| value > BigInt::ZERO)
+    crate::reasoners::as_literal(expr).is_some_and(|value| value > BigInt::ZERO)
 }
 
 fn is_negative_int_lit(expr: &Expression) -> bool {
-    int_lit(expr).is_some_and(|value| value < BigInt::ZERO)
+    crate::reasoners::as_literal(expr).is_some_and(|value| value < BigInt::ZERO)
 }
 
 /// A literal in the crate's parse-normal shape: negative values are a
@@ -560,7 +544,7 @@ mod tests {
         let PredicateKind::Relational { right, .. } = parsed.kind() else {
             panic!("expected a relational predicate");
         };
-        assert_eq!(int_lit(right), Some(BigInt::from(-1)));
+        assert_eq!(crate::reasoners::as_literal(right), Some(BigInt::from(-1)));
         assert_eq!(&literal(right, BigInt::from(-1)), right);
     }
 
