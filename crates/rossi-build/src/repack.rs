@@ -4,7 +4,8 @@
 //! (everything we produced) and returns a fresh zip:
 //!
 //! * `.bum` / `.buc` and `.project` are copied byte-exact from the input.
-//! * `.bcm` / `.bcc` from the input are **dropped** and replaced with ours.
+//! * `.bcm` / `.bcc` directly inside a rebuilt project are **dropped** and
+//!   replaced with ours (nested ones are not components and are kept).
 //! * `.bpo` / `.bps` from the input are **replaced** by the generated
 //!   obligations reconciled with them (see [`crate::pog::reconcile`]):
 //!   unchanged obligations keep their stamps and status rows, changed
@@ -51,16 +52,20 @@ pub fn repackage_zip_bytes(
 /// prefix (e.g. `"MyProject/"`, or `""` for a flat archive) with the
 /// [`BuildResult`] to place under it. Returns a fresh zip's bytes:
 ///
-/// * All entries from the input *except* `.bcm` / `.bcc` / `.bpo` / `.bps`
-///   are copied byte-exact (so each project's `.bum`/`.buc`/`.project`, its
-///   `.bpr` proofs, and any sibling-project directory — e.g. a source-only
-///   dir with no components — are preserved untouched).
+/// * All entries from the input are copied byte-exact *except* the
+///   `.bcm` / `.bcc` / `.bpo` / `.bps` files sitting directly inside a
+///   rebuilt prefix (so each project's `.bum`/`.buc`/`.project`, its
+///   `.bpr` proofs, any sibling-project directory — e.g. a source-only
+///   dir with no components — and the derived files of nested
+///   directories that discovery does not treat as components are all
+///   preserved untouched).
 /// * One entry per [`crate::ScFile`] is written at `format!("{prefix}{filename}")`,
 ///   with each `.bpo` / `.bps` pair first reconciled against the input's
 ///   entry of the same name so unchanged obligations keep their stamps and
-///   statuses. Output entries are keyed by prefix + filename, so the same
-///   component basename appearing in several sub-projects never overwrites
-///   another.
+///   statuses, and stale statuses then recomputed from the kept `.bpr`
+///   proofs ([`crate::pog::status::update_statuses`]). Output entries
+///   are keyed by prefix + filename, so the same component basename
+///   appearing in several sub-projects never overwrites another.
 ///
 /// `builds` is taken as an iterator of `(prefix, build_result)` borrows so
 /// callers can pass `results.iter().map(...)` without materializing an adapter
@@ -82,6 +87,7 @@ fn repackage_archive<'a, R: Read + Seek>(
     mut archive: ZipArchive<R>,
     builds: impl IntoIterator<Item = (&'a str, &'a BuildResult)>,
 ) -> std::io::Result<Vec<u8>> {
+    let builds: Vec<(&str, &BuildResult)> = builds.into_iter().collect();
     let archive_comment = archive.comment().to_vec();
     let mut out = std::io::Cursor::new(Vec::<u8>::new());
     let mut writer = ZipWriter::new(&mut out);
@@ -91,12 +97,38 @@ fn repackage_archive<'a, R: Read + Seek>(
     let options = SimpleFileOptions::default().compression_method(zip::CompressionMethod::Deflated);
 
     // The previous `.bpo` / `.bps` contents, for reconciling the
-    // generated files against (unreadable entries count as absent).
+    // generated files against (unreadable entries count as absent),
+    // and the archive index of every kept `.bpr` proof — decompressed
+    // only when a component's status update asks for it, since proof
+    // files can reach hundreds of megabytes.
     let mut previous = std::collections::HashMap::new();
+    let mut proof_index = std::collections::HashMap::new();
 
     for i in 0..archive.len() {
+        let entry = archive.by_index(i).map_err(zip_to_io)?;
+        if entry.name().ends_with(".bpr") {
+            proof_index.insert(entry.name().to_string(), i);
+        }
+    }
+
+    // A generated file is replaced only when it sits directly inside a
+    // project being rebuilt; derived files in nested directories are
+    // not components (discovery is direct-child only) and nothing
+    // would regenerate them, so they are preserved like any other
+    // sibling data.
+    let replaced = |name: &str| {
+        (name.ends_with(".bcm")
+            || name.ends_with(".bcc")
+            || name.ends_with(".bpo")
+            || name.ends_with(".bps"))
+            && builds.iter().any(|(prefix, _)| {
+                name.strip_prefix(prefix)
+                    .is_some_and(|rest| !rest.contains('/'))
+            })
+    };
+    for i in 0..archive.len() {
         let mut entry = archive.by_index(i).map_err(zip_to_io)?;
-        if !keep_input_entry(entry.name()) {
+        if replaced(entry.name()) {
             let name = entry.name().to_string();
             if name.ends_with(".bpo") || name.ends_with(".bps") {
                 let mut text = String::new();
@@ -123,10 +155,21 @@ fn repackage_archive<'a, R: Read + Seek>(
         writer.raw_copy_file(entry).map_err(zip_to_io)?;
     }
 
-    for (prefix, build_result) in builds {
+    for (prefix, build_result) in &builds {
         let mut files = build_result.files.clone();
-        crate::pog::reconcile::reconcile_build_files(&mut files, |name| {
+        let synthesized = crate::pog::reconcile::reconcile_build_files(&mut files, |name| {
             previous.get(&format!("{prefix}{name}")).cloned()
+        });
+        crate::pog::status::update_statuses(&mut files, &synthesized, |name| {
+            let index = *proof_index.get(&format!("{prefix}{name}"))?;
+            let mut entry = archive.by_index(index).ok()?;
+            let mut bytes = Vec::new();
+            // A short read is deliberately tolerated: a proof file we
+            // can see but not fully decompress must still count as
+            // present, so the status update carries its rows verbatim
+            // (the parse fails) instead of resetting them.
+            let _ = entry.read_to_end(&mut bytes);
+            Some(bytes)
         });
         for file in &files {
             let path = format!("{prefix}{}", file.filename);
@@ -146,14 +189,6 @@ pub fn repackage_zip_file<P: AsRef<std::path::Path>>(
 ) -> std::io::Result<Vec<u8>> {
     let data = std::fs::read(input_zip)?;
     repackage_zip_bytes(&data, build_result)
-}
-
-fn keep_input_entry(name: &str) -> bool {
-    let drop = name.ends_with(".bcm")
-        || name.ends_with(".bcc")
-        || name.ends_with(".bpo")
-        || name.ends_with(".bps");
-    !drop
 }
 
 /// Find the archive's top-level directory (everything up to and including the
@@ -298,12 +333,18 @@ mod tests {
         )
     }
 
-    /// A `.bps` with one row for the sequent in [`bpo`].
+    /// A `.bps` with one row for the sequent in [`bpo`], stamped to
+    /// match it (a mismatched stamp would mark the row stale and the
+    /// status update would recompute it).
     fn bps(confidence: &str) -> String {
+        bps_stamped(confidence, "0")
+    }
+
+    fn bps_stamped(confidence: &str, stamp: &str) -> String {
         format!(
             "<?xml version=\"1.0\" encoding=\"UTF-8\" standalone=\"no\"?>\n\
              <org.eventb.core.psFile>\n\
-             <org.eventb.core.psStatus name=\"evt/inv1/INV\" org.eventb.core.confidence=\"{confidence}\" org.eventb.core.poStamp=\"0\" org.eventb.core.psManual=\"false\"/>\n\
+             <org.eventb.core.psStatus name=\"evt/inv1/INV\" org.eventb.core.confidence=\"{confidence}\" org.eventb.core.poStamp=\"{stamp}\" org.eventb.core.psManual=\"false\"/>\n\
              </org.eventb.core.psFile>\n"
         )
     }
@@ -314,7 +355,7 @@ mod tests {
         // generated ones but carry non-zero stamps and a discharged
         // status; GONE is a component that no longer exists.
         let old_bpo = bpo("3");
-        let old_bps = bps("1000");
+        let old_bps = bps_stamped("1000", "3");
         let input = make_zip(&[
             ("m/.project", b"<project/>"),
             ("m/M.bum", b"<m/>"),
@@ -414,8 +455,8 @@ mod tests {
         // Two sibling projects sharing the SAME component filename — the case
         // the old single-prefix repack collapsed into one entry. Each also
         // carries its own previous proof statuses.
-        let bps_a = bps("777");
-        let bps_b = bps("888");
+        let bps_a = bps_stamped("777", "1");
+        let bps_b = bps_stamped("888", "2");
         let input = make_zip(&[
             ("A/M0.bum", b"<a/>"),
             ("A/M0.bcm", b"OLD-A"),
@@ -482,6 +523,29 @@ mod tests {
         assert!(!names.iter().any(|n| n == "src/M.bcm"));
         // The real Event-B project gets the regenerated file in its own dir.
         assert_eq!(read_entry(&out, "model/M.bcm"), b"NEW");
+    }
+
+    #[test]
+    fn nested_derived_files_are_preserved_not_deleted() {
+        // A directory nested below another dir holds an externally
+        // built
+        // component. Discovery is direct-child only, so nothing
+        // rebuilds it — repack must copy its derived files through
+        // instead of deleting them with no replacement.
+        let input = make_zip(&[
+            ("P/M.bum", b"<m/>"),
+            ("P/M.bcm", b"OLD"),
+            ("Sub/Q/N.bum", b"<n/>"),
+            ("Sub/Q/N.bcm", b"NESTED-BCM"),
+            ("Sub/Q/N.bpo", b"NESTED-BPO"),
+            ("Sub/Q/N.bps", b"NESTED-BPS"),
+        ]);
+        let br = one_file("M.bcm", "NEW");
+        let out = repackage_zip_bytes_multi(&input, [("P/", &br)]).unwrap();
+        assert_eq!(read_entry(&out, "P/M.bcm"), b"NEW");
+        assert_eq!(read_entry(&out, "Sub/Q/N.bcm"), b"NESTED-BCM");
+        assert_eq!(read_entry(&out, "Sub/Q/N.bpo"), b"NESTED-BPO");
+        assert_eq!(read_entry(&out, "Sub/Q/N.bps"), b"NESTED-BPS");
     }
 
     #[test]

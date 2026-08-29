@@ -19,7 +19,7 @@
 
 mod common;
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, HashMap, HashSet};
 use std::io::Read;
 use std::path::PathBuf;
 
@@ -115,19 +115,30 @@ fn statuses_match_the_rodin_oracle() {
     for model in MODELS {
         let (bpos, bprs) = archive_proof_files(model);
         let mut files: Vec<ScFile> = Vec::new();
+        // Every row is one reconciliation would synthesize (the
+        // recorded `.bps` mentions no obligation at all).
+        let mut synthesized: HashMap<String, HashSet<String>> = HashMap::new();
         for (base, contents) in &bpos {
             files.push(ScFile {
                 filename: base.clone(),
                 contents: contents.clone(),
                 accurate: true,
             });
+            let bps_name = format!("{}.bps", base.trim_end_matches(".bpo"));
+            let parsed = PoFile::read(contents.as_bytes()).expect("bpo");
+            synthesized.insert(
+                bps_name.clone(),
+                parsed.sequents().map(|entry| entry.name.clone()).collect(),
+            );
             files.push(ScFile {
-                filename: format!("{}.bps", base.trim_end_matches(".bpo")),
+                filename: bps_name,
                 contents: fresh_rows(contents),
                 accurate: true,
             });
         }
-        update_statuses(&mut files, |name| bprs.get(name).cloned());
+        update_statuses(&mut files, &synthesized, |name| {
+            bprs.get(name).map(|text| text.as_bytes().to_vec())
+        });
 
         for file in &files {
             let Some(component) = file.filename.strip_suffix(".bps") else {

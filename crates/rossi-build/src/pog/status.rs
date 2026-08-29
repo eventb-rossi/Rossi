@@ -8,11 +8,12 @@
 //! stored proof's dependencies — broken when the proof no longer
 //! applies, its confidence a verbatim copy of the proof's — while
 //! stamp-matched rows keep their exact bytes. Like reconciliation
-//! this runs at the IO boundary, never inside pure `build()`, and
-//! only when a caller opts in.
+//! this runs at the IO boundary (repackaging), never inside pure
+//! `build()`.
 
-use std::collections::{BTreeMap, HashSet};
+use std::collections::{BTreeMap, HashMap, HashSet};
 
+use rossi_prove::Confidence;
 use rossi_prove::bpr::{Keep, ProofBody, ProofEntry, read_bpr};
 use rossi_prove::po_loader::{PoFile, PoProject};
 use rossi_prove::status::{StatusVerdict, compute_status};
@@ -28,82 +29,111 @@ use crate::xml_out::{attr, escape_attr, tag as xtag};
 ///
 /// A row is stale when its recorded stamp differs from its sequent's
 /// stamp in the sibling `.bpo`, or when its proof is marked
-/// context-dependent. An unattempted, non-broken row whose stored
-/// proof records real confidence is also recomputed: such a row is
-/// what reconciliation synthesizes for an obligation the recorded
-/// `.bps` never mentioned, and the status update computes missing
-/// statuses from the stored proofs (a status that does not exist). Stale rows are rewritten with a fresh verdict and the
-/// sequent's stamp; a stale row without a stored proof becomes a
-/// fresh unattempted row. Everything else keeps its exact bytes, so
-/// an archive whose obligations did not change round-trips untouched.
-pub fn update_statuses(files: &mut [ScFile], mut bpr: impl FnMut(&str) -> Option<String>) {
-    // All generated obligation files form one project: hypothesis-set
-    // chains cross component files.
-    let mut project = PoProject::default();
-    for file in files.iter() {
-        if file.filename.ends_with(".bpo")
-            && let Ok(parsed) = PoFile::read(file.contents.as_bytes())
-        {
-            project.insert(file.filename.clone(), parsed);
-        }
-    }
-
+/// context-dependent. A row reconciliation synthesized for an
+/// obligation the recorded `.bps` never mentioned (`synthesized`,
+/// keyed by `.bps` filename — the return of
+/// [`super::reconcile::reconcile_build_files`]) is also recomputed
+/// when its stored proof records real confidence: a missing status is
+/// computed from the stored proofs, while a recorded stamp-valid row —
+/// even an unattempted one — is never touched. Stale rows are
+/// rewritten with a fresh verdict and the sequent's stamp; a stale
+/// row without a stored proof becomes a fresh unattempted row. A
+/// proof file that exists but cannot be read leaves the component's
+/// rows exactly as reconciliation produced them: the stamp divergence
+/// stays visible downstream (such rows are re-checked there),
+/// instead of silently resetting recorded verdicts to unattempted.
+/// Everything else keeps its exact bytes, so an archive whose
+/// obligations did not change round-trips untouched.
+pub fn update_statuses(
+    files: &mut [ScFile],
+    synthesized: &HashMap<String, HashSet<String>>,
+    mut bpr: impl FnMut(&str) -> Option<Vec<u8>>,
+) {
+    // The generated obligation files, parsed on the first stale row —
+    // an unchanged archive never pays for it.
+    let mut project: Option<PoProject> = None;
+    let no_revivals = HashSet::new();
     for (i, j) in bpo_bps_pairs(files) {
         let stamps = sequent_stamps(&files[i].contents);
         let rows = parse_status_rows(&files[j].contents);
-        let stem = files[i].filename.trim_end_matches(".bpo").to_string();
-        let bpr_contents = bpr(&format!("{stem}.bpr"));
-        // A cheap first pass over the proof file: which obligations
-        // carry a proof with real recorded confidence, to revive the
-        // unattempted rows reconciliation synthesized for them.
-        let proof_confidences: BTreeMap<String, i32> = bpr_contents
-            .as_deref()
-            .and_then(|contents| read_bpr(contents.as_bytes(), |_| Keep::Skip).ok())
-            .map(|entries| {
-                entries
-                    .into_iter()
-                    .map(|entry| (entry.name.clone(), entry.confidence.unwrap_or(-99)))
-                    .collect()
-            })
-            .unwrap_or_default();
-        let stale = |row: &StatusRow| {
+        let revivable = synthesized.get(&files[j].filename).unwrap_or(&no_revivals);
+        let stamp_stale = |row: &StatusRow| {
             row.context_dependent
                 || stamps.get(&row.name).map(String::as_str) != row.stamp.as_deref()
-                || (row.confidence.is_none_or(|c| c <= -99)
-                    && !row.broken
-                    && proof_confidences.get(&row.name).copied().unwrap_or(-99) > -99)
+        };
+        // Rows whose verdict may change: the stamp-stale ones, plus
+        // the synthesized unattempted rows a stored proof may revive.
+        let candidates: HashSet<&str> = rows
+            .iter()
+            .filter(|row| {
+                stamp_stale(row)
+                    || (revivable.contains(&row.name)
+                        && !row.broken
+                        && row
+                            .confidence
+                            .is_none_or(|c| c <= i64::from(Confidence::UNATTEMPTED.0)))
+            })
+            .map(|row| row.name.as_str())
+            .collect();
+        if candidates.is_empty() {
+            continue;
+        }
+        let stem = files[i].filename.trim_end_matches(".bpo").to_string();
+        let Some(bpr_contents) = bpr(&format!("{stem}.bpr")) else {
+            // No proof file at all: every stamp-stale row resets to a
+            // fresh unattempted one (the status update on a missing
+            // proof), and there is nothing to revive.
+            if rows.iter().any(&stamp_stale) {
+                let out: Vec<String> = rows
+                    .iter()
+                    .map(|row| {
+                        if stamp_stale(row) {
+                            fresh_status_row(
+                                &row.name,
+                                stamps.get(&row.name).map_or("0", String::as_str),
+                            )
+                        } else {
+                            row.row.clone()
+                        }
+                    })
+                    .collect();
+                files[j].contents = assemble_status(&out);
+            }
+            continue;
+        };
+        // One pass over the proof file: dependencies for the candidate
+        // rows, name and confidence for everything else.
+        let Ok(entries) = read_bpr(bpr_contents.as_slice(), |name| {
+            if candidates.contains(name) {
+                Keep::Deps
+            } else {
+                Keep::Skip
+            }
+        }) else {
+            // The proof file exists but cannot be read — carry the
+            // rows verbatim rather than resetting recorded verdicts.
+            continue;
+        };
+        let proofs: BTreeMap<String, ProofEntry> = entries
+            .into_iter()
+            .map(|entry| (entry.name.clone(), entry))
+            .collect();
+        let stale = |row: &StatusRow| {
+            stamp_stale(row)
+                || (candidates.contains(row.name.as_str())
+                    && proofs
+                        .get(&row.name)
+                        .and_then(|entry| entry.confidence)
+                        .unwrap_or(Confidence::UNATTEMPTED.0)
+                        > Confidence::UNATTEMPTED.0)
         };
         if !rows.iter().any(&stale) {
             continue;
         }
-
-        let stale_names: HashSet<&str> = rows
-            .iter()
-            .filter(|row| stale(row))
-            .map(|row| row.name.as_str())
-            .collect();
-        // The component's stored proofs, dependencies resolved only
-        // for the rows needing a fresh verdict. An unreadable proof
-        // file leaves no proofs, so its stale rows reset to
-        // unattempted.
-        let proofs: BTreeMap<String, ProofEntry> = bpr_contents
-            .and_then(|contents| {
-                read_bpr(contents.as_bytes(), |name| {
-                    if stale_names.contains(name) {
-                        Keep::Deps
-                    } else {
-                        Keep::Skip
-                    }
-                })
-                .ok()
-            })
-            .map(|entries| {
-                entries
-                    .into_iter()
-                    .map(|entry| (entry.name.clone(), entry))
-                    .collect()
-            })
-            .unwrap_or_default();
+        if project.is_none() {
+            project = Some(build_project(files));
+        }
+        let project = project.as_ref().expect("built above");
 
         let out: Vec<String> = rows
             .iter()
@@ -130,25 +160,43 @@ pub fn update_statuses(files: &mut [ScFile], mut bpr: impl FnMut(&str) -> Option
     }
 }
 
-/// Renders one recomputed status row in the generator's shape.
+/// All generated obligation files as one project: hypothesis-set
+/// chains cross component files.
+fn build_project(files: &[ScFile]) -> PoProject {
+    let mut project = PoProject::default();
+    for file in files {
+        if file.filename.ends_with(".bpo")
+            && let Ok(parsed) = PoFile::read(file.contents.as_bytes())
+        {
+            project.insert(file.filename.clone(), parsed);
+        }
+    }
+    project
+}
+
+/// Renders one recomputed status row in the generator's shape, the
+/// attributes in alphabetical id order (`confidence`,
+/// `contextDependent`, `poStamp`, `psBroken`, `psManual`).
 fn status_row(name: &str, verdict: &StatusVerdict, stamp: &str) -> String {
     let mut row = format!("<{} {}=\"", xtag::PS_STATUS, attr::NAME);
     escape_attr(name, &mut row);
     row.push_str(&format!(
-        "\" {}=\"{}\" {}=\"{stamp}\" {}=\"{}\"",
+        "\" {}=\"{}\"",
         attr::CONFIDENCE,
-        verdict.confidence.unwrap_or(-99),
-        attr::PO_STAMP,
-        attr::PS_MANUAL,
-        if verdict.manual { "true" } else { "false" },
+        verdict.confidence.unwrap_or(Confidence::UNATTEMPTED.0),
     ));
-    if verdict.broken {
-        row.push_str(&format!(" {}=\"true\"", attr::PS_BROKEN));
-    }
     if verdict.context_dependent {
         row.push_str(&format!(" {}=\"true\"", attr::CONTEXT_DEPENDENT));
     }
-    row.push_str("/>");
+    row.push_str(&format!(" {}=\"{stamp}\"", attr::PO_STAMP));
+    if verdict.broken {
+        row.push_str(&format!(" {}=\"true\"", attr::PS_BROKEN));
+    }
+    row.push_str(&format!(
+        " {}=\"{}\"/>",
+        attr::PS_MANUAL,
+        if verdict.manual { "true" } else { "false" },
+    ));
     row
 }
 
@@ -204,8 +252,8 @@ mod tests {
 </org.eventb.core.prFile>
 "#;
 
-    fn run(bpr: Option<&str>) -> String {
-        let mut files = vec![
+    fn files_with(bps: &str) -> Vec<ScFile> {
+        vec![
             ScFile {
                 filename: "M0.bpo".into(),
                 contents: BPO.into(),
@@ -213,13 +261,27 @@ mod tests {
             },
             ScFile {
                 filename: "M0.bps".into(),
-                contents: BPS.into(),
+                contents: bps.into(),
                 accurate: true,
             },
-        ];
-        update_statuses(&mut files, |name| {
+        ]
+    }
+
+    /// Every row of `M0.bps` marked as synthesized by reconciliation.
+    fn all_synthesized() -> HashMap<String, HashSet<String>> {
+        HashMap::from([(
+            "M0.bps".to_string(),
+            ["evt/inv1/INV", "evt/inv2/INV", "evt/inv3/INV"]
+                .map(str::to_string)
+                .into(),
+        )])
+    }
+
+    fn run(bpr: Option<&str>) -> String {
+        let mut files = files_with(BPS);
+        update_statuses(&mut files, &HashMap::new(), |name| {
             assert_eq!(name, "M0.bpr");
-            bpr.map(str::to_string)
+            bpr.map(|text| text.as_bytes().to_vec())
         });
         files[1].contents.clone()
     }
@@ -237,9 +299,9 @@ mod tests {
             r#"<org.eventb.core.psStatus name="evt/inv2/INV" org.eventb.core.confidence="1000" org.eventb.core.poStamp="2" org.eventb.core.psManual="true"/>"#
         ));
         // The inapplicable proof is broken, confidence still the
-        // cached copy.
+        // cached copy; attributes in alphabetical order.
         assert!(bps.contains(
-            r#"<org.eventb.core.psStatus name="evt/inv3/INV" org.eventb.core.confidence="1000" org.eventb.core.poStamp="2" org.eventb.core.psManual="false" org.eventb.core.psBroken="true"/>"#
+            r#"<org.eventb.core.psStatus name="evt/inv3/INV" org.eventb.core.confidence="1000" org.eventb.core.poStamp="2" org.eventb.core.psBroken="true" org.eventb.core.psManual="false"/>"#
         ));
     }
 
@@ -268,19 +330,10 @@ mod tests {
 <org.eventb.core.psStatus name="evt/inv3/INV" org.eventb.core.confidence="-99" org.eventb.core.poStamp="2" org.eventb.core.psManual="false"/>
 </org.eventb.core.psFile>
 "#;
-        let mut files = vec![
-            ScFile {
-                filename: "M0.bpo".into(),
-                contents: BPO.into(),
-                accurate: true,
-            },
-            ScFile {
-                filename: "M0.bps".into(),
-                contents: all_fresh.into(),
-                accurate: true,
-            },
-        ];
-        update_statuses(&mut files, |_| Some(BPR.to_string()));
+        let mut files = files_with(all_fresh);
+        update_statuses(&mut files, &all_synthesized(), |_| {
+            Some(BPR.as_bytes().to_vec())
+        });
         let bps = &files[1].contents;
         // No stored proof for inv1: its fresh row is genuinely
         // unattempted and stays byte-exact.
@@ -293,8 +346,50 @@ mod tests {
         ));
         // inv3's stored proof no longer applies: broken.
         assert!(bps.contains(
-            r#"<org.eventb.core.psStatus name="evt/inv3/INV" org.eventb.core.confidence="1000" org.eventb.core.poStamp="2" org.eventb.core.psManual="false" org.eventb.core.psBroken="true"/>"#
+            r#"<org.eventb.core.psStatus name="evt/inv3/INV" org.eventb.core.confidence="1000" org.eventb.core.poStamp="2" org.eventb.core.psBroken="true" org.eventb.core.psManual="false"/>"#
         ));
+    }
+
+    /// A recorded stamp-valid unattempted row is not the reconciler's
+    /// synthesized shape, even when a leftover proof sits in the
+    /// `.bpr`: the status update keys only on the stamp and never
+    /// touches such a row, so neither do we — and the proof file is
+    /// not even consulted.
+    #[test]
+    fn recorded_stamp_valid_unattempted_rows_stay_untouched() {
+        let all_fresh = r#"<?xml version="1.0" encoding="UTF-8" standalone="no"?>
+<org.eventb.core.psFile>
+<org.eventb.core.psStatus name="evt/inv1/INV" org.eventb.core.confidence="-99" org.eventb.core.poStamp="2" org.eventb.core.psManual="false"/>
+<org.eventb.core.psStatus name="evt/inv2/INV" org.eventb.core.confidence="-99" org.eventb.core.poStamp="2" org.eventb.core.psManual="false"/>
+<org.eventb.core.psStatus name="evt/inv3/INV" org.eventb.core.confidence="-99" org.eventb.core.poStamp="2" org.eventb.core.psManual="false"/>
+</org.eventb.core.psFile>
+"#;
+        let mut files = files_with(all_fresh);
+        update_statuses(&mut files, &HashMap::new(), |_| {
+            panic!("no candidate rows, so the proof file must not be read")
+        });
+        assert_eq!(files[1].contents, all_fresh);
+    }
+
+    /// A proof file that exists but cannot be parsed must not reset
+    /// recorded verdicts: the stale rows are carried verbatim so the
+    /// stamp divergence stays visible, exactly as a reference build
+    /// re-checks
+    /// them, rather than being replaced by fresh unattempted rows.
+    #[test]
+    fn unreadable_proof_files_carry_stale_rows_verbatim() {
+        for bpr in [
+            // A proof-file version this reader refuses wholesale.
+            "<org.eventb.core.prFile version=\"99\"/>"
+                .as_bytes()
+                .to_vec(),
+            // Malformed XML.
+            b"<org.eventb.core.prFile version=\"1\"><org.eventb".to_vec(),
+        ] {
+            let mut files = files_with(BPS);
+            update_statuses(&mut files, &HashMap::new(), |_| Some(bpr.clone()));
+            assert_eq!(files[1].contents, BPS);
+        }
     }
 
     #[test]
@@ -303,21 +398,12 @@ mod tests {
             "org.eventb.core.poStamp=\"1\"",
             "org.eventb.core.poStamp=\"2\"",
         );
-        let mut files = vec![
-            ScFile {
-                filename: "M0.bpo".into(),
-                contents: BPO.into(),
-                accurate: true,
-            },
-            ScFile {
-                filename: "M0.bps".into(),
-                contents: fresh_bps.clone(),
-                accurate: true,
-            },
-        ];
-        // The proof file is always consulted (the revival check), but
-        // stamp-valid non-unattempted rows never rewrite.
-        update_statuses(&mut files, |_| Some(BPR.to_string()));
+        let mut files = files_with(&fresh_bps);
+        // With every row recorded and stamp-valid there are no
+        // candidates at all, so the proof file is never consulted.
+        update_statuses(&mut files, &HashMap::new(), |_| {
+            panic!("no candidate rows, so the proof file must not be read")
+        });
         assert_eq!(files[1].contents, fresh_bps);
     }
 }
