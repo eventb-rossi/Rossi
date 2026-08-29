@@ -10,10 +10,14 @@
 //!
 //! What it proves: the generated proof files parse (no EB017), the checker
 //! counts exactly as many obligations as we emitted, and every obligation it
-//! names is one we generated. It deliberately does not compare status counts
-//! against a pristine run — a pristine archive's counts come from the `.bpr`
-//! proofs of whatever generator vintage produced them, so the two are not
-//! comparable.
+//! names is one we generated. Since proof statuses are recomputed during
+//! repackaging, the checker's discharged/pending/broken counts on a
+//! regenerated archive must also reproduce the corpus baseline
+//! (`checker_results.tsv`) for every model whose obligations regenerate
+//! exactly (models with a `pog_divergence` flag are compared on the other
+//! properties only). The baseline was recorded with the eventb-checker
+//! version named in `CHECKER.md`; an older checker is refused (skip), since
+//! its counting rules predate the baseline.
 //!
 //! `#[ignore]` by default (needs `eventb-checker` and a corpus). Run:
 //!
@@ -51,7 +55,18 @@ fn checker_reads_back_generated_obligations() {
         eprintln!("SKIP pog_checker: no corpus (set EVENTB_CORPUS_DIR)");
         return;
     };
+    if let (Some(have), Some(want)) = (checker_version(&checker), baseline_version(&corpus)) {
+        if have < want {
+            eprintln!(
+                "SKIP pog_checker: eventb-checker {}.{} is older than the corpus baseline \
+                 {}.{} (see CHECKER.md); refusing to compare status counts.",
+                have.0, have.1, want.0, want.1
+            );
+            return;
+        }
+    }
     let flags = load_flags(&corpus.join("model_flags.tsv")).unwrap_or_default();
+    let baselines = load_po_baseline(&corpus);
     let zips = collect_zips(&corpus).expect("read corpus");
     let timeout = Duration::from_secs(
         std::env::var("EVENTB_CHECKER_TIMEOUT_SECS")
@@ -79,10 +94,14 @@ fn checker_reads_back_generated_obligations() {
             continue;
         }
         let regen_zip = regen_dir.join(format!("{model}.zip"));
-        match check_one(&checker, zip, &regen_zip, timeout) {
-            Ok(()) => {
+        let pog_diverges = flags
+            .get(&model)
+            .is_some_and(|f| f.contains("pog_divergence"));
+        let baseline = (!pog_diverges).then(|| baselines.get(&model)).flatten();
+        match check_one(&checker, zip, &regen_zip, timeout, baseline) {
+            Ok(note) => {
                 eprintln!("  OK   {model}");
-                report.push(vec![model, "match".into(), String::new()]);
+                report.push(vec![model, "match".into(), note.unwrap_or_default()]);
             }
             Err(Skip(reason)) => {
                 eprintln!("  SKIP {model}: {reason}");
@@ -114,7 +133,8 @@ fn check_one(
     zip: &Path,
     regen_zip: &Path,
     timeout: Duration,
-) -> Result<(), FailOrSkip> {
+    baseline: Option<&PoBaseline>,
+) -> Result<Option<String>, FailOrSkip> {
     common::regen_one(zip, regen_zip).map_err(|e| Skip(format!("regen: {e}")))?;
 
     // Every generated sequent, keyed the way the checker names one.
@@ -158,7 +178,8 @@ fn check_one(
         )));
     }
 
-    let Some(total) = json["summary"]["proofSummary"]["total"].as_u64() else {
+    let summary = &json["summary"]["proofSummary"];
+    let Some(total) = summary["total"].as_u64() else {
         return Err(Skip("checker reported no proof summary".into()));
     };
     if total as usize != generated.len() {
@@ -166,6 +187,37 @@ fn check_one(
             "checker counted {total} obligation(s), {} generated",
             generated.len()
         )));
+    }
+
+    // The status counts must reproduce the corpus baseline: repackaging
+    // recomputes stale statuses, and for a model whose obligations
+    // regenerate exactly, every row carries over byte-identical. The
+    // aggregate comparison only means something when both sides count
+    // the same obligation set — a pristine archive can carry derived
+    // files without sources (which regeneration drops) or lack some
+    // (which regeneration adds), so a total mismatch is reported, not
+    // failed.
+    if let Some(base) = baseline.filter(|b| b.result == "valid" || b.result == "invalid") {
+        if total != base.total {
+            return Ok(Some(format!(
+                "po counts not comparable: {total} obligation(s) regenerated, \
+                 the pristine archive carries {}",
+                base.total
+            )));
+        }
+        let got = (
+            summary["discharged"].as_u64().unwrap_or(0),
+            summary["pending"].as_u64().unwrap_or(0),
+            summary["broken"].as_u64().unwrap_or(0),
+        );
+        let want = (base.discharged, base.pending, base.broken);
+        if got != want {
+            return Err(Fail(format!(
+                "status counts diverge from checker_results.tsv: \
+                 discharged/pending/broken {}/{}/{} vs baseline {}/{}/{}",
+                got.0, got.1, got.2, want.0, want.1, want.2
+            )));
+        }
     }
 
     // Every obligation the checker names must be one we generated. Only the
@@ -186,5 +238,85 @@ fn check_one(
             return Err(Fail(format!("checker read unknown obligation {name}")));
         }
     }
-    Ok(())
+    Ok(None)
+}
+
+/// One `checker_results.tsv` row's proof-status columns.
+struct PoBaseline {
+    result: String,
+    total: u64,
+    discharged: u64,
+    pending: u64,
+    broken: u64,
+}
+
+/// The corpus baseline counts, keyed by model.
+fn load_po_baseline(corpus: &Path) -> std::collections::BTreeMap<String, PoBaseline> {
+    let mut out = std::collections::BTreeMap::new();
+    let Ok(text) = std::fs::read_to_string(corpus.join("checker_results.tsv")) else {
+        return out;
+    };
+    let mut lines = text.lines();
+    let Some(header) = lines.next() else {
+        return out;
+    };
+    let cols: Vec<&str> = header.split('\t').collect();
+    let idx = |name: &str| cols.iter().position(|c| *c == name);
+    let (Some(result), Some(total), Some(discharged), Some(pending), Some(broken)) = (
+        idx("result"),
+        idx("po_total"),
+        idx("po_discharged"),
+        idx("po_pending"),
+        idx("po_broken"),
+    ) else {
+        return out;
+    };
+    for line in lines {
+        let fields: Vec<&str> = line.split('\t').collect();
+        let (Some(model), Some(res)) = (fields.first(), fields.get(result)) else {
+            continue;
+        };
+        let num = |i: usize| fields.get(i).and_then(|v| v.parse().ok()).unwrap_or(0);
+        out.insert(
+            model.to_string(),
+            PoBaseline {
+                result: res.to_string(),
+                total: num(total),
+                discharged: num(discharged),
+                pending: num(pending),
+                broken: num(broken),
+            },
+        );
+    }
+    out
+}
+
+/// `eventb-checker --version` as (major, minor).
+fn checker_version(checker: &str) -> Option<(u32, u32)> {
+    let output = std::process::Command::new(checker)
+        .arg("--version")
+        .output()
+        .ok()?;
+    parse_version(&String::from_utf8_lossy(&output.stdout))
+}
+
+/// The checker version the corpus baseline was recorded with, from
+/// CHECKER.md's first `eventb-checker vX.Y` mention.
+fn baseline_version(corpus: &Path) -> Option<(u32, u32)> {
+    let text = std::fs::read_to_string(corpus.join("CHECKER.md")).ok()?;
+    let idx = text.find("eventb-checker v")?;
+    parse_version(&text[idx..])
+}
+
+/// The first `X.Y` version number in `text`.
+fn parse_version(text: &str) -> Option<(u32, u32)> {
+    let start = text.find(|c: char| c.is_ascii_digit())?;
+    let rest = &text[start..];
+    let end = rest
+        .find(|c: char| !c.is_ascii_digit() && c != '.')
+        .unwrap_or(rest.len());
+    let mut parts = rest[..end].split('.');
+    let major = parts.next()?.parse().ok()?;
+    let minor = parts.next()?.parse().ok()?;
+    Some((major, minor))
 }
