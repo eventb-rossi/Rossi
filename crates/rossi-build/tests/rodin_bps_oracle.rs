@@ -128,11 +128,7 @@ fn rodin_build_reproduces_computed_statuses() {
     assert!(failures == 0, "{failures} model(s) diverged");
 }
 
-use FailOrSkip::*;
-enum FailOrSkip {
-    Skip(String),
-    Fail(String),
-}
+use common::FailOrSkip::{self, Fail, Skip};
 
 fn check_one(
     rodin: &str,

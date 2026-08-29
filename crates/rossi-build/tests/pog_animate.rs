@@ -101,12 +101,7 @@ fn animator_reads_back_generated_obligations() {
     assert!(failures == 0, "{failures} model(s) diverged");
 }
 
-use FailOrSkip::*;
-/// A model this gate cannot judge vs. a real divergence.
-enum FailOrSkip {
-    Skip(String),
-    Fail(String),
-}
+use common::FailOrSkip::{self, Fail, Skip};
 
 fn check_one(
     animate: &Path,

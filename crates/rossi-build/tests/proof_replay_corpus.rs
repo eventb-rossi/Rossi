@@ -30,7 +30,6 @@
 mod common;
 
 use std::collections::BTreeMap;
-use std::io::Read;
 use std::path::Path;
 
 use common::{
@@ -39,7 +38,7 @@ use common::{
 };
 use rossi_prove::bpr::{self, Keep, ProofBody, ProofEntry};
 use rossi_prove::bps::read_bps;
-use rossi_prove::po_loader::{PoFile, PoProject};
+use rossi_prove::po_loader::PoProject;
 use rossi_prove::{
     Antecedent, HypAction, ReasonerProvider, Registration, RegistryProvider, ReplayHints, Rule,
     Skeleton,
@@ -488,51 +487,17 @@ fn check_model(
     per_reasoner: &mut BTreeMap<String, ReasonerCounts>,
     problems: &mut Vec<String>,
 ) -> Result<(), String> {
-    let file = std::fs::File::open(path).map_err(|err| err.to_string())?;
-    let mut archive = zip::ZipArchive::new(file).map_err(|err| err.to_string())?;
-    let names: Vec<String> = archive.file_names().map(str::to_string).collect();
-    let mut read_entry = |name: &str| -> Option<Vec<u8>> {
-        let mut bytes = Vec::new();
-        archive.by_name(name).ok()?.read_to_end(&mut bytes).ok()?;
-        Some(bytes)
-    };
-
-    let mut stems: Vec<String> = names
-        .iter()
-        .filter(|name| name.ends_with(".bpo"))
-        .map(|name| name.trim_end_matches(".bpo").to_string())
-        .collect();
-    stems.sort();
-
-    // One project per archive directory: hypothesis-set chains cross
-    // component files and resolve by file basename.
-    let mut projects: BTreeMap<String, PoProject> = BTreeMap::new();
-    let mut checked = Vec::new();
-    for stem in &stems {
-        let (dir, file) = stem.rsplit_once('/').unwrap_or(("", stem));
-        let bpo =
-            read_entry(&format!("{stem}.bpo")).ok_or_else(|| format!("unreadable {stem}.bpo"))?;
-        let bpo = String::from_utf8_lossy(&bpo).into_owned();
-        // Legacy obligation vintage: nothing to replay against.
-        if bpo.contains("name=\"GOAL\"") {
-            continue;
-        }
-        if let Ok(parsed) = PoFile::read(bpo.as_bytes()) {
-            projects
-                .entry(dir.to_string())
-                .or_default()
-                .insert(format!("{file}.bpo"), parsed);
-            checked.push(stem.clone());
-        }
-    }
-
-    for stem in checked {
-        let (dir, file) = stem.rsplit_once('/').unwrap_or(("", stem.as_str()));
-        let bpr = read_entry(&format!("{stem}.bpr"));
-        let bps = read_entry(&format!("{stem}.bps"));
+    // Legacy-vintage components have nothing to replay against, and a
+    // `.bpo` that fails to parse never reaches the walkable set — both
+    // are accounted by the reuse gate, so this one just skips them.
+    let mut po = common::PoArchive::load(path)?;
+    for stem in std::mem::take(&mut po.checked) {
+        let (dir, file) = common::stem_parts(&stem);
+        let bpr = po.entry(&format!("{stem}.bpr"));
+        let bps = po.entry(&format!("{stem}.bps"));
         let bps = bps.as_deref().map(String::from_utf8_lossy);
         check_component(
-            &projects[dir],
+            &po.projects[dir],
             &stem,
             &format!("{file}.bpo"),
             bpr.as_deref(),

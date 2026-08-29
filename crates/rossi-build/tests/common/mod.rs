@@ -460,10 +460,16 @@ pub fn sanitize(s: &str) -> String {
 /// flag in the corpus `model_flags.tsv`, with the audited reason in the
 /// notes column. Shared by the proof-obligation gates.
 pub fn pog_known_divergence(corpus: &Path, model: &str) -> Option<String> {
+    known_divergence(corpus, model, "pog_divergence")
+}
+
+/// The audited reason a model carries `flag` in the corpus
+/// `model_flags.tsv`, if it does.
+fn known_divergence(corpus: &Path, model: &str, flag: &str) -> Option<String> {
     let tsv = std::fs::read_to_string(corpus.join("model_flags.tsv")).ok()?;
     for line in tsv.lines().skip(1) {
         let mut cols = line.split('\t');
-        if cols.next() == Some(model) && cols.next() == Some("pog_divergence") {
+        if cols.next() == Some(model) && cols.next() == Some(flag) {
             return Some(cols.next().unwrap_or("").to_string());
         }
     }
@@ -475,14 +481,7 @@ pub fn pog_known_divergence(corpus: &Path, model: &str) -> Option<String> {
 /// `prove_divergence` flag in the corpus `model_flags.tsv`, with the
 /// audited reason.
 pub fn prove_known_divergence(corpus: &Path, model: &str) -> Option<String> {
-    let tsv = std::fs::read_to_string(corpus.join("model_flags.tsv")).ok()?;
-    for line in tsv.lines().skip(1) {
-        let mut cols = line.split('\t');
-        if cols.next() == Some(model) && cols.next() == Some("prove_divergence") {
-            return Some(cols.next().unwrap_or("").to_string());
-        }
-    }
-    None
+    known_divergence(corpus, model, "prove_divergence")
 }
 
 /// Compare a reference proof-obligation view against a generated one,
@@ -551,4 +550,106 @@ pub fn diff_po_views(
             return;
         }
     }
+}
+
+/// One corpus archive's proof-obligation files, grouped one
+/// [`rossi_prove::PoProject`] per archive directory — hypothesis-set
+/// chains cross component files within a project and resolve by file
+/// basename (archives are routinely renamed, so handle paths keep the
+/// original project name). Legacy-vintage files (`GOAL` child naming)
+/// and unreadable ones are reported rather than loaded, so each gate
+/// keeps its own accounting for them.
+pub struct PoArchive {
+    archive: zip::ZipArchive<std::fs::File>,
+    /// The per-directory projects the checked stems load from.
+    pub projects: BTreeMap<String, rossi_prove::PoProject>,
+    /// Component stems (entry names without extension) whose
+    /// obligations parsed, in sorted order.
+    pub checked: Vec<String>,
+    /// Legacy-vintage stems with their sequent counts.
+    pub legacy: Vec<(String, usize)>,
+    /// Stems whose `.bpo` did not read or parse, with the reason.
+    pub unreadable: Vec<(String, String)>,
+}
+
+/// Splits a component stem into its archive directory (with trailing
+/// slash, empty for the root) and basename.
+pub fn stem_parts(stem: &str) -> (&str, &str) {
+    stem.rsplit_once('/').unwrap_or(("", stem))
+}
+
+impl PoArchive {
+    /// Loads every `.bpo` of the archive at `path`.
+    pub fn load(path: &Path) -> Result<PoArchive, String> {
+        let file = std::fs::File::open(path).map_err(|err| err.to_string())?;
+        let mut archive = zip::ZipArchive::new(file).map_err(|err| err.to_string())?;
+        let mut stems: Vec<String> = archive
+            .file_names()
+            .filter(|name| name.ends_with(".bpo"))
+            .map(|name| name.trim_end_matches(".bpo").to_string())
+            .collect();
+        stems.sort();
+
+        let mut projects: BTreeMap<String, rossi_prove::PoProject> = BTreeMap::new();
+        let mut checked = Vec::new();
+        let mut legacy = Vec::new();
+        let mut unreadable = Vec::new();
+        for stem in stems {
+            let (dir, file) = stem_parts(&stem);
+            let mut bytes = Vec::new();
+            let readable = archive
+                .by_name(&format!("{stem}.bpo"))
+                .ok()
+                .and_then(|mut entry| std::io::Read::read_to_end(&mut entry, &mut bytes).ok())
+                .is_some();
+            if !readable {
+                unreadable.push((stem, "unreadable zip entry".to_string()));
+                continue;
+            }
+            let bpo = String::from_utf8_lossy(&bytes).into_owned();
+            // Legacy obligation vintage: files predating the current
+            // child-naming scheme are out of scope wholesale.
+            if bpo.contains("name=\"GOAL\"") {
+                let sequents = bpo.matches("<org.eventb.core.poSequent ").count();
+                legacy.push((stem, sequents));
+                continue;
+            }
+            match rossi_prove::PoFile::read(bpo.as_bytes()) {
+                Ok(parsed) => {
+                    projects
+                        .entry(dir.to_string())
+                        .or_default()
+                        .insert(format!("{file}.bpo"), parsed);
+                    checked.push(stem);
+                }
+                Err(err) => unreadable.push((stem, err.to_string())),
+            }
+        }
+        Ok(PoArchive {
+            archive,
+            projects,
+            checked,
+            legacy,
+            unreadable,
+        })
+    }
+
+    /// The raw bytes of one archive entry, `None` when absent or
+    /// unreadable.
+    pub fn entry(&mut self, name: &str) -> Option<Vec<u8>> {
+        use std::io::Read;
+        let mut bytes = Vec::new();
+        self.archive
+            .by_name(name)
+            .ok()?
+            .read_to_end(&mut bytes)
+            .ok()?;
+        Some(bytes)
+    }
+}
+
+/// A model an oracle gate cannot judge vs. a real divergence.
+pub enum FailOrSkip {
+    Skip(String),
+    Fail(String),
 }
