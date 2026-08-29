@@ -1604,6 +1604,26 @@ impl PrettyPrinter {
         if fm_above_pair(child.kind()) {
             return true;
         }
+        if matches!(
+            child.kind(),
+            FExprKind::Unary {
+                op: UnaryExprOp::UnMinus,
+                ..
+            }
+        ) || matches!(
+            child.kind(),
+            FExprKind::IntegerLiteral(value) if value.sign() == num_bigint::Sign::Minus
+        ) {
+            // Unary minus parses at additive precedence: printed bare
+            // under a tighter arithmetic operator it would swallow the
+            // rest of the term on re-parsing. A negative integer literal
+            // prints as the same bare `−N`, so it needs the same
+            // parentheses: `(−2)^n` is written, never `−2^n`.
+            return matches!(
+                parent_op,
+                BinaryOp::Multiply | BinaryOp::Divide | BinaryOp::Modulo | BinaryOp::Exponent
+            );
+        }
         let Some(child_op) = effective_binary(child.kind()) else {
             return false;
         };

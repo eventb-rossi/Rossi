@@ -322,8 +322,26 @@ function_application = {
 }
 
 // Unary Expressions
+// Unary minus takes a whole multiplicative term, per kernel_lang
+// §3.3.4 (⟨arithmetic-expr⟩ ::= ['-'] ⟨term⟩ …):
+// "−a∗b" is −(a∗b), while "−a+b" stays (−a)+b because the operand
+// rule stops before an additive operator. The recursion is guarded
+// by the consumed minus sign, and nothing below the multiplicative
+// chain can reach a bare ";", so the action (no_semi) contexts may
+// share this rule.
 unary_expr = {
-    (op_minus | op_powerset1 | op_powerset) ~ unary_expr
+    op_minus ~ multiplicative_expr
+  | (op_powerset1 | op_powerset) ~ unary_expr
+  | function_application
+}
+
+// The right operand of the non-associative `^`. A minus here must bind
+// tightly (`2^−3` is 2^(−3)): letting it take a whole multiplicative
+// term would re-enter the exponent level and smuggle a second `^`
+// through the non-associativity check (`2^−3^4`), which is rejected.
+exponent_operand = {
+    op_minus ~ exponent_operand
+  | (op_powerset1 | op_powerset) ~ unary_expr
   | function_application
 }
 
@@ -331,7 +349,7 @@ unary_expr = {
 
 // Exponent (non-associative) — highest arithmetic precedence per spec §3.3.6
 exponent_expr = {
-    unary_expr ~ (op_exponent ~ unary_expr)?
+    unary_expr ~ (op_exponent ~ exponent_operand)?
 }
 
 // Multiplicative operators (arithmetic only)
@@ -495,7 +513,7 @@ predicate_no_semi = {
 // Expression variants that exclude op_semicolon (composition).
 // Used inside actions so that ";" unambiguously separates actions in action_list.
 exponent_expr_no_semi = {
-    unary_expr ~ (op_exponent ~ unary_expr)?
+    unary_expr ~ (op_exponent ~ exponent_operand)?
 }
 multiplicative_expr_no_semi = {
     exponent_expr_no_semi ~ ((op_multiply | op_divide | op_modulo) ~ exponent_expr_no_semi)*

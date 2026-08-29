@@ -15,13 +15,6 @@
 //! histogram (measured only: rossi does not name its rules, and its
 //! auto-flattening steps leave no trace at all).
 //!
-//! Samples with a unary minus directly under `∗`, `÷`, `mod` or `^`
-//! are skipped: the two parsers group that spelling differently
-//! (the reference leading minus takes the whole multiplicative term,
-//! while rossi binds it to the adjacent operand), so no printed request
-//! means the same formula to both sides. Aligning the parser is
-//! tracked separately.
-//!
 //! `#[ignore]` by default (needs a corpus and a reference build). Run:
 //!
 //!   RODIN_HEADLESS=/path/to/wrapper \
@@ -349,9 +342,6 @@ fn to_sample(
     env: &SealedTypeEnvironment,
     seen: &mut BTreeSet<String>,
 ) -> Option<Sample> {
-    if has_minus_under_tight_arith(pred) {
-        return None;
-    }
     let mut env_part = String::new();
     for name in pred.free_identifiers() {
         let ty = env.get(name)?;
@@ -377,47 +367,6 @@ fn to_sample(
         pred: reparsed,
         env: env.clone(),
     })
-}
-
-/// Whether a unary minus sits directly under a tight arithmetic
-/// operator — the one spelling the two grammars group differently.
-fn has_minus_under_tight_arith(pred: &Predicate) -> bool {
-    use rossi::formula::rewrite::FormulaRewriter;
-    use rossi::formula::tag::{AssocExprOp, BinaryExprOp, UnaryExprOp};
-    use rossi::formula::{Expression, ExpressionKind};
-    struct Scan(bool);
-    impl FormulaRewriter for Scan {
-        fn rewrite_expression(&mut self, expr: &Expression) -> Expression {
-            let is_minus = |e: &Expression| {
-                matches!(
-                    e.kind(),
-                    ExpressionKind::Unary {
-                        op: UnaryExprOp::UnMinus,
-                        ..
-                    }
-                )
-            };
-            match expr.kind() {
-                ExpressionKind::Associative {
-                    op: AssocExprOp::Mul,
-                    children,
-                } if children.iter().any(is_minus) => self.0 = true,
-                ExpressionKind::Binary { op, left, right }
-                    if matches!(
-                        op,
-                        BinaryExprOp::Div | BinaryExprOp::Mod | BinaryExprOp::Expn
-                    ) && (is_minus(left) || is_minus(right)) =>
-                {
-                    self.0 = true
-                }
-                _ => {}
-            }
-            expr.clone()
-        }
-    }
-    let mut scan = Scan(false);
-    pred.rewrite(&mut scan);
-    scan.0
 }
 
 fn print_pred(pred: &Predicate) -> String {

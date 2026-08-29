@@ -140,6 +140,18 @@ fn applications_images_and_unaries_print_structurally() {
     let negated = ff().unary_expression(UnaryExprOp::UnMinus, fid("x"), None);
     assert_eq!(readable().print_formula_expression(&negated), "−(x)");
 
+    // A negative integer literal prints bare, so under
+    // `∗ ÷ mod ^` it needs the same parentheses as a unary-minus node:
+    // unparenthesized, `−2^2` would re-parse as `−(2^2)`. Stored
+    // output writes
+    // `(−2)^2`. An additive context keeps the bare literal.
+    let pow = ff().binary_expression(BinaryExprOp::Expn, int(-2), int(2), None);
+    assert_eq!(formula_string().print_formula_expression(&pow), "(−2) ^ 2");
+    let prod = ff().associative_expression(AssocExprOp::Mul, vec![int(-2), fid("x")], None);
+    assert_eq!(formula_string().print_formula_expression(&prod), "(−2)∗x");
+    let shifted = plus(vec![int(-2), fid("x")]);
+    assert_eq!(formula_string().print_formula_expression(&shifted), "−2+x");
+
     let card = ff().unary_expression(UnaryExprOp::KCard, fid("s"), None);
     assert_eq!(readable().print_formula_expression(&card), "card(s)");
 
