@@ -27,6 +27,7 @@ use std::path::Path;
 
 use quick_xml::Reader;
 use quick_xml::events::{BytesStart, Event as XmlEvent};
+use rossi_prove::confidence::Bucket;
 
 use crate::rules::RuleId;
 use crate::{Diagnostic, Severity, error::Result};
@@ -58,8 +59,9 @@ pub struct ProofReport {
 
 /// Rodin's proof confidence buckets. Thresholds are eventb-checker's
 /// (`>500` discharged, `101..=500` reviewed, `0..=100` pending, absent or
-/// negative unattempted). `pub(crate)` because `pog::reconcile`'s stamp
-/// guard classifies status rows by the same rules.
+/// negative unattempted), owned by [`rossi_prove::Confidence::classify`].
+/// `pub(crate)` because `pog::reconcile`'s stamp guard classifies status
+/// rows by the same rules.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum Confidence {
     Discharged,
@@ -70,12 +72,11 @@ pub(crate) enum Confidence {
 
 impl Confidence {
     pub(crate) fn classify(confidence: Option<i64>) -> Self {
-        match confidence {
-            None => Confidence::Unattempted,
-            Some(c) if c > 500 => Confidence::Discharged,
-            Some(c) if c >= 101 => Confidence::Reviewed,
-            Some(c) if c >= 0 => Confidence::Pending,
-            Some(_) => Confidence::Unattempted,
+        match rossi_prove::Confidence::classify(confidence) {
+            Bucket::Discharged => Confidence::Discharged,
+            Bucket::Reviewed => Confidence::Reviewed,
+            Bucket::Pending => Confidence::Pending,
+            Bucket::Unattempted => Confidence::Unattempted,
         }
     }
 

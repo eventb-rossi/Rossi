@@ -27,9 +27,10 @@ use std::process::ExitCode;
 use clap::Args;
 
 use rossi_prove::bpr::{Keep, ProofBody, ProofEntry, read_bpr};
+use rossi_prove::confidence::Bucket;
 use rossi_prove::po_loader::{PoFile, PoProject};
 use rossi_prove::status::compute_status;
-use rossi_prove::{ProofTreeNode, ReasonerProvider, RegistryProvider, Skeleton};
+use rossi_prove::{Confidence, ProofTreeNode, ReasonerProvider, RegistryProvider, Skeleton};
 
 #[derive(Args)]
 pub struct ProveArgs {
@@ -196,11 +197,11 @@ fn prove(input: &Path, verbose: bool, replay: bool) -> Result<Summary, Box<dyn s
                             if verdict.broken {
                                 "broken"
                             } else {
-                                match verdict.confidence {
-                                    Some(c) if c > 500 => "discharged",
-                                    Some(c) if c > 100 => "reviewed",
-                                    Some(c) if c > -99 => "pending",
-                                    _ => "unattempted",
+                                match Confidence::classify(verdict.confidence.map(i64::from)) {
+                                    Bucket::Discharged => "discharged",
+                                    Bucket::Reviewed => "reviewed",
+                                    Bucket::Pending => "pending",
+                                    Bucket::Unattempted => "unattempted",
                                 }
                             }
                         }
