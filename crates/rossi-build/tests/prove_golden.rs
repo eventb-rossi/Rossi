@@ -79,26 +79,21 @@ fn archive_proof_files(model: &str) -> (BTreeMap<String, String>, BTreeMap<Strin
 }
 
 /// The fresh unattempted row reconciliation synthesizes for an
-/// obligation the recorded `.bps` does not mention.
+/// obligation the recorded `.bps` does not mention — fabricated
+/// through the library's own row synthesis so a format change there
+/// cannot leave this gate comparing a stale shape.
 fn fresh_rows(bpo: &str) -> String {
     let parsed = PoFile::read(bpo.as_bytes()).expect("bpo");
-    let mut out = String::from(
-        "<?xml version=\"1.0\" encoding=\"UTF-8\" standalone=\"no\"?>\n<org.eventb.core.psFile>\n",
-    );
-    for entry in parsed.sequents() {
-        let stamp = entry.stamp.as_deref().unwrap_or("0");
-        out.push_str(&format!(
-            "<org.eventb.core.psStatus name=\"{}\" org.eventb.core.confidence=\"-99\" \
-             org.eventb.core.poStamp=\"{stamp}\" org.eventb.core.psManual=\"false\"/>\n",
-            entry
-                .name
-                .replace('&', "&amp;")
-                .replace('<', "&lt;")
-                .replace('"', "&quot;"),
-        ));
-    }
-    out.push_str("</org.eventb.core.psFile>\n");
-    out
+    let rows: Vec<String> = parsed
+        .sequents()
+        .map(|entry| {
+            rossi_build::pog::reconcile::fresh_status_row(
+                &entry.name,
+                entry.stamp.as_deref().unwrap_or("0"),
+            )
+        })
+        .collect();
+    rossi_build::pog::reconcile::assemble_status(&rows)
 }
 
 fn row_summary(row: &PsStatus) -> String {

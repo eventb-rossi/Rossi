@@ -28,7 +28,6 @@
 mod common;
 
 use std::collections::{BTreeMap, BTreeSet};
-use std::io::Read;
 use std::path::Path;
 use std::time::Duration;
 
@@ -38,7 +37,6 @@ use common::{
 };
 use rossi::formula::{Predicate, SealedTypeEnvironment};
 use rossi::pretty::PrettyPrinter;
-use rossi_prove::po_loader::{PoFile, PoProject};
 use rossi_prove::reasoners::auto_rewrite_fixpoint;
 
 const DEFAULT_SAMPLES: usize = 5000;
@@ -266,67 +264,27 @@ fn harvest(
     cap: usize,
     seen: &mut BTreeSet<String>,
 ) -> Result<Vec<Sample>, String> {
-    let bytes = std::fs::read(zip).map_err(|e| format!("read: {e}"))?;
-    let mut archive = zip::ZipArchive::new(std::io::Cursor::new(bytes.as_slice()))
-        .map_err(|e| format!("zip: {e}"))?;
-    let names: Vec<String> = archive.file_names().map(str::to_string).collect();
-    let mut read_entry = |name: &str| -> Option<String> {
-        let mut entry = archive.by_name(name).ok()?;
-        let mut text = String::new();
-        entry.read_to_string(&mut text).ok()?;
-        Some(text)
-    };
-
-    let mut stems: Vec<String> = names
-        .iter()
-        .filter(|name| name.ends_with(".bpo"))
-        .map(|name| name.trim_end_matches(".bpo").to_string())
-        .collect();
-    stems.sort();
-
-    // One project per archive directory: hypothesis-set chains cross
-    // component files and resolve by file basename.
-    let mut projects: BTreeMap<String, PoProject> = BTreeMap::new();
-    for stem in &stems {
-        let (dir, file) = stem.rsplit_once('/').unwrap_or(("", stem));
-        let Some(bpo) = read_entry(&format!("{stem}.bpo")) else {
+    // Legacy-vintage and unparsable components are simply not sampled.
+    let po = common::PoArchive::load(zip)?;
+    let mut found = Vec::new();
+    for stem in &po.checked {
+        let (dir, file) = common::stem_parts(stem);
+        let project = &po.projects[dir];
+        let path = format!("{file}.bpo");
+        let Some(po_file) = project.file(&path) else {
             continue;
         };
-        // Legacy obligation vintage: not the modern storage form.
-        if bpo.contains("name=\"GOAL\"") {
-            continue;
-        }
-        if let Ok(parsed) = PoFile::read(bpo.as_bytes()) {
-            projects
-                .entry(dir.to_string())
-                .or_default()
-                .insert(format!("{file}.bpo"), parsed);
-        }
-    }
-
-    let mut found = Vec::new();
-    for (dir, project) in &projects {
-        for stem in &stems {
-            let (stem_dir, file) = stem.rsplit_once('/').unwrap_or(("", stem.as_str()));
-            if stem_dir != dir {
-                continue;
-            }
-            let path = format!("{file}.bpo");
-            let Some(po_file) = project.file(&path) else {
+        let sequent_names: Vec<String> = po_file.sequents().map(|s| s.name.clone()).collect();
+        for name in sequent_names {
+            let Ok(seq) = project.load(&path, &name) else {
                 continue;
             };
-            let sequent_names: Vec<String> = po_file.sequents().map(|s| s.name.clone()).collect();
-            for name in sequent_names {
-                let Ok(seq) = project.load(&path, &name) else {
-                    continue;
-                };
-                for pred in seq.hyp_iter().chain([seq.goal()]) {
-                    if found.len() >= cap {
-                        return Ok(found);
-                    }
-                    if let Some(sample) = to_sample(model, pred, seq.type_env(), seen) {
-                        found.push(sample);
-                    }
+            for pred in seq.hyp_iter().chain([seq.goal()]) {
+                if found.len() >= cap {
+                    return Ok(found);
+                }
+                if let Some(sample) = to_sample(model, pred, seq.type_env(), seen) {
+                    found.push(sample);
                 }
             }
         }

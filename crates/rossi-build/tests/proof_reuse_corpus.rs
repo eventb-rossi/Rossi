@@ -16,7 +16,6 @@
 mod common;
 
 use std::collections::BTreeMap;
-use std::io::{BufReader, Read};
 use std::path::Path;
 
 use common::{
@@ -26,7 +25,7 @@ use common::{
 use rossi_prove::bpr::{self, Keep, ProofBody, ProofEntry};
 use rossi_prove::bps::{PsStatus, read_bps};
 use rossi_prove::confidence::Confidence;
-use rossi_prove::po_loader::{PoFile, PoProject};
+use rossi_prove::po_loader::PoProject;
 use rossi_prove::status::compute_status;
 use rossi_prove::tree::ProofTreeNode;
 
@@ -70,7 +69,7 @@ impl Counts {
 /// Normalizes a recorded or computed confidence: anything at or below
 /// unattempted reads as "no confidence".
 fn norm(confidence: Option<i32>) -> Option<i32> {
-    confidence.filter(|c| *c > Confidence::UNATTEMPTED.0)
+    confidence.filter(|c| Confidence::is_attempted(Some(i64::from(*c))))
 }
 
 fn check_component(
@@ -357,65 +356,22 @@ fn report_row(model: &str, counts: &Counts, verdict: &str, notes: &str) -> Vec<S
 }
 
 fn check_model(path: &Path, counts: &mut Counts, problems: &mut Vec<String>) -> Result<(), String> {
-    let file = std::fs::File::open(path).map_err(|err| err.to_string())?;
-    let mut archive = zip::ZipArchive::new(file).map_err(|err| err.to_string())?;
-    let names: Vec<String> = archive.file_names().map(str::to_string).collect();
-    let mut read_entry = |name: &str| -> Option<Vec<u8>> {
-        let mut bytes = Vec::new();
-        archive.by_name(name).ok()?.read_to_end(&mut bytes).ok()?;
-        Some(bytes)
-    };
-    let _ = BufReader::new(std::io::empty());
-
-    let mut stems: Vec<String> = names
-        .iter()
-        .filter(|name| name.ends_with(".bpo"))
-        .map(|name| name.trim_end_matches(".bpo").to_string())
-        .collect();
-    stems.sort();
-
-    // First pass: parse every component's obligations, one project per
-    // archive directory — hypothesis-set chains cross component files
-    // within a project and resolve by file basename (archives are
-    // routinely renamed, so handle paths keep the original project
-    // name).
-    let mut projects: BTreeMap<String, PoProject> = BTreeMap::new();
-    let mut checked = Vec::new();
-    for stem in &stems {
-        let (dir, file) = stem.rsplit_once('/').unwrap_or(("", stem));
-        let bpo =
-            read_entry(&format!("{stem}.bpo")).ok_or_else(|| format!("unreadable {stem}.bpo"))?;
-        let bpo = String::from_utf8_lossy(&bpo).into_owned();
-        // Legacy obligation vintage: files predating the current
-        // child-naming scheme are out of scope wholesale.
-        if bpo.contains("name=\"GOAL\"") {
-            let sequents = bpo.matches("<org.eventb.core.poSequent ").count();
-            counts.pos += sequents;
-            counts.legacy += sequents;
-            continue;
-        }
-        match PoFile::read(bpo.as_bytes()) {
-            Ok(parsed) => {
-                projects
-                    .entry(dir.to_string())
-                    .or_default()
-                    .insert(format!("{file}.bpo"), parsed);
-                checked.push(stem.clone());
-            }
-            Err(err) => {
-                counts.load_error += 1;
-                problems.push(format!("{stem}: {err}"));
-            }
-        }
+    let mut po = common::PoArchive::load(path)?;
+    for (_, sequents) in &po.legacy {
+        counts.pos += sequents;
+        counts.legacy += sequents;
     }
-
-    for stem in checked {
-        let (dir, file) = stem.rsplit_once('/').unwrap_or(("", stem.as_str()));
-        let bps = read_entry(&format!("{stem}.bps"));
+    for (stem, err) in &po.unreadable {
+        counts.load_error += 1;
+        problems.push(format!("{stem}: {err}"));
+    }
+    for stem in std::mem::take(&mut po.checked) {
+        let (dir, file) = common::stem_parts(&stem);
+        let bps = po.entry(&format!("{stem}.bps"));
         let bps = bps.as_deref().map(String::from_utf8_lossy);
-        let bpr = read_entry(&format!("{stem}.bpr"));
+        let bpr = po.entry(&format!("{stem}.bpr"));
         check_component(
-            &projects[dir],
+            &po.projects[dir],
             &stem,
             &format!("{file}.bpo"),
             bps.as_deref(),
