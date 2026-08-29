@@ -15,6 +15,7 @@ use std::process::ExitCode;
 use clap::Args;
 
 use rossi_build::pog::reconcile::reconcile_build_files;
+use rossi_build::pog::status::update_statuses;
 use rossi_build::project::{duplicate_component_name, project_from_text_components};
 use rossi_build::{BuildResult, Project, ScFile, build, is_normal_path_component};
 
@@ -351,10 +352,19 @@ fn reconcile_pending(pending: &mut [(PathBuf, String)], destinations: &[PathBuf]
             accurate: true,
         })
         .collect();
-    reconcile_build_files(&mut files, |name| {
+    let synthesized = reconcile_build_files(&mut files, |name| {
         destination_of
             .get(name)
             .and_then(|destination| std::fs::read_to_string(destination).ok())
+    });
+    // The same status pass the archive repack runs, so a loose-output
+    // rebuild and a zip rebuild of the same project agree on the
+    // `.bps` bytes. The `.bpr` sits beside the `.bps` it belongs to.
+    update_statuses(&mut files, &synthesized, |name| {
+        let stem = name.strip_suffix(".bpr")?;
+        let sibling = destination_of.get(&format!("{stem}.bps"))?;
+        let path = sibling.with_file_name(std::path::Path::new(name).file_name()?);
+        std::fs::read(path).ok()
     });
     for ((_, contents), file) in pending.iter_mut().zip(files) {
         *contents = file.contents;
@@ -491,8 +501,13 @@ fn synthesize_flat_zip(
     let mut files = result.files.clone();
     let mut proofs: Vec<PathBuf> = Vec::new();
     if input.is_dir() {
-        reconcile_build_files(&mut files, |name| {
+        let synthesized = reconcile_build_files(&mut files, |name| {
             std::fs::read_to_string(input.join(name)).ok()
+        });
+        // The same status pass the archive repack runs, reading the
+        // directory's proofs, so both flows agree on the `.bps` bytes.
+        update_statuses(&mut files, &synthesized, |name| {
+            std::fs::read(input.join(name)).ok()
         });
         proofs = std::fs::read_dir(input)?
             .flatten()

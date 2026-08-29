@@ -21,7 +21,7 @@
 //! is exactly the signal proof managers use to re-check the stored
 //! proof, so no proof-dependency analysis happens here.
 
-use std::collections::{BTreeSet, HashMap};
+use std::collections::{BTreeSet, HashMap, HashSet};
 
 use quick_xml::Reader;
 use quick_xml::events::Event;
@@ -34,10 +34,24 @@ use crate::xml_out::{DOC_HEADER, attr, tag as xtag};
 /// Reconcile every generated `.bpo` / `.bps` pair in `files` against
 /// the previous contents supplied by `old` (keyed by the generated
 /// filename; `None` when no previous file exists).
-pub fn reconcile_build_files(files: &mut [ScFile], mut old: impl FnMut(&str) -> Option<String>) {
+///
+/// Returns, per `.bps` filename, the names of the rows that were
+/// synthesized fresh rather than carried from a previous row — the
+/// rows [`super::status::update_statuses`] may revive from stored
+/// proofs (a missing status is computed from the proof file, but
+/// never touches a recorded stamp-valid row).
+pub fn reconcile_build_files(
+    files: &mut [ScFile],
+    mut old: impl FnMut(&str) -> Option<String>,
+) -> HashMap<String, HashSet<String>> {
+    let mut synthesized = HashMap::new();
     for (i, j) in bpo_bps_pairs(files) {
         let old_bpo = old(&files[i].filename);
         let old_bps = old(&files[j].filename);
+        let carried: HashSet<String> = old_bps
+            .as_deref()
+            .map(|bps| parse_status_rows(bps).into_iter().map(|r| r.name).collect())
+            .unwrap_or_default();
         let (bpo_out, bps_out) = reconcile_pair(
             old_bpo.as_deref(),
             old_bps.as_deref(),
@@ -46,7 +60,14 @@ pub fn reconcile_build_files(files: &mut [ScFile], mut old: impl FnMut(&str) -> 
         );
         files[i].contents = bpo_out;
         files[j].contents = bps_out;
+        let fresh: HashSet<String> = parse_status_rows(&files[j].contents)
+            .into_iter()
+            .map(|row| row.name)
+            .filter(|name| !carried.contains(name))
+            .collect();
+        synthesized.insert(files[j].filename.clone(), fresh);
     }
+    synthesized
 }
 
 /// The `(bpo index, bps index)` of every same-stem `.bpo` / `.bps` pair —
