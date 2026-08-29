@@ -305,6 +305,30 @@ mod tests {
         ));
     }
 
+    /// The loose multi-project output path names files with a
+    /// directory prefix (`proj/M0.bpo`) while every parent-set handle
+    /// still resolves to the basename; recomputation must find the
+    /// generated file all the same instead of silently carrying the
+    /// stale rows.
+    #[test]
+    fn prefixed_filenames_still_get_recomputed() {
+        let mut files = files_with(BPS);
+        for file in &mut files {
+            file.filename = format!("proj/{}", file.filename);
+        }
+        update_statuses(&mut files, &HashMap::new(), |name| {
+            assert_eq!(name, "proj/M0.bpr");
+            Some(BPR.as_bytes().to_vec())
+        });
+        let bps = &files[1].contents;
+        assert!(bps.contains(
+            r#"<org.eventb.core.psStatus name="evt/inv2/INV" org.eventb.core.confidence="1000" org.eventb.core.poStamp="2" org.eventb.core.psManual="true"/>"#
+        ));
+        assert!(bps.contains(
+            r#"<org.eventb.core.psStatus name="evt/inv3/INV" org.eventb.core.confidence="1000" org.eventb.core.poStamp="2" org.eventb.core.psBroken="true" org.eventb.core.psManual="false"/>"#
+        ));
+    }
+
     #[test]
     fn missing_proofs_reset_to_unattempted() {
         let bps = run(None);
