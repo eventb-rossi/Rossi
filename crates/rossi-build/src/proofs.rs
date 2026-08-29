@@ -57,48 +57,26 @@ pub struct ProofReport {
     pub summary: Option<ProofSummary>,
 }
 
-/// Rodin's proof confidence buckets. Thresholds are eventb-checker's
-/// (`>500` discharged, `101..=500` reviewed, `0..=100` pending, absent or
-/// negative unattempted), owned by [`rossi_prove::Confidence::classify`].
-/// `pub(crate)` because `pog::reconcile`'s stamp guard classifies status
-/// rows by the same rules.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum Confidence {
-    Discharged,
-    Reviewed,
-    Pending,
-    Unattempted,
+/// A broken proof keeps its stale (often high) confidence in the
+/// `.bps`, but eventb-checker 1.6 does not count it as discharged or
+/// reviewed: such an obligation is reported `pending`. Lower
+/// classifications (already pending / unattempted) are left
+/// untouched. `pub(crate)` because `pog::reconcile`'s stamp guard
+/// classifies status rows by the same rules.
+pub(crate) fn cap_if_broken(bucket: Bucket, broken: bool) -> Bucket {
+    if broken && matches!(bucket, Bucket::Discharged | Bucket::Reviewed) {
+        Bucket::Pending
+    } else {
+        bucket
+    }
 }
 
-impl Confidence {
-    pub(crate) fn classify(confidence: Option<i64>) -> Self {
-        match rossi_prove::Confidence::classify(confidence) {
-            Bucket::Discharged => Confidence::Discharged,
-            Bucket::Reviewed => Confidence::Reviewed,
-            Bucket::Pending => Confidence::Pending,
-            Bucket::Unattempted => Confidence::Unattempted,
-        }
-    }
-
-    /// A broken proof keeps its stale (often high) confidence in the
-    /// `.bps`, but eventb-checker 1.6 does not count it as discharged or
-    /// reviewed: such an obligation is reported `pending`. Lower
-    /// classifications (already pending / unattempted) are left untouched.
-    pub(crate) fn cap_if_broken(self, broken: bool) -> Self {
-        if broken && matches!(self, Confidence::Discharged | Confidence::Reviewed) {
-            Confidence::Pending
-        } else {
-            self
-        }
-    }
-
-    fn label(self) -> &'static str {
-        match self {
-            Confidence::Discharged => "discharged",
-            Confidence::Reviewed => "reviewed",
-            Confidence::Pending => "pending",
-            Confidence::Unattempted => "unattempted",
-        }
+fn label(bucket: Bucket) -> &'static str {
+    match bucket {
+        Bucket::Discharged => "discharged",
+        Bucket::Reviewed => "reviewed",
+        Bucket::Pending => "pending",
+        Bucket::Unattempted => "unattempted",
     }
 }
 
@@ -274,7 +252,7 @@ impl ProofData {
         } else {
             &self.pr
         };
-        let obligations: Vec<(String, String, Confidence, bool)> = sources
+        let obligations: Vec<(String, String, Bucket, bool)> = sources
             .iter()
             .map(|src| {
                 let key = src.key();
@@ -282,7 +260,8 @@ impl ProofData {
                     Some(&(conf, broken)) => (conf, broken),
                     None => (pr_confidence.get(&key).copied().flatten(), false),
                 };
-                let confidence = Confidence::classify(raw_confidence).cap_if_broken(broken);
+                let confidence =
+                    cap_if_broken(rossi_prove::Confidence::classify(raw_confidence), broken);
                 (src.component.clone(), src.name.clone(), confidence, broken)
             })
             .collect();
@@ -293,10 +272,10 @@ impl ProofData {
         };
         for (_, _, confidence, broken) in &obligations {
             match confidence {
-                Confidence::Discharged => summary.discharged += 1,
-                Confidence::Reviewed => summary.reviewed += 1,
-                Confidence::Pending => summary.pending += 1,
-                Confidence::Unattempted => summary.unattempted += 1,
+                Bucket::Discharged => summary.discharged += 1,
+                Bucket::Reviewed => summary.reviewed += 1,
+                Bucket::Pending => summary.pending += 1,
+                Bucket::Unattempted => summary.unattempted += 1,
             }
             if *broken {
                 summary.broken += 1;
@@ -307,13 +286,13 @@ impl ProofData {
         for (component, name, confidence, broken) in &obligations {
             // A broken obligation is reported once, as EB016 below — not
             // also as EB015.
-            if !*broken && *confidence != Confidence::Discharged {
+            if !*broken && *confidence != Bucket::Discharged {
                 diagnostics.push(Diagnostic {
                     severity: Severity::Warning,
                     origin: component.clone(),
                     message: format!(
                         "Proof obligation not discharged: {name} ({})",
-                        confidence.label()
+                        label(*confidence)
                     ),
                     rule_id: Some(RuleId::UndischargedProof),
                     span: None,
@@ -468,14 +447,32 @@ mod tests {
 
     #[test]
     fn classification_thresholds_match_eventb_checker() {
-        assert_eq!(Confidence::classify(Some(501)), Confidence::Discharged);
-        assert_eq!(Confidence::classify(Some(1000)), Confidence::Discharged);
-        assert_eq!(Confidence::classify(Some(500)), Confidence::Reviewed);
-        assert_eq!(Confidence::classify(Some(101)), Confidence::Reviewed);
-        assert_eq!(Confidence::classify(Some(100)), Confidence::Pending);
-        assert_eq!(Confidence::classify(Some(0)), Confidence::Pending);
-        assert_eq!(Confidence::classify(Some(-1)), Confidence::Unattempted);
-        assert_eq!(Confidence::classify(None), Confidence::Unattempted);
+        assert_eq!(
+            rossi_prove::Confidence::classify(Some(501)),
+            Bucket::Discharged
+        );
+        assert_eq!(
+            rossi_prove::Confidence::classify(Some(1000)),
+            Bucket::Discharged
+        );
+        assert_eq!(
+            rossi_prove::Confidence::classify(Some(500)),
+            Bucket::Reviewed
+        );
+        assert_eq!(
+            rossi_prove::Confidence::classify(Some(101)),
+            Bucket::Reviewed
+        );
+        assert_eq!(
+            rossi_prove::Confidence::classify(Some(100)),
+            Bucket::Pending
+        );
+        assert_eq!(rossi_prove::Confidence::classify(Some(0)), Bucket::Pending);
+        assert_eq!(
+            rossi_prove::Confidence::classify(Some(-1)),
+            Bucket::Unattempted
+        );
+        assert_eq!(rossi_prove::Confidence::classify(None), Bucket::Unattempted);
     }
 
     #[test]

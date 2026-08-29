@@ -69,9 +69,7 @@ pub fn update_statuses(
                 stamp_stale(row)
                     || (revivable.contains(&row.name)
                         && !row.broken
-                        && row
-                            .confidence
-                            .is_none_or(|c| c <= i64::from(Confidence::UNATTEMPTED.0)))
+                        && !Confidence::is_attempted(row.confidence))
             })
             .map(|row| row.name.as_str())
             .collect();
@@ -121,11 +119,12 @@ pub fn update_statuses(
         let stale = |row: &StatusRow| {
             stamp_stale(row)
                 || (candidates.contains(row.name.as_str())
-                    && proofs
-                        .get(&row.name)
-                        .and_then(|entry| entry.confidence)
-                        .unwrap_or(Confidence::UNATTEMPTED.0)
-                        > Confidence::UNATTEMPTED.0)
+                    && Confidence::is_attempted(
+                        proofs
+                            .get(&row.name)
+                            .and_then(|entry| entry.confidence)
+                            .map(i64::from),
+                    ))
         };
         if !rows.iter().any(&stale) {
             continue;
