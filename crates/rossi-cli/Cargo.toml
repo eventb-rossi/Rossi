@@ -24,5 +24,4 @@ clap_complete.workspace = true
 rayon.workspace = true
 serde = { workspace = true }
 serde_json.workspace = true
-walkdir.workspace = true
 zip.workspace = true
