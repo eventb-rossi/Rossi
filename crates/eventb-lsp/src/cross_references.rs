@@ -12,7 +12,7 @@
 use dashmap::DashMap;
 use parking_lot::RwLock;
 use rossi::deps::{DependencyGraph, kind_and_name};
-use std::collections::{BTreeSet, HashMap, HashSet};
+use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
 use tracing::{debug, warn};
@@ -43,11 +43,69 @@ pub struct ComponentInfo {
     pub references: HashMap<ReferenceKind, Vec<String>>,
 }
 
-/// The kind and name of the component defined in a given file.
+/// A component defined in a given file, with the edges its graph node is
+/// built from. Carrying the edges — rather than just the kind and name — is
+/// what lets a name declared by two files survive the removal of one of them:
+/// the surviving declarer's node is rebuilt from memory, with no re-read and
+/// no re-parse.
 #[derive(Debug, Clone)]
 struct ComponentLoc {
-    kind: ComponentKind,
     name: String,
+    edges: ComponentEdges,
+}
+
+/// The outgoing edges of a component, mirroring the two shapes
+/// [`DependencyGraph::upsert_context`] and [`DependencyGraph::upsert_machine`]
+/// accept.
+#[derive(Debug, Clone)]
+enum ComponentEdges {
+    Context {
+        extends: Vec<String>,
+    },
+    Machine {
+        refines: Option<String>,
+        sees: Vec<String>,
+    },
+}
+
+impl ComponentLoc {
+    fn of(component: &rossi::Component) -> Self {
+        let (_, name) = kind_and_name(component);
+        let edges = match component {
+            rossi::Component::Context(context) => ComponentEdges::Context {
+                extends: context.extends.clone(),
+            },
+            rossi::Component::Machine(machine) => ComponentEdges::Machine {
+                refines: machine.refines.clone(),
+                sees: machine.sees.clone(),
+            },
+        };
+        Self { name, edges }
+    }
+
+    /// The kind this declaration is *not*. `upsert_context` / `upsert_machine`
+    /// each replace a node of their own kind only, so a component that changed
+    /// kind under a stable name (`MACHINE m` edited into `CONTEXT m`) would
+    /// otherwise leave the old node — and its edges — standing.
+    fn other_kind(&self) -> ComponentKind {
+        match self.edges {
+            ComponentEdges::Context { .. } => ComponentKind::Machine,
+            ComponentEdges::Machine { .. } => ComponentKind::Context,
+        }
+    }
+
+    /// Write this declaration into `graph`, replacing whatever node currently
+    /// carries its name.
+    fn upsert_into(&self, graph: &mut DependencyGraph) {
+        match &self.edges {
+            ComponentEdges::Context { extends } => {
+                graph.upsert_context(&self.name, extends.clone());
+            }
+            ComponentEdges::Machine { refines, sees } => {
+                graph.upsert_machine(&self.name, refines.clone(), sees.clone());
+            }
+        }
+    }
 }
 
 /// Workspace-wide cross-reference manager.
@@ -65,10 +123,14 @@ pub struct CrossReferenceManager {
     /// file reaching the server under two spellings occupies one entry.
     uri_to_component: DashMap<String, Vec<ComponentLoc>>,
 
-    /// Map from component name to its file URI. Event-B component names are
-    /// unique within a project, so every name maps to exactly one file (a
-    /// file may own several names).
-    name_to_uri: DashMap<String, String>,
+    /// Map from component name to every file that declares it. Names are
+    /// meant to be unique within a project, but duplicates are *diagnosed*
+    /// (EB019), not prevented, so this is genuinely many-to-one: while a
+    /// duplicate stands, both declarers must stay indexed, or removing one
+    /// takes the graph node with it and strands every reference to the name.
+    /// Ordered, so the declarer that represents the name is a stable choice
+    /// rather than whichever write happened last.
+    name_to_uris: DashMap<String, BTreeSet<String>>,
 
     /// Workspace root path (if available)
     workspace_root: RwLock<Option<PathBuf>>,
@@ -109,7 +171,7 @@ impl CrossReferenceManager {
         Self {
             graph: RwLock::new(DependencyGraph::new()),
             uri_to_component: DashMap::new(),
-            name_to_uri: DashMap::new(),
+            name_to_uris: DashMap::new(),
             document_uris: crate::uri_identity::DocumentUris::default(),
             workspace_root: RwLock::new(None),
             scanned: AtomicBool::new(false),
@@ -158,55 +220,85 @@ impl CrossReferenceManager {
             return;
         }
 
-        // Component names are unique per project; within one file, keep the
-        // first occurrence of a duplicated name (the maps can hold only one).
-        let mut locs: Vec<ComponentLoc> = Vec::new();
-        let mut kept: Vec<&rossi::Component> = Vec::new();
-        for component in components {
-            let (kind, name) = kind_and_name(component);
-            if locs.iter().any(|l| l.name == name) {
-                warn!("Duplicate component name `{name}` in {uri}; keeping the first occurrence");
-                continue;
-            }
-            locs.push(ComponentLoc { kind, name });
-            kept.push(component);
-        }
-
-        // Snapshot the previous occupants of this URI (clone out, drop guard).
-        let previous = self.uri_to_component.get(&uri).map(|r| r.value().clone());
-
-        {
-            let mut graph = self.graph.write();
-            for prev in previous.iter().flatten() {
-                if !locs
-                    .iter()
-                    .any(|l| l.kind == prev.kind && l.name == prev.name)
-                {
-                    graph.remove(prev.kind, &prev.name);
-                }
-            }
-            for component in &kept {
-                graph.upsert_component(component);
-            }
-        }
-
-        // Drop stale name→URI entries for components renamed or removed from
-        // this file (only if they still point at this file).
-        for prev in previous.iter().flatten() {
-            if !locs.iter().any(|l| l.name == prev.name)
-                && self
-                    .name_to_uri
-                    .get(&prev.name)
-                    .is_some_and(|u| u.value() == &uri)
-            {
-                self.name_to_uri.remove(&prev.name);
-            }
-        }
+        let locs: Vec<ComponentLoc> = components.iter().map(ComponentLoc::of).collect();
+        let previous = self.uri_to_component.insert(uri.clone(), locs.clone());
 
         for loc in &locs {
-            self.name_to_uri.insert(loc.name.clone(), uri.clone());
+            self.name_to_uris
+                .entry(loc.name.clone())
+                .or_default()
+                .insert(uri.clone());
         }
-        self.uri_to_component.insert(uri, locs);
+        for prev in previous.iter().flatten() {
+            if !locs.iter().any(|loc| loc.name == prev.name) {
+                self.forget_declaration(&prev.name, &uri);
+            }
+        }
+
+        self.rebuild_names(
+            locs.iter()
+                .map(|loc| loc.name.as_str())
+                .chain(previous.iter().flatten().map(|prev| prev.name.as_str())),
+        );
+    }
+
+    /// Drop `uri` from the set of files declaring `name`, discarding the name
+    /// entirely once nothing declares it.
+    fn forget_declaration(&self, name: &str, uri: &str) {
+        self.name_to_uris.remove_if_mut(name, |_, uris| {
+            uris.remove(uri);
+            uris.is_empty()
+        });
+    }
+
+    /// Rewrite the graph node for each of `names` from whichever file now
+    /// represents it, dropping the node when no file declares it any more.
+    ///
+    /// Every lookup happens before the graph lock is taken: the declaration
+    /// maps are read first and the graph written once, so the two locks are
+    /// only ever acquired in that order.
+    fn rebuild_names<'a>(&self, names: impl Iterator<Item = &'a str>) {
+        let mut pending: BTreeMap<&'a str, Option<ComponentLoc>> = BTreeMap::new();
+        for name in names {
+            pending
+                .entry(name)
+                .or_insert_with(|| self.declaration(name));
+        }
+        if pending.is_empty() {
+            return;
+        }
+        let mut graph = self.graph.write();
+        for (name, declaration) in pending {
+            match declaration {
+                Some(loc) => {
+                    graph.remove(loc.other_kind(), name);
+                    loc.upsert_into(&mut graph);
+                }
+                // The kind is gone with the last declaration, so clear both:
+                // a name is at most one of them, and removing the other is a
+                // no-op.
+                None => {
+                    graph.remove(ComponentKind::Context, name);
+                    graph.remove(ComponentKind::Machine, name);
+                }
+            }
+        }
+    }
+
+    /// The declaration of `name` that represents it: the first component of
+    /// that name in the lowest-ordered file declaring it. Deterministic by
+    /// construction — the alternative is whichever write landed last, which
+    /// varies run to run and would make go-to-definition unstable.
+    fn declaration(&self, name: &str) -> Option<ComponentLoc> {
+        let uris = self.name_to_uris.get(name)?;
+        for uri in uris.value() {
+            if let Some(locs) = self.uri_to_component.get(uri)
+                && let Some(loc) = locs.value().iter().find(|loc| loc.name == name)
+            {
+                return Some(loc.clone());
+            }
+        }
+        None
     }
 
     /// Remove a file's components when the file is deleted
@@ -215,25 +307,17 @@ impl CrossReferenceManager {
 
         let key = self.document_key(uri);
         let uri = key.as_str();
-        if let Some((_uri, locs)) = self.uri_to_component.remove(uri) {
-            let mut graph = self.graph.write();
-            for loc in &locs {
-                // A name is only ours to drop while this file still owns it.
-                // `name_to_uri` and the graph must agree, so the two removals
-                // share one condition rather than the graph's being
-                // unconditional. A move makes this reachable: it arrives as a
-                // create plus a delete in no guaranteed order, and when the
-                // create lands first the new file already owns `loc.name`.
-                if self
-                    .name_to_uri
-                    .get(&loc.name)
-                    .is_none_or(|u| u.value().as_str() == uri)
-                {
-                    graph.remove(loc.kind, &loc.name);
-                    self.name_to_uri.remove(&loc.name);
-                }
-            }
+        let Some((_uri, locs)) = self.uri_to_component.remove(uri) else {
+            return;
+        };
+        for loc in &locs {
+            self.forget_declaration(&loc.name, uri);
         }
+        // Each name either has another declarer, whose node is rebuilt here,
+        // or none, and leaves the graph. A move needs no ordering rule for
+        // this to hold: it arrives as a create plus a delete in no guaranteed
+        // order, and either order ends with the surviving file's node.
+        self.rebuild_names(locs.iter().map(|loc| loc.name.as_str()));
     }
 
     /// Resolve a file URI once on the blocking pool before open-document
@@ -252,9 +336,9 @@ impl CrossReferenceManager {
     /// This searches for contexts and machines by name and returns the file URI
     /// where that component is defined.
     pub fn find_component_uri(&self, component_name: &str) -> Option<String> {
-        self.name_to_uri
+        self.name_to_uris
             .get(component_name)
-            .map(|u| u.value().clone())
+            .and_then(|uris| uris.value().first().cloned())
     }
 
     /// URIs of every indexed file declaring any of `component_names`.
@@ -282,11 +366,7 @@ impl CrossReferenceManager {
     /// Get component info by name
     pub fn get_component(&self, name: &str) -> Option<ComponentInfo> {
         let (kind, references) = self.graph.read().references_of(name)?;
-        let uri = self
-            .name_to_uri
-            .get(name)
-            .map(|u| u.value().clone())
-            .unwrap_or_default();
+        let uri = self.find_component_uri(name).unwrap_or_default();
         Some(ComponentInfo {
             uri,
             name: name.to_string(),
@@ -319,11 +399,7 @@ impl CrossReferenceManager {
             .into_iter()
             .filter_map(|(kind, name)| {
                 let references = graph.references_of_kind(kind, &name)?;
-                let uri = self
-                    .name_to_uri
-                    .get(&name)
-                    .map(|u| u.value().clone())
-                    .unwrap_or_default();
+                let uri = self.find_component_uri(&name).unwrap_or_default();
                 Some(ComponentInfo {
                     uri,
                     name,
@@ -468,15 +544,12 @@ impl CrossReferenceManager {
     /// duplicate. Queried per open-document name, so no whole-workspace map is
     /// built per publish.
     pub fn component_definition_files(&self, name: &str) -> Vec<String> {
-        let mut uris: BTreeSet<String> = BTreeSet::new();
-        for entry in self.uri_to_component.iter() {
-            if entry.value().iter().any(|loc| loc.name == name) {
-                uris.insert(entry.key().clone());
-            }
-        }
         // Deduplication is by file identity, not by basename: two directories
         // may each hold an `m.eventb`, and that is a real cross-file duplicate.
-        uris.iter().map(|uri| display_name(uri)).collect()
+        self.name_to_uris
+            .get(name)
+            .map(|uris| uris.value().iter().map(|uri| display_name(uri)).collect())
+            .unwrap_or_default()
     }
 
     // --- Transitive closure / visibility (delegated to the shared graph) ---
@@ -751,7 +824,7 @@ END
     fn removing_a_file_keeps_a_name_another_file_has_claimed() {
         let manager = CrossReferenceManager::new();
         manager.update_component("file:///old.eventb".to_string(), "CONTEXT ctx\nEND\n");
-        // The move's create half lands first and takes ownership of `ctx`.
+        // The move's create half lands first and also declares `ctx`.
         manager.update_component("file:///new.eventb".to_string(), "CONTEXT ctx\nEND\n");
 
         manager.remove_component("file:///old.eventb");
@@ -761,6 +834,67 @@ END
             Some("file:///new.eventb")
         );
         assert!(manager.contains(ComponentKind::Context, "ctx"));
+    }
+
+    #[test]
+    fn changing_a_component_kind_drops_the_old_node() {
+        let manager = CrossReferenceManager::new();
+        manager.update_component("file:///m.eventb".to_string(), "MACHINE m\nSEES ctx\nEND\n");
+        assert!(manager.contains(ComponentKind::Machine, "m"));
+
+        manager.update_component("file:///m.eventb".to_string(), "CONTEXT m\nEND\n");
+
+        assert!(manager.contains(ComponentKind::Context, "m"));
+        assert!(!manager.contains(ComponentKind::Machine, "m"));
+    }
+
+    #[test]
+    fn removing_a_declarer_rebuilds_the_node_from_the_survivor() {
+        // The survivor's own edges must come back, not the removed file's:
+        // the node is rebuilt from the declaration that remains, so a stale
+        // EXTENDS parent cannot outlive the file that declared it.
+        let manager = CrossReferenceManager::new();
+        manager.update_component("file:///base.eventb".to_string(), "CONTEXT base\nEND\n");
+        manager.update_component(
+            "file:///a.eventb".to_string(),
+            "CONTEXT dup\nEXTENDS base\nEND\n",
+        );
+        manager.update_component("file:///b.eventb".to_string(), "CONTEXT dup\nEND\n");
+
+        // `a.eventb` sorts first, so it represents `dup` until it is removed.
+        assert_eq!(manager.extends_chain("dup"), vec!["base".to_string()]);
+
+        manager.remove_component("file:///a.eventb");
+
+        assert_eq!(
+            manager.find_component_uri("dup").as_deref(),
+            Some("file:///b.eventb")
+        );
+        assert!(
+            manager.extends_chain("dup").is_empty(),
+            "the surviving declaration extends nothing"
+        );
+    }
+
+    #[test]
+    fn the_representative_declarer_does_not_depend_on_write_order() {
+        let src = "CONTEXT ctx\nEND\n";
+        let forwards = CrossReferenceManager::new();
+        forwards.update_component("file:///a.eventb".to_string(), src);
+        forwards.update_component("file:///b.eventb".to_string(), src);
+
+        let backwards = CrossReferenceManager::new();
+        backwards.update_component("file:///b.eventb".to_string(), src);
+        backwards.update_component("file:///a.eventb".to_string(), src);
+
+        assert_eq!(
+            forwards.find_component_uri("ctx"),
+            backwards.find_component_uri("ctx")
+        );
+        assert_eq!(
+            forwards.find_component_uri("ctx").as_deref(),
+            Some("file:///a.eventb")
+        );
     }
 
     #[test]
