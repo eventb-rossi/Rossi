@@ -972,3 +972,225 @@ mod operator_table {
         );
     }
 }
+
+mod watched_files {
+    //! Wire-level regressions for `workspace/didChangeWatchedFiles`: a change
+    //! made on disk outside the editor moves the workspace graph an open
+    //! document's cross-file diagnostics are checked against.
+
+    use super::{TempWorkspace, next_message, notification};
+    use eventb_lsp::lsp_types::Url;
+    use eventb_lsp::server::RossiLanguageServer;
+    use futures::StreamExt;
+    use serde_json::{Value, json};
+    use std::path::Path;
+    use std::time::Duration;
+    use tower::{Service, ServiceExt};
+    use tower_lsp::LspService;
+    use tower_lsp::jsonrpc::Request;
+
+    /// A machine whose `SEES` target is missing until a sibling file appears.
+    const MACHINE: &str = "MACHINE m\nSEES ctx\nEND\n";
+    const CONTEXT: &str = "CONTEXT ctx\nEND\n";
+
+    /// The rule codes of the next published diagnostics batch.
+    async fn next_diagnostic_codes(
+        messages: &mut (impl StreamExt<Item = Request> + Unpin),
+    ) -> Vec<String> {
+        let params = next_message(
+            messages,
+            "textDocument/publishDiagnostics",
+            Duration::from_secs(5),
+        )
+        .await
+        .expect("the server must publish diagnostics");
+        params["diagnostics"]
+            .as_array()
+            .expect("diagnostics must be an array")
+            .iter()
+            .map(|diagnostic| diagnostic["code"].as_str().unwrap_or_default().to_string())
+            .collect()
+    }
+
+    /// A one-file `workspace/didChangeWatchedFiles` payload. `kind` is the
+    /// protocol's `FileChangeType` (1 created, 2 changed, 3 deleted).
+    fn watched_change(path: &Path, kind: u8) -> Value {
+        json!({
+            "changes": [{ "uri": Url::from_file_path(path).unwrap(), "type": kind }]
+        })
+    }
+
+    /// Send one notification and wait for the server to finish handling it.
+    async fn notify(
+        service: &mut LspService<RossiLanguageServer>,
+        method: &'static str,
+        params: Value,
+    ) {
+        service
+            .ready()
+            .await
+            .unwrap()
+            .call(notification(method, params))
+            .await
+            .unwrap();
+    }
+
+    /// Drive `initialize`/`initialized` against a workspace root, with the
+    /// client claiming no optional capabilities (so the server registers
+    /// nothing and no request needs answering).
+    ///
+    /// The server-to-client channel buffers a single message, so its socket is
+    /// pumped into an unbounded one for the test to read at its own pace —
+    /// otherwise the second notification the server sends blocks its sender
+    /// forever.
+    async fn initialized_service(
+        root: &Path,
+    ) -> (
+        LspService<RossiLanguageServer>,
+        futures::channel::mpsc::UnboundedReceiver<Request>,
+    ) {
+        let root_uri = Url::from_file_path(root).unwrap();
+        let (mut service, mut socket) = LspService::build(RossiLanguageServer::new).finish();
+        let (sender, messages) = futures::channel::mpsc::unbounded();
+        tokio::spawn(async move {
+            while let Some(request) = socket.next().await {
+                if sender.unbounded_send(request).is_err() {
+                    break;
+                }
+            }
+        });
+
+        let init = Request::build("initialize")
+            .id(1)
+            .params(json!({
+                "capabilities": {},
+                "workspaceFolders": [{ "uri": root_uri, "name": "test" }]
+            }))
+            .finish();
+        service.ready().await.unwrap().call(init).await.unwrap();
+        notify(&mut service, "initialized", json!({})).await;
+        (service, messages)
+    }
+
+    /// A server on `workspace` with `mch.eventb` written and open. The caller
+    /// asserts the first published batch, since that depends on what else it
+    /// staged on disk beforehand.
+    async fn service_with_open_machine(
+        workspace: &Path,
+    ) -> (
+        LspService<RossiLanguageServer>,
+        futures::channel::mpsc::UnboundedReceiver<Request>,
+    ) {
+        let machine_path = workspace.join("mch.eventb");
+        std::fs::write(&machine_path, MACHINE).unwrap();
+        let (mut service, messages) = initialized_service(workspace).await;
+        notify(
+            &mut service,
+            "textDocument/didOpen",
+            json!({
+                "textDocument": {
+                    "uri": Url::from_file_path(&machine_path).unwrap(),
+                    "languageId": "eventb",
+                    "version": 1,
+                    "text": MACHINE
+                }
+            }),
+        )
+        .await;
+        (service, messages)
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn a_sibling_appearing_on_disk_resolves_an_open_machines_reference() {
+        let workspace = TempWorkspace::new("watched-files-graph");
+        let context_path = workspace.as_ref().join("ctx.eventb");
+
+        let (mut service, mut messages) = service_with_open_machine(workspace.as_ref()).await;
+        assert_eq!(next_diagnostic_codes(&mut messages).await, ["EB009"]);
+
+        // The context appears on disk without ever being opened — a
+        // `git checkout`, a `rossi import`, a Rodin write.
+        std::fs::write(&context_path, CONTEXT).unwrap();
+        notify(
+            &mut service,
+            "workspace/didChangeWatchedFiles",
+            watched_change(&context_path, 1),
+        )
+        .await;
+        assert!(next_diagnostic_codes(&mut messages).await.is_empty());
+
+        // ... and vanishes again, as switching back off the branch would take it.
+        std::fs::remove_file(&context_path).unwrap();
+        notify(
+            &mut service,
+            "workspace/didChangeWatchedFiles",
+            watched_change(&context_path, 3),
+        )
+        .await;
+        assert_eq!(next_diagnostic_codes(&mut messages).await, ["EB009"]);
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn a_renamed_sibling_survives_a_create_before_delete_batch() {
+        let workspace = TempWorkspace::new("watched-files-rename");
+        let context_path = workspace.as_ref().join("ctx.eventb");
+        std::fs::write(&context_path, CONTEXT).unwrap();
+        let renamed_path = workspace.as_ref().join("renamed.eventb");
+
+        let (mut service, mut messages) = service_with_open_machine(workspace.as_ref()).await;
+        assert!(next_diagnostic_codes(&mut messages).await.is_empty());
+
+        // Moving the context's file delivers a create and a delete in one
+        // batch, and the client does not order them. With the create first,
+        // the new file owns `ctx` before the delete of the old one is
+        // processed, so the delete must leave the graph alone.
+        std::fs::rename(&context_path, &renamed_path).unwrap();
+        notify(
+            &mut service,
+            "workspace/didChangeWatchedFiles",
+            json!({
+                "changes": [
+                    { "uri": Url::from_file_path(&renamed_path).unwrap(), "type": 1 },
+                    { "uri": Url::from_file_path(&context_path).unwrap(), "type": 3 },
+                ]
+            }),
+        )
+        .await;
+        assert!(next_diagnostic_codes(&mut messages).await.is_empty());
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn watched_events_under_dot_directories_are_ignored() {
+        let workspace = TempWorkspace::new("watched-files-dot-dir");
+        // A generated copy inside the Rodin workspace the scan never descends
+        // into. Indexing it would define `m` in a second file and flag the open
+        // machine as a duplicate (EB019).
+        let generated_dir = workspace.as_ref().join(".rossi").join("rodin");
+        std::fs::create_dir_all(&generated_dir).unwrap();
+        let generated_path = generated_dir.join("mch.eventb");
+        std::fs::write(&generated_path, MACHINE).unwrap();
+        let context_path = workspace.as_ref().join("ctx.eventb");
+
+        let (mut service, mut messages) = service_with_open_machine(workspace.as_ref()).await;
+        assert_eq!(next_diagnostic_codes(&mut messages).await, ["EB009"]);
+
+        notify(
+            &mut service,
+            "workspace/didChangeWatchedFiles",
+            watched_change(&generated_path, 1),
+        )
+        .await;
+
+        // An ignored event publishes nothing, so prove it landed nowhere by
+        // following it with a real one: the batch it triggers must clear the
+        // unresolved reference without ever gaining a duplicate.
+        std::fs::write(&context_path, CONTEXT).unwrap();
+        notify(
+            &mut service,
+            "workspace/didChangeWatchedFiles",
+            watched_change(&context_path, 1),
+        )
+        .await;
+        assert!(next_diagnostic_codes(&mut messages).await.is_empty());
+    }
+}

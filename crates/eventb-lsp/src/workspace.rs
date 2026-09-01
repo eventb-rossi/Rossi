@@ -100,7 +100,11 @@ impl WorkspaceSymbolProvider {
         self.document_aliases.insert(uri.to_string(), canonical);
     }
 
-    /// Refresh the disk layer from the file a client has just saved.
+    /// Refresh the disk layer from the file now on disk. A file that is gone
+    /// drops its saved symbols instead of erroring, mirroring
+    /// [`crate::cross_references::CrossReferenceManager::restore_document_from_disk`]:
+    /// a save only races a delete by accident, but a watched-file event
+    /// reports deletions as a matter of course.
     pub(crate) fn refresh_document_from_disk(&self, uri: &Url) -> std::io::Result<()> {
         let path = uri.to_file_path().map_err(|()| {
             std::io::Error::new(
@@ -108,10 +112,29 @@ impl WorkspaceSymbolProvider {
                 format!("{uri} is not a file URI"),
             )
         })?;
-        let text = std::fs::read_to_string(path)?;
+        let text = match std::fs::read_to_string(path) {
+            Ok(text) => text,
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+                self.remove_disk_document(uri.as_str());
+                return Ok(());
+            }
+            Err(error) => return Err(error),
+        };
         let components = crate::component_util::parse_all(&text);
         self.index_disk_components(uri.to_string(), &components, &text);
         Ok(())
+    }
+
+    /// Remove a deleted file's saved symbols, keeping any open overlay: the
+    /// buffer outlives the file until the editor closes it. The mirror image
+    /// of [`Self::remove_document`].
+    fn remove_disk_document(&self, uri: &str) {
+        debug!("Removing disk workspace symbols for: {}", uri);
+        self.symbol_index
+            .remove_if_mut(&self.document_key(uri), |_, document| {
+                document.disk.clear();
+                document.open.is_none()
+            });
     }
 
     /// Remove an open overlay, revealing its saved disk symbols if present.
@@ -272,6 +295,7 @@ impl WorkspaceSymbolProvider {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::test_util::TempDir as TempWorkspace;
 
     #[test]
     fn test_workspace_symbols_context() {
@@ -530,6 +554,46 @@ END
         provider.remove_document(&uri);
         assert_eq!(provider.search("disk_value").len(), 1);
         assert!(provider.search("open_value").is_empty());
+    }
+
+    #[test]
+    fn a_deleted_file_drops_its_disk_symbols() {
+        let root = TempWorkspace::new("eventb-lsp-symbol-delete-test");
+        let path = root.join("model.eventb");
+        std::fs::write(&path, "CONTEXT disk\nCONSTANTS\n    disk_value\nEND\n").unwrap();
+        let uri = Url::from_file_path(&path).unwrap();
+        let provider = WorkspaceSymbolProvider::new();
+
+        provider.refresh_document_from_disk(&uri).unwrap();
+        assert_eq!(provider.search("disk_value").len(), 1);
+
+        std::fs::remove_file(&path).unwrap();
+        provider.refresh_document_from_disk(&uri).unwrap();
+        assert!(provider.search("disk_value").is_empty());
+    }
+
+    #[test]
+    fn a_deleted_file_keeps_its_open_overlay() {
+        let root = TempWorkspace::new("eventb-lsp-symbol-delete-open-test");
+        let path = root.join("model.eventb");
+        std::fs::write(&path, "CONTEXT disk\nCONSTANTS\n    disk_value\nEND\n").unwrap();
+        let uri = Url::from_file_path(&path).unwrap();
+        let provider = WorkspaceSymbolProvider::new();
+        provider.refresh_document_from_disk(&uri).unwrap();
+        provider.update_symbols(
+            uri.to_string(),
+            "CONTEXT open\nCONSTANTS\n    open_value\nEND\n",
+        );
+
+        std::fs::remove_file(&path).unwrap();
+        provider.refresh_document_from_disk(&uri).unwrap();
+
+        // The buffer outlives the file; only the saved snapshot is gone, so
+        // closing the document later reveals nothing rather than stale symbols.
+        assert_eq!(provider.search("open_value").len(), 1);
+        provider.remove_document(uri.as_str());
+        assert!(provider.search("open_value").is_empty());
+        assert!(provider.search("disk_value").is_empty());
     }
 
     #[test]

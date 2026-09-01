@@ -197,9 +197,12 @@ impl Analyzer {
     /// The cross-component checks see the recovered AST, so — like the
     /// single-component lints — they run only on a clean parse, lest a transient
     /// mid-edit syntax error flash a spurious cycle / duplicate / unknown
-    /// reference. The graph is refreshed for the edited document only, so a
-    /// dependent open file isn't re-published until it is itself touched:
-    /// cross-file diagnostics are eventually consistent, not instantly so.
+    /// reference. An edit refreshes the graph for the edited document only, so
+    /// a dependent open file isn't re-published until it is itself touched:
+    /// under editing, cross-file diagnostics are eventually consistent, not
+    /// instantly so. A change arriving from disk is not mid-anything, so
+    /// [`RossiLanguageServer::did_change_watched_files`] does republish every
+    /// open document.
     fn diagnostics_for(&self, uri: &Url, doc: &ParsedDocument) -> Vec<Diagnostic> {
         let xrefs = &self.cross_reference_manager;
         let mut diags = crate::diagnostics::document_diagnostics(doc);
@@ -352,9 +355,7 @@ impl Analyzer {
         if !self.proof_status.write().apply(update) {
             return;
         }
-        for uri in self.document_manager.all_uris() {
-            self.republish_diagnostics(uri).await;
-        }
+        self.republish_all_diagnostics().await;
     }
 
     /// Replace one `(machine, mode)` slot of the animate findings overlay
@@ -370,6 +371,14 @@ impl Analyzer {
         if !self.animate_findings.write().apply(machine, mode, findings) {
             return;
         }
+        self.republish_all_diagnostics().await;
+    }
+
+    /// Republish every open document's diagnostics, for a change to an input
+    /// they all share — a proof-status or animate overlay, or the workspace
+    /// graph. The buffers themselves are untouched, so this is the cheap
+    /// half of [`Self::analyze`] per document rather than a re-analysis.
+    pub(crate) async fn republish_all_diagnostics(&self) {
         for uri in self.document_manager.all_uris() {
             self.republish_diagnostics(uri).await;
         }
@@ -1341,6 +1350,83 @@ impl LanguageServer for RossiLanguageServer {
         }
 
         self.schedule_rodin_rebuild(&uri);
+    }
+
+    /// Refresh the disk-backed indexes when Event-B files change outside the
+    /// editor: a `git checkout`, a `rossi import`, a Rodin write, a file
+    /// created in the explorer. The startup scan is otherwise the only moment
+    /// the workspace graph learns what is on disk, so every cross-file
+    /// diagnostic would be checked against a snapshot ageing from the first
+    /// external write onwards.
+    async fn did_change_watched_files(&self, params: DidChangeWatchedFilesParams) {
+        // Single-file mode indexes no siblings and `is_scanned()` keeps the
+        // cross-file diagnostics off, so there is nothing to keep current.
+        let Some(root) = self.cross_reference_manager.workspace_root() else {
+            return;
+        };
+
+        // The reported `FileChangeType` is deliberately ignored: clients
+        // coalesce and misreport it (a rename arrives as a delete plus a
+        // create), and both refresh helpers below re-read the file and treat a
+        // missing one as a removal. One uniform path is shorter than three and
+        // cannot be desynchronised by a client's bookkeeping.
+        // Events are filtered through the workspace scan's own two rules, and
+        // deduplicated: a client may report one path twice in a batch (a
+        // create plus a change), and re-reading it would be pure waste since
+        // each refresh below reads from disk anyway.
+        let mut seen = std::collections::HashSet::new();
+        let changed: Vec<Url> = params
+            .changes
+            .into_iter()
+            .filter_map(|change| {
+                let path = change.uri.to_file_path().ok()?;
+                let indexed = rossi_build::walk::is_source_file(&path)
+                    && rossi_build::walk::is_within_source_walk(&root, &path);
+                (indexed && seen.insert(change.uri.clone())).then_some(change.uri)
+            })
+            .collect();
+        if changed.is_empty() {
+            return;
+        }
+        debug!("Refreshing {} watched file(s)", changed.len());
+
+        // One blocking hop for the whole batch: a branch switch delivers
+        // hundreds of events at once.
+        let xrefs = Arc::clone(&self.cross_reference_manager);
+        let symbols = Arc::clone(&self.workspace_symbol_provider);
+        let documents = Arc::clone(&self.document_manager);
+        let refreshed_graph = run_blocking(move || {
+            let mut refreshed_graph = false;
+            for uri in changed {
+                // The symbol index keeps its disk and open layers apart, so
+                // the saved snapshot is refreshed either way — that is how a
+                // file deleted while still open loses its stale symbols.
+                if let Err(error) = symbols.refresh_document_from_disk(&uri) {
+                    info!("Failed to refresh saved symbols for {uri}: {error}");
+                }
+                // The cross-reference index is flat, so refreshing a file the
+                // editor holds open would replace its unsaved buffer overlay
+                // with the text on disk. This is the same open-buffer-wins
+                // split `did_save` and `did_close` already make. Re-read per
+                // file rather than sampled up front: a large batch takes long
+                // enough for a `didOpen` to land midway, and it must win.
+                if documents.version(&uri).is_none() {
+                    refreshed_graph = true;
+                    if let Err(error) = xrefs.restore_document_from_disk(&uri) {
+                        info!("Failed to refresh cross-references for {uri}: {error}");
+                    }
+                }
+            }
+            refreshed_graph
+        })
+        .await;
+
+        // Only a file the editor does not hold open can have moved the graph
+        // the open buffers are checked against. `run_blocking` logs a join
+        // failure itself, and a batch that never ran refreshed nothing.
+        if refreshed_graph.unwrap_or(false) {
+            self.analyzer.republish_all_diagnostics().await;
+        }
     }
 
     async fn document_symbol(
