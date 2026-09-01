@@ -15,6 +15,7 @@ rossi.workspace = true
 rossi-prove.workspace = true
 thiserror.workspace = true
 quick-xml.workspace = true
+rayon.workspace = true
 walkdir.workspace = true
 zip.workspace = true
 
