@@ -38,6 +38,7 @@ serde = { version = "1.0", features = ["derive"] }
 clap = { version = "4.5", features = ["derive"] }
 clap_complete = "4.5"
 rayon = "1"
+mimalloc = "0.1"
 quick-xml = "0.41"
 # Rossi only reads and writes Stored/Deflated Rodin archives; the default
 # feature set would link every other decompressor (zstd, bzip2, lzma, ppmd,

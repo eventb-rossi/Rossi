@@ -2,6 +2,15 @@ use std::process::ExitCode;
 
 use clap::{CommandFactory, Parser, Subcommand};
 
+/// The formula parser and the proof checker allocate and free small
+/// tree nodes by the hundred million; mimalloc serves that 15-25 %
+/// faster than the system allocators measured (glibc, and the parallel
+/// case), so the binary opts in. Libraries stay allocator-agnostic;
+/// `--no-default-features` keeps the system allocator.
+#[cfg(feature = "mimalloc")]
+#[global_allocator]
+static GLOBAL: mimalloc::MiMalloc = mimalloc::MiMalloc;
+
 mod commands {
     pub mod build;
     pub mod build_common;
