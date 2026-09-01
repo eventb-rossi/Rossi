@@ -30,20 +30,18 @@ pub struct BuildOutcome {
 /// Text buffers overlaying the filesystem, keyed by canonicalized path.
 pub type Overlay = HashMap<PathBuf, String>;
 
-/// Collect the `.eventb`/`.txt` sources under `dir` (recursively, skipping
+/// Collect the Event-B sources under `dir` (recursively, skipping
 /// dot-directories such as the `.rossi` workspace itself), sorted.
+///
+/// Filters exactly as the LSP's workspace scan does. The two must agree: a
+/// file this built into a Rodin project but the index never saw would be
+/// invisible to cross-file diagnostics, so a sibling `SEES` of its components
+/// reports EB009 while the build succeeds.
 pub fn collect_source_files(dir: &Path) -> std::io::Result<Vec<PathBuf>> {
     let mut files = Vec::new();
     for entry in rossi_build::walk::source_walk(dir) {
         let entry = entry.map_err(std::io::Error::other)?;
-        let is_source = entry
-            .path()
-            .extension()
-            .and_then(|e| e.to_str())
-            .is_some_and(|ext| {
-                ext.eq_ignore_ascii_case("eventb") || ext.eq_ignore_ascii_case("txt")
-            });
-        if entry.file_type().is_file() && is_source {
+        if entry.file_type().is_file() && rossi_build::walk::is_source_file(entry.path()) {
             files.push(entry.path().to_path_buf());
         }
     }
