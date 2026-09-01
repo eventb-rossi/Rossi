@@ -34,5 +34,10 @@ done
 "$BIN" build "$EX/file-system.zip" -o "$OUT/file-system.regen.zip" >/dev/null 2>&1 || true
 "$BIN" build "$EX/cars-on-bridge.zip" -o "$OUT/cars-on-bridge.regen.zip" >/dev/null 2>&1 || true
 
+for z in "$EX"/*.zip; do
+  "$BIN" prove "$z" >/dev/null 2>&1 || true
+  "$BIN" prove --replay "$z" >/dev/null 2>&1 || true
+done
+
 "$BIN" import "$EX/cars-on-bridge.zip" -o "$OUT/cars" >/dev/null 2>&1 || true
 "$BIN" export "$OUT/cars" -o "$OUT/cars.zip" >/dev/null 2>&1 || true
