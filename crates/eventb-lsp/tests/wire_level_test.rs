@@ -974,20 +974,21 @@ mod operator_table {
 }
 
 mod watched_files {
-    //! Wire-level regressions for `workspace/didChangeWatchedFiles`: a change
-    //! made on disk outside the editor moves the workspace graph an open
-    //! document's cross-file diagnostics are checked against.
+    //! Wire-level regressions for `workspace/didChangeWatchedFiles`: the server
+    //! registers the `.eventb` watcher itself, and a change made on disk
+    //! outside the editor moves the workspace graph an open document's
+    //! cross-file diagnostics are checked against.
 
     use super::{TempWorkspace, next_message, notification};
     use eventb_lsp::lsp_types::Url;
     use eventb_lsp::server::RossiLanguageServer;
-    use futures::StreamExt;
+    use futures::{SinkExt, StreamExt};
     use serde_json::{Value, json};
     use std::path::Path;
     use std::time::Duration;
     use tower::{Service, ServiceExt};
     use tower_lsp::LspService;
-    use tower_lsp::jsonrpc::Request;
+    use tower_lsp::jsonrpc::{Request, Response};
 
     /// A machine whose `SEES` target is missing until a sibling file appears.
     const MACHINE: &str = "MACHINE m\nSEES ctx\nEND\n";
@@ -1098,6 +1099,65 @@ mod watched_files {
         )
         .await;
         (service, messages)
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn the_server_registers_the_eventb_watcher_itself() {
+        let workspace = TempWorkspace::new("watched-files-registration");
+        let root_uri = Url::from_file_path(workspace.as_ref()).unwrap();
+
+        let (mut service, mut socket) = LspService::build(RossiLanguageServer::new).finish();
+        let init = Request::build("initialize")
+            .id(1)
+            .params(json!({
+                "capabilities": {
+                    "workspace": { "didChangeWatchedFiles": { "dynamicRegistration": true } }
+                },
+                "workspaceFolders": [{ "uri": root_uri, "name": "test" }]
+            }))
+            .finish();
+        service.ready().await.unwrap().call(init).await.unwrap();
+
+        // `initialized` waits for the client's answer to
+        // `client/registerCapability`, so the socket has to be served while the
+        // notification is still in flight, exactly as a real client does.
+        let drive_initialized = async {
+            service
+                .ready()
+                .await
+                .unwrap()
+                .call(notification("initialized", json!({})))
+                .await
+                .unwrap();
+        };
+        let answer = async {
+            loop {
+                let request = socket
+                    .next()
+                    .await
+                    .expect("the server must ask to register a watcher");
+                if request.method() != "client/registerCapability" {
+                    continue;
+                }
+                let (_method, id, params) = request.into_parts();
+                let registration =
+                    &params.expect("a registration must be sent")["registrations"][0];
+                assert_eq!(registration["method"], "workspace/didChangeWatchedFiles");
+                assert_eq!(
+                    registration["registerOptions"]["watchers"][0]["globPattern"],
+                    "**/*.eventb"
+                );
+                socket
+                    .send(Response::from_ok(
+                        id.expect("a request carries an id"),
+                        json!(null),
+                    ))
+                    .await
+                    .unwrap();
+                break;
+            }
+        };
+        tokio::join!(drive_initialized, answer);
     }
 
     #[tokio::test(flavor = "current_thread")]

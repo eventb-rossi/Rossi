@@ -11,6 +11,7 @@ use tower_lsp::{Client, LanguageServer};
 use tracing::{debug, info};
 
 use rossi::operators::{OperatorId, spelling};
+use rossi_build::walk::SOURCE_EXTENSION;
 
 use crate::analysis;
 use crate::code_actions::CodeActionProvider;
@@ -486,6 +487,10 @@ pub struct RossiLanguageServer {
     supports_work_done_progress: std::sync::atomic::AtomicBool,
     /// Whether the client advertised `workspace.inlayHint.refreshSupport`.
     supports_inlay_hint_refresh: std::sync::atomic::AtomicBool,
+    /// Whether the client advertised
+    /// `workspace.didChangeWatchedFiles.dynamicRegistration`, i.e. whether it
+    /// will watch the source tree for us if asked.
+    supports_watched_files_registration: std::sync::atomic::AtomicBool,
     /// Watcher over the shared Rodin workspace, started lazily once such a
     /// workspace exists; dropped (stopped) on shutdown. `Arc`'d because the
     /// slow watcher creation completes on a detached thread.
@@ -653,6 +658,7 @@ impl RossiLanguageServer {
             animate_in_flight: SingleFlight::default(),
             supports_work_done_progress: std::sync::atomic::AtomicBool::new(false),
             supports_inlay_hint_refresh: std::sync::atomic::AtomicBool::new(false),
+            supports_watched_files_registration: std::sync::atomic::AtomicBool::new(false),
             rodin_sync: Arc::new(parking_lot::Mutex::new(RodinSyncState::Off)),
             rodin_written: Arc::new(crate::rodin::sync::WriteRegistry::default()),
             rodin_rebuild_generations: Arc::new(parking_lot::Mutex::new(
@@ -998,6 +1004,34 @@ impl RossiLanguageServer {
             }
         });
     }
+
+    /// Ask the client to watch the workspace's Event-B sources, so writes made
+    /// outside the editor reach [`Self::did_change_watched_files`]. Registering
+    /// from the server rather than from each editor's client configuration
+    /// gives every editor the same behaviour from one place, and ties the
+    /// watcher's lifetime to a language server that actually started.
+    ///
+    /// A failure is logged and the session continues on the startup snapshot;
+    /// the capability guard lives at the call site, since a server must not
+    /// send requests the client never announced support for.
+    async fn register_source_watcher(&self) {
+        let registration = Registration {
+            id: "rossi-eventb-source-watcher".to_string(),
+            method: "workspace/didChangeWatchedFiles".to_string(),
+            // A `DidChangeWatchedFilesRegistrationOptions` holding one
+            // `FileSystemWatcher`, whose omitted `kind` means the default —
+            // create, change and delete — which is what the graph must follow.
+            // An LSP glob cannot express a negation, so the dot-directories
+            // the scan skips are filtered server-side instead; see
+            // `did_change_watched_files`.
+            register_options: Some(serde_json::json!({
+                "watchers": [{ "globPattern": format!("**/*.{SOURCE_EXTENSION}") }]
+            })),
+        };
+        if let Err(error) = self.client.register_capability(vec![registration]).await {
+            info!("Failed to register the Event-B source watcher: {error}");
+        }
+    }
 }
 
 #[tower_lsp::async_trait]
@@ -1047,6 +1081,17 @@ impl LanguageServer for RossiLanguageServer {
                 .as_ref()
                 .and_then(|workspace| workspace.inlay_hint.as_ref())
                 .and_then(|inlay_hint| inlay_hint.refresh_support)
+                .unwrap_or(false),
+            std::sync::atomic::Ordering::Relaxed,
+        );
+
+        self.supports_watched_files_registration.store(
+            params
+                .capabilities
+                .workspace
+                .as_ref()
+                .and_then(|workspace| workspace.did_change_watched_files.as_ref())
+                .and_then(|watched_files| watched_files.dynamic_registration)
                 .unwrap_or(false),
             std::sync::atomic::Ordering::Relaxed,
         );
@@ -1181,6 +1226,17 @@ impl LanguageServer for RossiLanguageServer {
             }
         }
         self.workspace_scan_state.complete();
+
+        // Ask the client to watch the source tree, now that the scan this
+        // would otherwise race has finished. A client without dynamic
+        // registration simply keeps the startup snapshot.
+        if self
+            .supports_watched_files_registration
+            .load(std::sync::atomic::Ordering::Relaxed)
+            && self.cross_reference_manager.workspace_root().is_some()
+        {
+            self.register_source_watcher().await;
+        }
 
         // A Rodin workspace left by an earlier session carries proof state
         // worth surfacing right away.
