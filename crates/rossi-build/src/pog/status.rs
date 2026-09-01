@@ -12,6 +12,9 @@
 //! `build()`.
 
 use std::collections::{BTreeMap, HashMap, HashSet};
+use std::sync::OnceLock;
+
+use rayon::prelude::*;
 
 use rossi_prove::Confidence;
 use rossi_prove::bpr::{Keep, ProofBody, ProofEntry, read_bpr};
@@ -49,114 +52,162 @@ pub fn update_statuses(
     synthesized: &HashMap<String, HashSet<String>>,
     mut bpr: impl FnMut(&str) -> Option<Vec<u8>>,
 ) {
-    // The generated obligation files, parsed on the first stale row —
-    // an unchanged archive never pays for it.
-    let mut project: Option<PoProject> = None;
+    // Gathering runs sequentially — it owns the proof-file callback —
+    // and keeps only the components with rows whose verdict may
+    // change: the stamp-stale ones, plus the synthesized unattempted
+    // rows a stored proof may revive.
     let no_revivals = HashSet::new();
+    let mut jobs = Vec::new();
     for (i, j) in bpo_bps_pairs(files) {
         let stamps = sequent_stamps(&files[i].contents);
         let rows = parse_status_rows(&files[j].contents);
         let revivable = synthesized.get(&files[j].filename).unwrap_or(&no_revivals);
-        let stamp_stale = |row: &StatusRow| {
-            row.context_dependent
-                || stamps.get(&row.name).map(String::as_str) != row.stamp.as_deref()
-        };
-        // Rows whose verdict may change: the stamp-stale ones, plus
-        // the synthesized unattempted rows a stored proof may revive.
-        let candidates: HashSet<&str> = rows
+        let candidates: HashSet<String> = rows
             .iter()
             .filter(|row| {
-                stamp_stale(row)
+                stamp_stale(&stamps, row)
                     || (revivable.contains(&row.name)
                         && !row.broken
                         && !Confidence::is_attempted(row.confidence))
             })
-            .map(|row| row.name.as_str())
+            .map(|row| row.name.clone())
             .collect();
         if candidates.is_empty() {
             continue;
         }
-        let stem = files[i].filename.trim_end_matches(".bpo").to_string();
-        let Some(bpr_contents) = bpr(&format!("{stem}.bpr")) else {
-            // No proof file at all: every stamp-stale row resets to a
-            // fresh unattempted one (the status update on a missing
-            // proof), and there is nothing to revive.
-            if rows.iter().any(&stamp_stale) {
-                let out: Vec<String> = rows
-                    .iter()
-                    .map(|row| {
-                        if stamp_stale(row) {
-                            fresh_status_row(
-                                &row.name,
-                                stamps.get(&row.name).map_or("0", String::as_str),
-                            )
-                        } else {
-                            row.row.clone()
-                        }
-                    })
-                    .collect();
-                files[j].contents = assemble_status(&out);
-            }
-            continue;
-        };
-        // One pass over the proof file: dependencies for the candidate
-        // rows, name and confidence for everything else.
-        let Ok(entries) = read_bpr(bpr_contents.as_slice(), |name| {
-            if candidates.contains(name) {
-                Keep::Deps
-            } else {
-                Keep::Skip
-            }
-        }) else {
-            // The proof file exists but cannot be read — carry the
-            // rows verbatim rather than resetting recorded verdicts.
-            continue;
-        };
-        let proofs: BTreeMap<String, ProofEntry> = entries
-            .into_iter()
-            .map(|entry| (entry.name.clone(), entry))
-            .collect();
-        let stale = |row: &StatusRow| {
-            stamp_stale(row)
-                || (candidates.contains(row.name.as_str())
-                    && Confidence::is_attempted(
-                        proofs
-                            .get(&row.name)
-                            .and_then(|entry| entry.confidence)
-                            .map(i64::from),
-                    ))
-        };
-        if !rows.iter().any(&stale) {
-            continue;
-        }
-        if project.is_none() {
-            project = Some(build_project(files));
-        }
-        let project = project.as_ref().expect("built above");
+        let stem = files[i].filename.trim_end_matches(".bpo");
+        let proofs = bpr(&format!("{stem}.bpr"));
+        jobs.push(Job {
+            bpo: i,
+            bps: j,
+            stamps,
+            rows,
+            candidates,
+            proofs,
+        });
+    }
 
-        let out: Vec<String> = rows
+    // The components are independent from here on. The generated
+    // obligation files are parsed on the first stale row — an
+    // unchanged archive never pays for it.
+    let project = OnceLock::new();
+    let shared: &[ScFile] = files;
+    let updated: Vec<(usize, String)> = rossi_prove::thread_pool().install(|| {
+        jobs.par_iter()
+            .filter_map(|job| Some((job.bps, update_component(job, shared, &project)?)))
+            .collect()
+    });
+    for (j, contents) in updated {
+        files[j].contents = contents;
+    }
+}
+
+/// One component with rows to recompute.
+struct Job {
+    /// Index of the `.bpo` in the file list.
+    bpo: usize,
+    /// Index of the `.bps` in the file list.
+    bps: usize,
+    stamps: HashMap<String, String>,
+    rows: Vec<StatusRow>,
+    /// Rows whose verdict may change.
+    candidates: HashSet<String>,
+    /// The stored proofs, `None` without a proof file.
+    proofs: Option<Vec<u8>>,
+}
+
+impl Job {
+    fn stamp_stale(&self, row: &StatusRow) -> bool {
+        stamp_stale(&self.stamps, row)
+    }
+
+    /// The row's sequent stamp, `0` for an obligation without one.
+    fn stamp(&self, row: &StatusRow) -> &str {
+        self.stamps.get(&row.name).map_or("0", String::as_str)
+    }
+}
+
+fn stamp_stale(stamps: &HashMap<String, String>, row: &StatusRow) -> bool {
+    row.context_dependent || stamps.get(&row.name).map(String::as_str) != row.stamp.as_deref()
+}
+
+/// The component's new `.bps` contents, `None` when its rows stay.
+fn update_component(job: &Job, files: &[ScFile], project: &OnceLock<PoProject>) -> Option<String> {
+    let Some(bpr_contents) = &job.proofs else {
+        // No proof file at all: every stamp-stale row resets to a
+        // fresh unattempted one (the status update on a missing
+        // proof), and there is nothing to revive.
+        if !job.rows.iter().any(|row| job.stamp_stale(row)) {
+            return None;
+        }
+        let out: Vec<String> = job
+            .rows
             .iter()
             .map(|row| {
-                if !stale(row) {
-                    return row.row.clone();
-                }
-                let stamp = stamps.get(&row.name).map_or("0", String::as_str);
-                match proofs.get(&row.name) {
-                    Some(entry) if !matches!(entry.body, ProofBody::Skipped) => {
-                        match project.load(&files[i].filename, &row.name) {
-                            Ok(seq) => status_row(&row.name, &compute_status(&seq, entry), stamp),
-                            // Our own generated obligation failed to
-                            // load — keep the stale row, so the stamp
-                            // divergence stays visible downstream.
-                            Err(_) => row.row.clone(),
-                        }
-                    }
-                    _ => fresh_status_row(&row.name, stamp),
+                if job.stamp_stale(row) {
+                    fresh_status_row(&row.name, job.stamp(row))
+                } else {
+                    row.row.clone()
                 }
             })
             .collect();
-        files[j].contents = assemble_status(&out);
+        return Some(assemble_status(&out));
+    };
+    // One pass over the proof file: dependencies for the candidate
+    // rows, name and confidence for everything else.
+    let Ok(entries) = read_bpr(bpr_contents.as_slice(), |name| {
+        if job.candidates.contains(name) {
+            Keep::Deps
+        } else {
+            Keep::Skip
+        }
+    }) else {
+        // The proof file exists but cannot be read — carry the
+        // rows verbatim rather than resetting recorded verdicts.
+        return None;
+    };
+    let proofs: BTreeMap<String, ProofEntry> = entries
+        .into_iter()
+        .map(|entry| (entry.name.clone(), entry))
+        .collect();
+    let stale = |row: &StatusRow| {
+        job.stamp_stale(row)
+            || (job.candidates.contains(row.name.as_str())
+                && Confidence::is_attempted(
+                    proofs
+                        .get(&row.name)
+                        .and_then(|entry| entry.confidence)
+                        .map(i64::from),
+                ))
+    };
+    if !job.rows.iter().any(&stale) {
+        return None;
     }
+    let project = project.get_or_init(|| build_project(files));
+
+    let out: Vec<String> = job
+        .rows
+        .iter()
+        .map(|row| {
+            if !stale(row) {
+                return row.row.clone();
+            }
+            let stamp = job.stamp(row);
+            match proofs.get(&row.name) {
+                Some(entry) if !matches!(entry.body, ProofBody::Skipped) => {
+                    match project.load(&files[job.bpo].filename, &row.name) {
+                        Ok(seq) => status_row(&row.name, &compute_status(&seq, entry), stamp),
+                        // Our own generated obligation failed to
+                        // load — keep the stale row, so the stamp
+                        // divergence stays visible downstream.
+                        Err(_) => row.row.clone(),
+                    }
+                }
+                _ => fresh_status_row(&row.name, stamp),
+            }
+        })
+        .collect();
+    Some(assemble_status(&out))
 }
 
 /// All generated obligation files as one project: hypothesis-set
