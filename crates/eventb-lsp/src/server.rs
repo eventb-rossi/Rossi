@@ -1375,16 +1375,9 @@ impl LanguageServer for RossiLanguageServer {
         // Drop the closed document's cached inlay hints.
         self.inlay_hints_provider.evict(&uri);
 
-        // Restore the disk graph after discarding any unsaved open overlay.
-        let manager = Arc::clone(&self.cross_reference_manager);
-        let restore_uri = uri.clone();
-        match run_blocking(move || manager.restore_document_from_disk(&restore_uri)).await {
-            Ok(Ok(())) => {}
-            Ok(Err(error)) => info!("Failed to restore cross-references for {uri}: {error}"),
-            Err(error) => info!("Failed to restore cross-references for {uri}: {error}"),
-        }
-
-        // Remove the open symbol overlay, revealing the startup disk snapshot.
+        // Drop both open overlays, revealing what is saved for the file. No
+        // read: each index already holds its disk layer.
+        self.cross_reference_manager.remove_document(uri.as_ref());
         self.workspace_symbol_provider.remove_document(uri.as_ref());
 
         // Clear diagnostics
@@ -1454,41 +1447,30 @@ impl LanguageServer for RossiLanguageServer {
 
         // One blocking hop for the whole batch: a branch switch delivers
         // hundreds of events at once.
+        // Both indexes keep their disk and open layers apart, so each file is
+        // refreshed the same way whether or not the editor holds it open: an
+        // open buffer keeps answering for its file, and a file deleted while
+        // open still loses what was saved for it.
         let xrefs = Arc::clone(&self.cross_reference_manager);
         let symbols = Arc::clone(&self.workspace_symbol_provider);
-        let documents = Arc::clone(&self.document_manager);
-        let refreshed_graph = run_blocking(move || {
-            let mut refreshed_graph = false;
+        if let Err(error) = run_blocking(move || {
             for uri in changed {
-                // The symbol index keeps its disk and open layers apart, so
-                // the saved snapshot is refreshed either way — that is how a
-                // file deleted while still open loses its stale symbols.
                 if let Err(error) = symbols.refresh_document_from_disk(&uri) {
                     info!("Failed to refresh saved symbols for {uri}: {error}");
                 }
-                // The cross-reference index is flat, so refreshing a file the
-                // editor holds open would replace its unsaved buffer overlay
-                // with the text on disk. This is the same open-buffer-wins
-                // split `did_save` and `did_close` already make. Re-read per
-                // file rather than sampled up front: a large batch takes long
-                // enough for a `didOpen` to land midway, and it must win.
-                if documents.version(&uri).is_none() {
-                    refreshed_graph = true;
-                    if let Err(error) = xrefs.restore_document_from_disk(&uri) {
-                        info!("Failed to refresh cross-references for {uri}: {error}");
-                    }
+                if let Err(error) = xrefs.refresh_document_from_disk(&uri) {
+                    info!("Failed to refresh cross-references for {uri}: {error}");
                 }
             }
-            refreshed_graph
         })
-        .await;
-
-        // Only a file the editor does not hold open can have moved the graph
-        // the open buffers are checked against. `run_blocking` logs a join
-        // failure itself, and a batch that never ran refreshed nothing.
-        if refreshed_graph.unwrap_or(false) {
-            self.analyzer.republish_all_diagnostics().await;
+        .await
+        {
+            info!("Failed to refresh watched files: {error}");
         }
+
+        // The open buffers themselves did not change, only the workspace graph
+        // they are checked against.
+        self.analyzer.republish_all_diagnostics().await;
     }
 
     async fn document_symbol(
