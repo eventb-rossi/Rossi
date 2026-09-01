@@ -37,7 +37,7 @@ pub struct WorkspaceSymbolProvider {
     /// Disk symbols and open-document overlays keyed by document URI.
     symbol_index: DashMap<String, DocumentSymbols>,
     /// Raw client/scan URI spellings mapped to one canonical file identity.
-    document_aliases: DashMap<String, String>,
+    document_uris: crate::uri_identity::DocumentUris,
 }
 
 impl Default for WorkspaceSymbolProvider {
@@ -51,7 +51,7 @@ impl WorkspaceSymbolProvider {
     pub fn new() -> Self {
         Self {
             symbol_index: DashMap::new(),
-            document_aliases: DashMap::new(),
+            document_uris: crate::uri_identity::DocumentUris::default(),
         }
     }
 
@@ -96,8 +96,7 @@ impl WorkspaceSymbolProvider {
     /// Resolve a file URI once on the blocking pool before open-document
     /// analysis starts, so scan and client aliases share one overlay key.
     pub(crate) fn register_document_uri(&self, uri: &str) {
-        let canonical = Self::canonical_file_uri(uri).unwrap_or_else(|| uri.to_string());
-        self.document_aliases.insert(uri.to_string(), canonical);
+        self.document_uris.register(uri);
     }
 
     /// Refresh the disk layer from the file now on disk. A file that is gone
@@ -199,16 +198,7 @@ impl WorkspaceSymbolProvider {
     }
 
     fn document_key(&self, uri: &str) -> String {
-        self.document_aliases
-            .get(uri)
-            .map(|key| key.value().clone())
-            .unwrap_or_else(|| uri.to_string())
-    }
-
-    fn canonical_file_uri(uri: &str) -> Option<String> {
-        let path = Url::parse(uri).ok()?.to_file_path().ok()?;
-        let canonical = std::fs::canonicalize(path).ok()?;
-        Url::from_file_path(canonical).ok().map(Into::into)
+        self.document_uris.key(uri)
     }
 
     /// Extract all symbols from a component, locating each at the span the

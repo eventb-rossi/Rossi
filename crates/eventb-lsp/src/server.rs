@@ -1308,8 +1308,14 @@ impl LanguageServer for RossiLanguageServer {
         debug!("Document opened: {}", uri);
 
         let symbols = Arc::clone(&self.workspace_symbol_provider);
+        let xrefs = Arc::clone(&self.cross_reference_manager);
         let uri_key = uri.to_string();
-        if let Err(error) = run_blocking(move || symbols.register_document_uri(&uri_key)).await {
+        if let Err(error) = run_blocking(move || {
+            symbols.register_document_uri(&uri_key);
+            xrefs.register_document_uri(&uri_key);
+        })
+        .await
+        {
             info!("Failed to normalize document URI: {error}");
         }
 
