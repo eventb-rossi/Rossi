@@ -103,8 +103,18 @@ fn build_one(input: &Path) -> Result<BuildOutcome, Box<dyn std::error::Error>> {
     if input.is_dir() {
         // A Rodin project directory always carries `.buc`/`.bum` component
         // files; prefer that path so a real project is never misread as a
-        // loose folder of Event-B text.
-        if !eventb_io::collect_rodin_xml_files(&[input.to_path_buf()])?.is_empty() {
+        // loose folder of Event-B text. Ask the loader itself what it would
+        // pick up, rather than re-deciding: a recursive, case-insensitive
+        // gate used to admit directories holding only `M.BUM`, or only
+        // `sub/M.bum`, that `Project::from_directory` then read as zero
+        // components — an empty project, built in silence.
+        let components = rossi_build::project::component_files(input)?;
+        let is_rodin_project = components.iter().any(|path| {
+            path.file_name()
+                .and_then(|name| name.to_str())
+                .is_some_and(rossi_build::project::is_xml_input)
+        });
+        if is_rodin_project {
             let project = Project::from_directory(input)?;
             let result = build(&project);
             // A Rodin project directory is a single project with no source
