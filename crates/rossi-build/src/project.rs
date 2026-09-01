@@ -495,12 +495,11 @@ pub fn component_files(dir: &Path) -> Result<Vec<PathBuf>> {
             files.push(entry.path());
         }
     }
-    let kind: fn(&str) -> bool = if files.iter().any(|p| file_name_is(p, is_xml_input)) {
-        is_xml_input
+    if files.iter().any(|p| file_name_is(p, is_xml_input)) {
+        files.retain(|p| file_name_is(p, is_xml_input));
     } else {
-        is_eventb_input
-    };
-    files.retain(|p| file_name_is(p, kind));
+        files.retain(|p| crate::walk::is_source_file(p));
+    }
     Ok(files)
 }
 
@@ -511,13 +510,6 @@ fn file_name_is(path: &Path, pred: fn(&str) -> bool) -> bool {
 /// A Rodin XML component file (`.buc` context / `.bum` machine).
 pub fn is_xml_input(name: &str) -> bool {
     name.ends_with(".buc") || name.ends_with(".bum")
-}
-
-/// A textual Event-B component file. Only `.eventb` is auto-loaded from a
-/// directory — `.txt` is too generic to scan for (a `README.txt` is not a
-/// component), though a `.txt` passed explicitly is still validated as text.
-fn is_eventb_input(name: &str) -> bool {
-    name.ends_with(".eventb")
 }
 
 /// Extract Rodin's project name from a `.bcc` / `.bcm` XML payload.
