@@ -52,6 +52,12 @@ impl TypeEnvironmentBuilder {
     pub fn make_snapshot(&self) -> SealedTypeEnvironment {
         SealedTypeEnvironment(Arc::new(self.map.clone()))
     }
+
+    /// Seals the bindings into an immutable snapshot, consuming the
+    /// builder: no copy of the map.
+    pub fn into_snapshot(self) -> SealedTypeEnvironment {
+        SealedTypeEnvironment(Arc::new(self.map))
+    }
 }
 
 /// An immutable type-environment snapshot.

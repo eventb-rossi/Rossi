@@ -87,7 +87,7 @@ impl PoSet {
                 let ty = Type::parse_rodin(ty).ok_or_else(|| format!("identifier type `{ty}`"))?;
                 builder.insert(name, ty);
             }
-            builder.make_snapshot()
+            builder.into_snapshot()
         };
         let mut preds = Vec::with_capacity(self.preds.len());
         let mut hyps = Vec::new();

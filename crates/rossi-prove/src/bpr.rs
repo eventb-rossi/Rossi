@@ -20,7 +20,7 @@ use std::io::BufRead;
 use quick_xml::Reader;
 use quick_xml::events::{BytesStart, Event};
 
-use rossi::formula::{Predicate, Type, TypeEnvironmentBuilder};
+use rossi::formula::{Predicate, SealedTypeEnvironment, Type, TypeEnvironmentBuilder};
 use rossi::{parse_expression_str, parse_predicate_str};
 
 use crate::confidence::Confidence;
@@ -703,15 +703,20 @@ fn resolve_proof(raw: RawProof, parses: &mut Parses) -> ProofEntry {
     }
 }
 
-/// The entry's parse environment: the shared base when it declares no
-/// identifiers of its own (an O(1) `Arc` clone), otherwise the base
-/// extended with them.
-fn entry_env(
-    base: &rossi::formula::SealedTypeEnvironment,
-    idents: &[(String, String)],
-) -> Result<rossi::formula::SealedTypeEnvironment, String> {
+/// The entry's type-check environment: the shared base when it
+/// declares no identifiers of its own (an O(1) `Arc` clone), otherwise
+/// the base extended with them — built once per distinct identifier
+/// list, since the entries of one proof repeat the same few lists.
+fn entry_env<'a>(
+    base: &SealedTypeEnvironment,
+    idents: &'a [(String, String)],
+    extended: &mut HashMap<&'a [(String, String)], SealedTypeEnvironment>,
+) -> Result<SealedTypeEnvironment, String> {
     if idents.is_empty() {
         return Ok(base.clone());
+    }
+    if let Some(env) = extended.get(idents) {
+        return Ok(env.clone());
     }
     let mut env = base.to_builder();
     for (name, ty) in idents {
@@ -720,7 +725,9 @@ fn entry_env(
             Type::parse_rodin(ty).ok_or_else(|| format!("identifier type `{ty}`"))?,
         );
     }
-    Ok(env.make_snapshot())
+    let env = env.into_snapshot();
+    extended.insert(idents, env.clone());
+    Ok(env)
 }
 
 fn resolve_body(raw: RawProof, parses: &mut Parses) -> Result<StoredProof, String> {
@@ -740,13 +747,14 @@ fn resolve_body(raw: RawProof, parses: &mut Parses) -> Result<StoredProof, Strin
         builder.insert(name, ty.clone());
         used_free_idents.push(TypedIdent::new(name.clone(), ty));
     }
-    let base_env = builder.make_snapshot();
+    let base_env = builder.into_snapshot();
+    let mut extended = HashMap::new();
 
     // The intern tables, type-checked against the base environment
     // extended with each entry's own identifiers.
     let mut preds: BTreeMap<String, Predicate> = BTreeMap::new();
     for entry in &raw.preds {
-        let env = entry_env(&base_env, &entry.idents)?;
+        let env = entry_env(&base_env, &entry.idents, &mut extended)?;
         let parsed = memoized(&mut parses.preds, &entry.formula, || {
             parse_predicate_str(&entry.formula)
                 .map_err(|err| format!("predicate `{}`: {err}", entry.formula))
@@ -759,7 +767,7 @@ fn resolve_body(raw: RawProof, parses: &mut Parses) -> Result<StoredProof, Strin
     }
     let mut exprs = BTreeMap::new();
     for entry in &raw.exprs {
-        let env = entry_env(&base_env, &entry.idents)?;
+        let env = entry_env(&base_env, &entry.idents, &mut extended)?;
         let parsed = memoized(&mut parses.exprs, &entry.formula, || {
             parse_expression_str(&entry.formula)
                 .map_err(|err| format!("expression `{}`: {err}", entry.formula))
