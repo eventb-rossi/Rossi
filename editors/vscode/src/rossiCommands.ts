@@ -907,12 +907,23 @@ async function validationTargetFor(input: string): Promise<ValidationTarget> {
     return { inputs: [input], cwd: path.dirname(input) };
 }
 
+/// Dot-named directories (`.rossi/rodin` Rodin workspaces, `.git`, Eclipse
+/// `.metadata`) hold generated or foreign files, never sources. The CLI and
+/// the language server both skip them, so scanning them here would hand
+/// `rossi validate` generated sources neither of those would ever look at.
+function isGeneratedDirectory(name: string): boolean {
+    return name.startsWith('.');
+}
+
 async function scanDirectory(dir: string): Promise<{ hasEventB: boolean; hasRodinXml: boolean }> {
     const result = { hasEventB: false, hasRodinXml: false };
     const entries = await fs.readdir(dir, { withFileTypes: true });
     for (const entry of entries) {
         const entryPath = path.join(dir, entry.name);
         if (entry.isDirectory()) {
+            if (isGeneratedDirectory(entry.name)) {
+                continue;
+            }
             const child = await scanDirectory(entryPath);
             result.hasEventB ||= child.hasEventB;
             result.hasRodinXml ||= child.hasRodinXml;
@@ -931,6 +942,9 @@ async function collectEventBTextFiles(dir: string): Promise<string[]> {
     for (const entry of entries) {
         const entryPath = path.join(dir, entry.name);
         if (entry.isDirectory()) {
+            if (isGeneratedDirectory(entry.name)) {
+                continue;
+            }
             files.push(...await collectEventBTextFiles(entryPath));
         } else if (entry.isFile()) {
             const ext = path.extname(entry.name).toLowerCase();
