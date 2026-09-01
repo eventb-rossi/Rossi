@@ -133,7 +133,13 @@ the [main Installation guide](../../README.md#installation) for the full matrix
 
 ## Extension Settings
 
-This extension contributes the following settings:
+This extension contributes the following settings. The four that name an
+executable — `rossi.languageServer.path`, `rossi.tool.path`,
+`rossi.rodin.path` and `rossi.animate.path` — are user/machine settings: a
+workspace's own `.vscode/settings.json` cannot supply them, so cloning a
+repository can never make the extension launch a program of that
+repository's choosing. `rossi.rodin.workspace` may still be set per
+workspace, but only in a trusted one.
 
 - `rossi.languageServer.path`: Path to the Event-B language server executable (default: searches in PATH)
 - `rossi.tool.path`: Path to the Rossi CLI executable used for import, export, build, validation, and conversion commands (default: `rossi`)
@@ -160,13 +166,21 @@ This extension contributes the following settings:
 
 ### Example Configuration
 
-Add to your `.vscode/settings.json`:
+The executable paths belong in your **user** `settings.json`
+(`Ctrl+Shift+P` → *Preferences: Open User Settings (JSON)*):
 
 ```json
 {
   "rossi.languageServer.path": "/path/to/eventb-language-server", // only if not in PATH
   "rossi.tool.path": "/path/to/rossi", // only if not in PATH
-  "rossi.rodin.path": "/Applications/Rodin.app", // only if Rodin isn't at the platform default
+  "rossi.rodin.path": "/Applications/Rodin.app" // only if Rodin isn't at the platform default
+}
+```
+
+Everything else can live in the project's `.vscode/settings.json`:
+
+```json
+{
   "rossi.format.style": "camille",
   "rossi.format.useUnicode": true,
   "rossi.diagnostics.enabled": true,

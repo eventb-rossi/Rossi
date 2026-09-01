@@ -242,21 +242,25 @@
       "properties": {
         "rossi.tool.path": {
           "type": "string",
+          "scope": "machine",
           "default": "rossi",
           "description": "Path to the Rossi CLI executable used for import, export, build, validation, and conversion commands."
         },
         "rossi.languageServer.path": {
           "type": "string",
+          "scope": "machine",
           "default": "eventb-language-server",
           "description": "Path to the Event-B language server executable. If not specified, searches in PATH."
         },
         "rossi.rodin.path": {
           "type": "string",
+          "scope": "machine",
           "default": "",
           "description": "Path to the Rodin IDE executable, macOS .app bundle, or app name used by the Open in Rodin code lens (handled by the language server). Leave empty to use the platform default."
         },
         "rossi.rodin.workspace": {
           "type": "string",
+          "scope": "machine-overridable",
           "default": "",
           "description": "Directory used as the shared Rodin workspace by the Open in Rodin code lens. Proofs made in Rodin persist there and survive rebuilds. Leave empty to use .rossi/rodin inside the workspace folder."
         },
@@ -272,6 +276,7 @@
         },
         "rossi.animate.path": {
           "type": "string",
+          "scope": "machine",
           "default": "",
           "description": "Path to the eventb-animate executable used by the Model-check and Disprove POs code lenses (handled by the language server). Leave empty to resolve eventb-animate via PATH."
         },
@@ -459,6 +464,19 @@
         ]
       }
     ]
+  },
+  "capabilities": {
+    "untrustedWorkspaces": {
+      "supported": "limited",
+      "description": "Rossi launches external programs: the Rossi CLI, the Event-B language server, Rodin, and eventb-animate. In an untrusted workspace the settings naming those programs, and the one choosing the Rodin workspace directory, are ignored in favour of the built-in defaults.",
+      "restrictedConfigurations": [
+        "rossi.tool.path",
+        "rossi.languageServer.path",
+        "rossi.rodin.path",
+        "rossi.animate.path",
+        "rossi.rodin.workspace"
+      ]
+    }
   },
   "scripts": {
     "vscode:prepublish": "npm run compile && npm run bundle:prod",
