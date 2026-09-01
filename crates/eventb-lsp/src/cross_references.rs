@@ -61,7 +61,8 @@ pub struct CrossReferenceManager {
 
     /// Map from file URI to the components defined there. Most files hold a
     /// single component, but `rossi import --merge` output concatenates
-    /// several into one file.
+    /// several into one file. Keyed through [`Self::document_key`], so one
+    /// file reaching the server under two spellings occupies one entry.
     uri_to_component: DashMap<String, Vec<ComponentLoc>>,
 
     /// Map from component name to its file URI. Event-B component names are
@@ -72,11 +73,28 @@ pub struct CrossReferenceManager {
     /// Workspace root path (if available)
     workspace_root: RwLock<Option<PathBuf>>,
 
+    /// Raw client/scan URI spellings mapped to one canonical file identity,
+    /// shared with the workspace symbol index so the two agree on which
+    /// spellings name the same file.
+    document_uris: crate::uri_identity::DocumentUris,
+
     /// Set once [`Self::scan_workspace`] has walked the workspace and indexed
     /// its on-disk `.eventb` files. Distinct from `workspace_root.is_some()`,
     /// which becomes true at `initialize` — before the scan runs — so gating on
     /// it would let cross-reference checks fire against an empty graph.
     scanned: AtomicBool,
+}
+
+/// A URI's basename, for a diagnostic message. Falls back to the whole URI
+/// when it names no file.
+fn display_name(uri: &str) -> String {
+    Url::parse(uri)
+        .ok()
+        .and_then(|url| url.to_file_path().ok())
+        .as_deref()
+        .and_then(Path::file_name)
+        .map(|name| name.to_string_lossy().into_owned())
+        .unwrap_or_else(|| uri.to_string())
 }
 
 impl Default for CrossReferenceManager {
@@ -92,6 +110,7 @@ impl CrossReferenceManager {
             graph: RwLock::new(DependencyGraph::new()),
             uri_to_component: DashMap::new(),
             name_to_uri: DashMap::new(),
+            document_uris: crate::uri_identity::DocumentUris::default(),
             workspace_root: RwLock::new(None),
             scanned: AtomicBool::new(false),
         }
@@ -130,6 +149,7 @@ impl CrossReferenceManager {
     /// edit path passes the document manager's stored parse straight through.
     pub fn index_components(&self, uri: String, components: &[rossi::Component]) {
         debug!("Updating components for URI: {}", uri);
+        let uri = self.document_key(&uri);
 
         if components.is_empty() {
             debug!("No components recovered for cross-references in {uri}");
@@ -193,6 +213,8 @@ impl CrossReferenceManager {
     pub fn remove_component(&self, uri: &str) {
         debug!("Removing components for URI: {}", uri);
 
+        let key = self.document_key(uri);
+        let uri = key.as_str();
         if let Some((_uri, locs)) = self.uri_to_component.remove(uri) {
             let mut graph = self.graph.write();
             for loc in &locs {
@@ -212,6 +234,17 @@ impl CrossReferenceManager {
                 }
             }
         }
+    }
+
+    /// Resolve a file URI once on the blocking pool before open-document
+    /// analysis starts, so scan and client spellings share one entry.
+    pub(crate) fn register_document_uri(&self, uri: &str) {
+        self.document_uris.register(uri);
+    }
+
+    /// The key `uri` is indexed under.
+    fn document_key(&self, uri: &str) -> String {
+        self.document_uris.key(uri)
     }
 
     /// Find the URI of a component by its name
@@ -266,7 +299,7 @@ impl CrossReferenceManager {
     #[allow(dead_code)]
     pub fn get_component_name(&self, uri: &str) -> Option<String> {
         self.uri_to_component
-            .get(uri)
+            .get(&self.document_key(uri))
             .and_then(|locs| locs.value().first().map(|loc| loc.name.clone()))
     }
 
@@ -345,6 +378,9 @@ impl CrossReferenceManager {
         let count = sources.len();
         for (uri, content) in sources {
             let components = crate::component_util::parse_all(&content);
+            // Resolve the scan's spelling now, off the request path, so the
+            // client's own spelling of the same file lands on this entry.
+            self.register_document_uri(&uri);
             self.index_components(uri.clone(), &components);
             index_file(uri, &components, &content);
         }
@@ -426,34 +462,21 @@ impl CrossReferenceManager {
 
     /// The distinct files that define a component named `name`, as display
     /// basenames (sorted). The name → URI index keeps a single entry per name,
-    /// so the URI → components map is scanned instead. Files are deduplicated by
-    /// their resolved filesystem path, so the same file indexed under two URI
-    /// spellings (the workspace scan's `file://` URI vs. the client's didOpen
-    /// URI — they can differ in percent-encoding or case) counts once and does
-    /// not look like a cross-file duplicate. Queried per open-document name, so
-    /// no whole-workspace map is built per publish.
+    /// so the URI → components map is scanned instead. Entries are already
+    /// keyed by canonical identity, so a file reaching the server under two
+    /// spellings occupies one of them and cannot look like a cross-file
+    /// duplicate. Queried per open-document name, so no whole-workspace map is
+    /// built per publish.
     pub fn component_definition_files(&self, name: &str) -> Vec<String> {
-        let mut paths: BTreeSet<PathBuf> = BTreeSet::new();
+        let mut uris: BTreeSet<String> = BTreeSet::new();
         for entry in self.uri_to_component.iter() {
             if entry.value().iter().any(|loc| loc.name == name) {
-                let uri = entry.key();
-                // Dedupe by filesystem path; fall back to the raw URI for
-                // non-file URIs.
-                let key = Url::parse(uri)
-                    .ok()
-                    .and_then(|u| u.to_file_path().ok())
-                    .unwrap_or_else(|| PathBuf::from(uri));
-                paths.insert(key);
+                uris.insert(entry.key().clone());
             }
         }
-        paths
-            .iter()
-            .map(|p| {
-                p.file_name()
-                    .map(|f| f.to_string_lossy().into_owned())
-                    .unwrap_or_else(|| p.to_string_lossy().into_owned())
-            })
-            .collect()
+        // Deduplication is by file identity, not by basename: two directories
+        // may each hold an `m.eventb`, and that is a real cross-file duplicate.
+        uris.iter().map(|uri| display_name(uri)).collect()
     }
 
     // --- Transitive closure / visibility (delegated to the shared graph) ---
@@ -1047,6 +1070,20 @@ END
         // Right name, wrong kind — a context is not a machine.
         assert!(!manager.contains(ComponentKind::Machine, "C"));
         assert!(!manager.contains(ComponentKind::Context, "absent"));
+    }
+
+    #[test]
+    fn component_definition_files_counts_same_named_files_in_two_directories() {
+        // Two directories may each hold an `m.eventb`. That is a real
+        // cross-file duplicate, so the basenames must not collapse into one.
+        let manager = CrossReferenceManager::new();
+        let src = "CONTEXT c\nEND\n";
+        manager.update_component("file:///one/m.eventb".to_string(), src);
+        manager.update_component("file:///two/m.eventb".to_string(), src);
+
+        let files = manager.component_definition_files("c");
+
+        assert_eq!(files, ["m.eventb", "m.eventb"], "{files:?}");
     }
 
     #[test]
