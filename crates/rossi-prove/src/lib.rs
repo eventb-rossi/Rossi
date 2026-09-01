@@ -9,6 +9,8 @@
 //! (re-running their reasoners), the two modes the proof builder
 //! combines.
 
+use std::sync::OnceLock;
+
 pub mod bpr;
 pub mod bps;
 pub mod builder;
@@ -41,6 +43,21 @@ pub use sequent::{ProverSequent, TypedIdent};
 pub use skeleton::{Skeleton, StoredInput, StoredRule};
 pub use status::{StatusVerdict, compute_status};
 pub use tree::ProofTreeNode;
+
+/// The worker pool for checking components in parallel, one per
+/// process. Its threads carry stacks sized for any accepted formula,
+/// so the parser never falls back to mapping a stack segment per call
+/// — on default worker stacks that fallback fires on every parse and
+/// dominates the run.
+pub fn thread_pool() -> &'static rayon::ThreadPool {
+    static POOL: OnceLock<rayon::ThreadPool> = OnceLock::new();
+    POOL.get_or_init(|| {
+        rayon::ThreadPoolBuilder::new()
+            .stack_size(rossi::nesting::PARSER_STACK_SIZE)
+            .build()
+            .expect("worker threads spawn")
+    })
+}
 
 #[cfg(test)]
 pub(crate) mod test_util {
