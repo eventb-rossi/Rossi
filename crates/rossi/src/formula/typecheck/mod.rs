@@ -163,6 +163,11 @@ pub fn type_from_expression(expr: &Expression) -> Option<Type> {
 
 impl Predicate {
     /// Type-checks this predicate against `env`.
+    ///
+    /// The outcome depends on `env` only through the bindings of the
+    /// predicate's [free identifiers](Predicate::free_identifiers),
+    /// which include the given sets its type annotations spell; a
+    /// memo of checks may key on those bindings alone.
     pub fn type_check(&self, env: &SealedTypeEnvironment) -> TypeCheckResult<Predicate> {
         let mut checker = Checker::new(env);
         checker.check_pred(self);
@@ -174,6 +179,10 @@ impl Predicate {
 
 impl Expression {
     /// Type-checks this expression against `env`.
+    ///
+    /// As for predicates, the outcome depends on `env` only through the
+    /// bindings of the expression's
+    /// [free identifiers](Expression::free_identifiers).
     pub fn type_check(&self, env: &SealedTypeEnvironment) -> TypeCheckResult<Expression> {
         let mut checker = Checker::new(env);
         checker.check_expr(self);
@@ -1069,5 +1078,32 @@ impl Rebuilder<'_> {
                     .becomes_such_that(new_idents, new_primed, pred, span)
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::formula::TypeEnvironmentBuilder;
+
+    /// The contract memoizing callers rely on: a check observes only
+    /// the bindings of the formula's free identifiers — including a
+    /// given set spelled in an annotation — so unrelated bindings do
+    /// not change its outcome.
+    #[test]
+    fn outcome_depends_only_on_free_identifier_bindings() {
+        let pred = crate::parse_predicate_str("∀y⦂S·x∈T ∧ y∈T").expect("parses");
+        assert_eq!(pred.free_identifiers(), ["S", "T", "x"]);
+        let mut env = TypeEnvironmentBuilder::new();
+        env.add_given_set("S");
+        env.insert("T", Type::pow(Type::given("S")));
+        env.insert("x", Type::given("S"));
+        let narrow = env.make_snapshot();
+        env.add_given_set("U");
+        env.insert("z", Type::Int);
+        let wide = env.make_snapshot();
+
+        let checked = pred.type_check(&narrow).typed.expect("type-checks");
+        assert_eq!(pred.type_check(&wide).typed, Some(checked));
     }
 }

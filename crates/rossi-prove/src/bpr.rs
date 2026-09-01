@@ -21,7 +21,7 @@ use quick_xml::Reader;
 use quick_xml::events::{BytesStart, Event};
 
 use rossi::formula::{Predicate, SealedTypeEnvironment, Type, TypeEnvironmentBuilder};
-use rossi::{parse_expression_str, parse_predicate_str};
+use rossi::{Expression, parse_expression_str, parse_predicate_str};
 
 use crate::confidence::Confidence;
 use crate::deps::ProofDependencies;
@@ -227,28 +227,103 @@ struct Visit<'a> {
     parses: Parses,
 }
 
-/// The untyped parses of one document, shared by all its proofs: a
-/// component's proofs restate the same few hundred hypotheses thousands
-/// of times over. Type-checking stays per proof, against that proof's
-/// own environment, so sharing the parse changes nothing downstream. A
-/// parse failure is remembered too, and reported by every proof using
-/// the formula, as before.
+/// The parses of one document, shared by all its proofs: a component's
+/// proofs restate the same few hundred hypotheses thousands of times
+/// over. A failure is remembered too, and reported by every proof
+/// meeting the formula, as before.
 #[derive(Default)]
 struct Parses {
-    preds: HashMap<String, Result<Predicate, String>>,
-    exprs: HashMap<String, Result<rossi::Expression, String>>,
+    preds: HashMap<String, Parsed<Predicate>>,
+    exprs: HashMap<String, Parsed<Expression>>,
 }
 
-/// The memoized parse of `formula`.
-fn memoized<'a, T>(
-    parses: &'a mut HashMap<String, Result<T, String>>,
-    formula: &str,
-    parse: impl FnOnce() -> Result<T, String>,
-) -> Result<&'a T, String> {
-    if !parses.contains_key(formula) {
-        parses.insert(formula.to_string(), parse());
+/// One formula's parse, and its type-checks by the environment each
+/// observed. The checker consults the environment only for the
+/// formula's free identifiers (the given sets its type annotations
+/// spell are among them), so a check's outcome is a function of their
+/// bindings: proofs that agree on those share one formula; two proofs
+/// binding a name differently check separately.
+struct Parsed<T> {
+    parsed: Result<T, String>,
+    typed: Vec<Check<T>>,
+}
+
+/// The bindings of a formula's free identifiers, in that order, and the
+/// check they yielded.
+type Check<T> = (Vec<Option<Type>>, Result<T, String>);
+
+/// What the intern tables need of a formula kind.
+trait Formula: Clone {
+    const KIND: &'static str;
+    fn parse(s: &str) -> Result<Self, rossi::ParseError>;
+    fn free_identifiers(&self) -> &[String];
+    fn type_check(&self, env: &SealedTypeEnvironment) -> Option<Self>;
+}
+
+impl Formula for Predicate {
+    const KIND: &'static str = "predicate";
+    fn parse(s: &str) -> Result<Self, rossi::ParseError> {
+        parse_predicate_str(s)
     }
-    parses[formula].as_ref().map_err(String::clone)
+    fn free_identifiers(&self) -> &[String] {
+        Predicate::free_identifiers(self)
+    }
+    fn type_check(&self, env: &SealedTypeEnvironment) -> Option<Self> {
+        Predicate::type_check(self, env)
+            .typed
+            .map(|typed| typed.strip_ascriptions())
+    }
+}
+
+impl Formula for Expression {
+    const KIND: &'static str = "expression";
+    fn parse(s: &str) -> Result<Self, rossi::ParseError> {
+        parse_expression_str(s)
+    }
+    fn free_identifiers(&self) -> &[String] {
+        Expression::free_identifiers(self)
+    }
+    fn type_check(&self, env: &SealedTypeEnvironment) -> Option<Self> {
+        Expression::type_check(self, env)
+            .typed
+            .map(|typed| typed.strip_ascriptions())
+    }
+}
+
+/// The type-checked `formula` under `env`, from the document's shared
+/// parses.
+fn intern<T: Formula>(
+    memo: &mut HashMap<String, Parsed<T>>,
+    formula: &str,
+    env: &SealedTypeEnvironment,
+) -> Result<T, String> {
+    let record = match memo.get_mut(formula) {
+        Some(record) => record,
+        None => memo.entry(formula.to_string()).or_insert_with(|| Parsed {
+            parsed: T::parse(formula).map_err(|err| format!("{} `{formula}`: {err}", T::KIND)),
+            typed: Vec::new(),
+        }),
+    };
+    let parsed = record.parsed.as_ref().map_err(String::clone)?;
+    let names = parsed.free_identifiers();
+    let hit = record.typed.iter().find(|(bindings, _)| {
+        bindings
+            .iter()
+            .zip(names)
+            .all(|(bound, name)| bound.as_ref() == env.get(name))
+    });
+    let typed = match hit {
+        Some((_, typed)) => typed,
+        None => {
+            let bindings = names.iter().map(|name| env.get(name).cloned()).collect();
+            let typed = parsed
+                .type_check(env)
+                .ok_or_else(|| format!("{} `{formula}` does not type-check", T::KIND));
+            record.typed.push((bindings, typed));
+            &record.typed.last().expect("just pushed").1
+        }
+    };
+    typed.clone()
 }
 
 #[derive(Debug, Default)]
@@ -755,28 +830,18 @@ fn resolve_body(raw: RawProof, parses: &mut Parses) -> Result<StoredProof, Strin
     let mut preds: BTreeMap<String, Predicate> = BTreeMap::new();
     for entry in &raw.preds {
         let env = entry_env(&base_env, &entry.idents, &mut extended)?;
-        let parsed = memoized(&mut parses.preds, &entry.formula, || {
-            parse_predicate_str(&entry.formula)
-                .map_err(|err| format!("predicate `{}`: {err}", entry.formula))
-        })?;
-        let typed = parsed
-            .type_check(&env)
-            .typed
-            .ok_or_else(|| format!("predicate `{}` does not type-check", entry.formula))?;
-        preds.insert(entry.name.clone(), typed.strip_ascriptions());
+        preds.insert(
+            entry.name.clone(),
+            intern(&mut parses.preds, &entry.formula, &env)?,
+        );
     }
     let mut exprs = BTreeMap::new();
     for entry in &raw.exprs {
         let env = entry_env(&base_env, &entry.idents, &mut extended)?;
-        let parsed = memoized(&mut parses.exprs, &entry.formula, || {
-            parse_expression_str(&entry.formula)
-                .map_err(|err| format!("expression `{}`: {err}", entry.formula))
-        })?;
-        let typed = parsed
-            .type_check(&env)
-            .typed
-            .ok_or_else(|| format!("expression `{}` does not type-check", entry.formula))?;
-        exprs.insert(entry.name.clone(), typed.strip_ascriptions());
+        exprs.insert(
+            entry.name.clone(),
+            intern(&mut parses.exprs, &entry.formula, &env)?,
+        );
     }
     let reasoners: BTreeMap<String, ReasonerDesc> = raw
         .reasoners
@@ -838,7 +903,7 @@ fn resolve_body(raw: RawProof, parses: &mut Parses) -> Result<StoredProof, Strin
 fn resolve_rule(
     raw: RawRule,
     preds: &BTreeMap<String, Predicate>,
-    exprs: &BTreeMap<String, rossi::Expression>,
+    exprs: &BTreeMap<String, Expression>,
     reasoners: &BTreeMap<String, ReasonerDesc>,
 ) -> Result<Skeleton, String> {
     // Rule trees nest arbitrarily deep; grow the stack as needed.
@@ -1104,6 +1169,27 @@ mod tests {
         let root = proof.skeleton.as_ref().expect("full skeleton");
         let rule = &root.rule.as_ref().expect("root rule").rule;
         assert_eq!(rule.confidence, Confidence::UNATTEMPTED);
+    }
+
+    /// Two proofs of one file spelling the same formula over
+    /// differently typed identifiers check separately: the shared
+    /// parses are keyed by the bindings a check observes.
+    #[test]
+    fn shared_parses_respect_each_proofs_bindings() {
+        let proof = |name: &str, ty: &str| {
+            formatdoc!(
+                r#"<org.eventb.core.prProof name="{name}" org.eventb.core.confidence="1000" org.eventb.core.prFresh="" org.eventb.core.prGoal="p0" org.eventb.core.prHyps="">
+                <org.eventb.core.prIdent name="x" org.eventb.core.type="{ty}"/>
+                <org.eventb.core.prPred name="p0" org.eventb.core.predicate="x=x"/>
+                </org.eventb.core.prProof>"#
+            )
+        };
+        let xml = file(&format!("{}\n{}", proof("a", "ℤ"), proof("b", "BOOL")));
+        let entries = read(&xml, Keep::Deps);
+        let goal = |i: usize| loaded(&entries[i]).deps.goal.clone().expect("goal");
+        assert_eq!(goal(0), pred(&env(&[("x", "ℤ")]), "x=x"));
+        assert_eq!(goal(1), pred(&env(&[("x", "BOOL")]), "x=x"));
+        assert_ne!(goal(0), goal(1));
     }
 
     #[test]
