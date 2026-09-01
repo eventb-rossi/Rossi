@@ -137,11 +137,24 @@ const TYPE: &str = "org.eventb.core.type";
 /// caller's [`Keep`] choice for its name.
 pub fn read_bpr(
     reader: impl BufRead,
-    mut keep: impl FnMut(&str) -> Keep,
+    keep: impl FnMut(&str) -> Keep,
 ) -> Result<Vec<ProofEntry>, BprError> {
+    let mut entries = Vec::new();
+    visit_bpr(reader, keep, |entry| entries.push(entry))?;
+    Ok(entries)
+}
+
+/// Reads a `.bpr` document proof by proof, handing each to `sink` as
+/// its element closes — a component's proofs never need to be in
+/// memory together. A read failure still fails the whole document:
+/// the proofs already handed out must be discarded.
+pub fn visit_bpr(
+    reader: impl BufRead,
+    mut keep: impl FnMut(&str) -> Keep,
+    mut sink: impl FnMut(ProofEntry),
+) -> Result<(), BprError> {
     let mut xml = Reader::from_reader(reader);
     let mut buf = Vec::new();
-    let mut entries = Vec::new();
     let mut stack: Vec<Frame> = Vec::new();
     let mut saw_root = false;
     let mut root_closed = false;
@@ -153,7 +166,7 @@ pub fn read_bpr(
                     &e,
                     false,
                     &mut stack,
-                    &mut entries,
+                    &mut sink,
                     &mut keep,
                     &mut saw_root,
                     &mut root_closed,
@@ -164,14 +177,14 @@ pub fn read_bpr(
                     &e,
                     true,
                     &mut stack,
-                    &mut entries,
+                    &mut sink,
                     &mut keep,
                     &mut saw_root,
                     &mut root_closed,
                 )?;
             }
             Event::End(_) => match stack.pop() {
-                Some(frame) => close(frame, &mut stack, &mut entries),
+                Some(frame) => close(frame, &mut stack, &mut sink),
                 // With no frame open this is the file root's end tag:
                 // quick-xml has already matched it against its start.
                 None => root_closed = true,
@@ -189,7 +202,7 @@ pub fn read_bpr(
         }
         buf.clear();
     }
-    Ok(entries)
+    Ok(())
 }
 
 /// The attributes of one element, unescaped, in document order.
@@ -314,7 +327,7 @@ fn open(
     e: &BytesStart<'_>,
     empty: bool,
     stack: &mut Vec<Frame>,
-    entries: &mut Vec<ProofEntry>,
+    sink: &mut dyn FnMut(ProofEntry),
     keep: &mut impl FnMut(&str) -> Keep,
     saw_root: &mut bool,
     root_closed: &mut bool,
@@ -552,7 +565,7 @@ fn open(
         }
     };
     if empty {
-        close(frame, stack, entries);
+        close(frame, stack, sink);
     } else {
         stack.push(frame);
     }
@@ -611,11 +624,11 @@ fn input_key(attrs: &[(String, String)]) -> String {
     name.strip_prefix('.').unwrap_or(name).to_string()
 }
 
-fn close(frame: Frame, stack: &mut Vec<Frame>, entries: &mut Vec<ProofEntry>) {
+fn close(frame: Frame, stack: &mut Vec<Frame>, sink: &mut dyn FnMut(ProofEntry)) {
     match (frame, stack.last_mut()) {
         (Frame::Skip(0), _) | (Frame::Leaf, _) | (Frame::Lang, _) => {}
         (Frame::Skip(depth), _) => stack.push(Frame::Skip(depth - 1)),
-        (Frame::Proof(proof), _) => entries.push(resolve_proof(*proof)),
+        (Frame::Proof(proof), _) => sink(resolve_proof(*proof)),
         (Frame::Rule(rule), Some(Frame::Proof(proof))) => proof.rule = Some(rule),
         (Frame::Rule(rule), Some(Frame::Ante(ante))) => ante.child = Some(rule),
         (Frame::Ante(ante), Some(Frame::Rule(rule))) => rule.antecedents.push(ante),
