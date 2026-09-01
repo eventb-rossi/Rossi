@@ -130,8 +130,8 @@ export async function activate(context: ExtensionContext) {
         documentSelector: [{ scheme: 'file', language: 'eventb' }],
         synchronize: {
             configurationSection: 'rossi',
-            // Notify the server about file changes to '.eventb' files in the workspace
-            fileEvents: workspace.createFileSystemWatcher('**/*.eventb'),
+            // No `fileEvents` watcher here: the server registers its own
+            // `**/*.eventb` watcher once it has started.
         },
         initializationOptions: getRossiConfiguration(),
     };
