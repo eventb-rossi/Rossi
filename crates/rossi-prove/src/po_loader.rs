@@ -8,16 +8,20 @@
 //! `/WD`. WD predicates whose source contains a universal quantifier
 //! in its predicate skeleton are skipped as uninteresting, `⊤`
 //! conjuncts are dropped, and selection hints mark the initially
-//! selected hypotheses.
+//! selected hypotheses. A shared set is parsed once and reused by
+//! every obligation whose chain passes through it.
 
 use std::collections::BTreeMap;
 use std::io::BufRead;
+use std::sync::OnceLock;
 
 use quick_xml::Reader;
 use quick_xml::events::{BytesStart, Event};
 
 use rossi::formula::tag::{LiteralPredOp, QuantPredOp};
-use rossi::formula::{Predicate, PredicateKind, Type, TypeEnvironmentBuilder};
+use rossi::formula::{
+    Predicate, PredicateKind, SealedTypeEnvironment, Type, TypeEnvironmentBuilder,
+};
 use rossi::parse_predicate_str;
 
 use crate::sequent::ProverSequent;
@@ -55,6 +59,46 @@ struct PoSet {
     parent: Option<SetRef>,
     idents: Vec<(String, String)>,
     preds: Vec<(String, String)>,
+    /// The parsed form, built on first use; every obligation whose
+    /// chain passes through a shared set reuses it.
+    loaded: OnceLock<Result<LoadedSet, String>>,
+}
+
+/// A predicate set parsed against its chain.
+#[derive(Debug)]
+struct LoadedSet {
+    /// The chain's environment after this set's identifiers.
+    env: SealedTypeEnvironment,
+    /// The set's predicates in document order, for selection hints.
+    preds: Vec<Predicate>,
+    /// The hypothesis contribution: each predicate followed by its WD
+    /// conjuncts.
+    hyps: Vec<Predicate>,
+}
+
+impl PoSet {
+    /// Parses the set against `parent`, the chain's environment so far.
+    fn load(&self, parent: &SealedTypeEnvironment) -> Result<LoadedSet, String> {
+        let env = if self.idents.is_empty() {
+            parent.clone()
+        } else {
+            let mut builder = parent.to_builder();
+            for (name, ty) in &self.idents {
+                let ty = Type::parse_rodin(ty).ok_or_else(|| format!("identifier type `{ty}`"))?;
+                builder.insert(name, ty);
+            }
+            builder.make_snapshot()
+        };
+        let mut preds = Vec::with_capacity(self.preds.len());
+        let mut hyps = Vec::new();
+        for (_, source) in &self.preds {
+            let hypothesis = parse_typed(source, &env)?;
+            hyps.push(hypothesis.clone());
+            add_wd_predicates(&hypothesis, &mut hyps);
+            preds.push(hypothesis);
+        }
+        Ok(LoadedSet { env, preds, hyps })
+    }
 }
 
 /// One proof obligation of the document.
@@ -210,46 +254,46 @@ impl PoProject {
             }
         }
 
-        let mut env = TypeEnvironmentBuilder::new();
+        // Every set loads once, root first, each against its parent's
+        // environment; shared sets are then reused by the other
+        // obligations of their chains. Duplicate hypotheses are dropped
+        // by the sequent's insertion-ordered sets, which keep first
+        // occurrences.
+        let mut env = TypeEnvironmentBuilder::new().make_snapshot();
         let mut hypotheses: Vec<Predicate> = Vec::new();
         let mut selected: Vec<Predicate> = Vec::new();
-        let push = |list: &mut Vec<Predicate>, pred: &Predicate| {
-            if !list.contains(pred) {
-                list.push(pred.clone());
-            }
-        };
-
         for (index, (key, set)) in chain.iter().enumerate() {
-            for (name, ty) in &set.idents {
-                let ty = Type::parse_rodin(ty).ok_or_else(|| format!("identifier type `{ty}`"))?;
-                env.insert(name, ty);
-            }
-            let snapshot = env.make_snapshot();
-            for (pred_name, source) in &set.preds {
-                let hypothesis = parse_typed(source, &snapshot)?;
-                if selected_sets[index]
-                    || selected_preds
+            let loaded = set
+                .loaded
+                .get_or_init(|| set.load(&env))
+                .as_ref()
+                .map_err(String::clone)?;
+            env = loaded.env.clone();
+            hypotheses.extend(loaded.hyps.iter().cloned());
+            if selected_sets[index] {
+                selected.extend(loaded.preds.iter().cloned());
+            } else {
+                for ((pred_name, _), pred) in set.preds.iter().zip(&loaded.preds) {
+                    if selected_preds
                         .iter()
                         .any(|(set, pred)| *set == key && pred == pred_name)
-                {
-                    push(&mut selected, &hypothesis);
+                    {
+                        selected.push(pred.clone());
+                    }
                 }
-                push(&mut hypotheses, &hypothesis);
-                add_wd_predicates(&hypothesis, &mut hypotheses);
             }
         }
 
-        let snapshot = env.make_snapshot();
         let goal = entry
             .goal
             .as_deref()
             .ok_or_else(|| format!("no goal for `{name}`"))?;
-        let goal = parse_typed(goal, &snapshot)?;
+        let goal = parse_typed(goal, &env)?;
         if !name.ends_with("/WD") {
             add_wd_predicates(&goal, &mut hypotheses);
         }
 
-        Ok(ProverSequent::new(snapshot, hypotheses, [], selected, goal))
+        Ok(ProverSequent::new(env, hypotheses, [], selected, goal))
     }
 }
 
