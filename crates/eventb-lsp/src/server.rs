@@ -238,7 +238,7 @@ impl Analyzer {
             ));
             diags.extend(crate::diagnostics::duplicate_component_diagnostics(
                 doc.components(),
-                |name| xrefs.component_definition_files(name),
+                |name| xrefs.component_declarations(name),
                 doc.text(),
             ));
         }

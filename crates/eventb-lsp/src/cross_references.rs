@@ -149,7 +149,7 @@ pub struct CrossReferenceManager {
 
 /// A URI's basename, for a diagnostic message. Falls back to the whole URI
 /// when it names no file.
-fn display_name(uri: &str) -> String {
+pub(crate) fn display_name(uri: &str) -> String {
     Url::parse(uri)
         .ok()
         .and_then(|url| url.to_file_path().ok())
@@ -536,20 +536,30 @@ impl CrossReferenceManager {
         target.copy_node_from(&self.graph.read(), kind, name)
     }
 
-    /// The distinct files that define a component named `name`, as display
-    /// basenames (sorted). The name → URI index keeps a single entry per name,
-    /// so the URI → components map is scanned instead. Entries are already
-    /// keyed by canonical identity, so a file reaching the server under two
-    /// spellings occupies one of them and cannot look like a cross-file
-    /// duplicate. Queried per open-document name, so no whole-workspace map is
-    /// built per publish.
-    pub fn component_definition_files(&self, name: &str) -> Vec<String> {
-        // Deduplication is by file identity, not by basename: two directories
-        // may each hold an `m.eventb`, and that is a real cross-file duplicate.
-        self.name_to_uris
-            .get(name)
-            .map(|uris| uris.value().iter().map(|uri| display_name(uri)).collect())
-            .unwrap_or_default()
+    /// One file URI per declaration of `name`, grouped by file — so a file
+    /// declaring it twice contributes two entries, and the caller can tell
+    /// "twice in one file" from "once in each of two files".
+    ///
+    /// Entries are keyed by canonical file identity, so a file reaching the
+    /// server under two spellings occupies one of them and cannot look like a
+    /// cross-file duplicate. Two directories each holding an `m.eventb`,
+    /// though, are two files and two entries — deduplication is by identity,
+    /// never by basename. Queried per open-document name, so no
+    /// whole-workspace map is built per publish.
+    pub fn component_declarations(&self, name: &str) -> Vec<String> {
+        let Some(uris) = self.name_to_uris.get(name) else {
+            return Vec::new();
+        };
+        let mut files = Vec::new();
+        for uri in uris.value() {
+            let Some(locs) = self.uri_to_component.get(uri) else {
+                continue;
+            };
+            for _ in locs.value().iter().filter(|loc| loc.name == name) {
+                files.push(uri.clone());
+            }
+        }
+        files
     }
 
     // --- Transitive closure / visibility (delegated to the shared graph) ---
@@ -1207,7 +1217,7 @@ END
     }
 
     #[test]
-    fn component_definition_files_counts_same_named_files_in_two_directories() {
+    fn component_declarations_counts_same_named_files_in_two_directories() {
         // Two directories may each hold an `m.eventb`. That is a real
         // cross-file duplicate, so the basenames must not collapse into one.
         let manager = CrossReferenceManager::new();
@@ -1215,23 +1225,27 @@ END
         manager.update_component("file:///one/m.eventb".to_string(), src);
         manager.update_component("file:///two/m.eventb".to_string(), src);
 
-        let files = manager.component_definition_files("c");
+        let files = manager.component_declarations("c");
 
-        assert_eq!(files, ["m.eventb", "m.eventb"], "{files:?}");
+        assert_eq!(
+            files,
+            ["file:///one/m.eventb", "file:///two/m.eventb"],
+            "{files:?}"
+        );
     }
 
     #[test]
-    fn component_definition_files_finds_cross_file_dups() {
+    fn component_declarations_finds_cross_file_dups() {
         let manager = CrossReferenceManager::new();
         let src = "CONTEXT c\nEND\n";
         manager.update_component("file:///a.eventb".to_string(), src);
         manager.update_component("file:///b.eventb".to_string(), src);
-        let files = manager.component_definition_files("c");
+        let files = manager.component_declarations("c");
         assert_eq!(files.len(), 2, "{files:?}");
     }
 
     #[test]
-    fn component_definition_files_dedupes_same_file_by_path() {
+    fn component_declarations_dedupes_same_file_by_path() {
         // The scan and the edit path can key the same physical file under URI
         // spellings that differ but resolve to one path (here, a `.` segment).
         // It must count once, not look like a cross-file duplicate.
@@ -1239,7 +1253,7 @@ END
         let src = "CONTEXT c\nEND\n";
         manager.update_component("file:///dir/x.eventb".to_string(), src);
         manager.update_component("file:///dir/./x.eventb".to_string(), src);
-        let files = manager.component_definition_files("c");
+        let files = manager.component_declarations("c");
         assert_eq!(
             files.len(),
             1,
@@ -1248,10 +1262,27 @@ END
     }
 
     #[test]
-    fn component_definition_files_single_when_unique() {
+    fn component_declarations_counts_a_name_declared_twice_in_one_file() {
+        // `rossi import --merge` concatenates a project into one file, so a
+        // name repeated inside it is a real duplicate the index must surface
+        // — not something to collapse on the way in.
+        let manager = CrossReferenceManager::new();
+        manager.update_component(
+            "file:///merged.eventb".to_string(),
+            "CONTEXT dup\nEND\n\nCONTEXT dup\nEND\n",
+        );
+
+        assert_eq!(
+            manager.component_declarations("dup"),
+            ["file:///merged.eventb", "file:///merged.eventb"]
+        );
+    }
+
+    #[test]
+    fn component_declarations_single_when_unique() {
         let manager = CrossReferenceManager::new();
         manager.update_component("file:///a.eventb".to_string(), "CONTEXT a\nEND\n");
-        assert_eq!(manager.component_definition_files("a").len(), 1);
+        assert_eq!(manager.component_declarations("a").len(), 1);
     }
 
     #[test]

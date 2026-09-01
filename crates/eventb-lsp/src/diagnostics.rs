@@ -384,37 +384,55 @@ pub(crate) fn cross_reference_diagnostics(
     out
 }
 
-/// Duplicate-component diagnostics (EB019): a component name defined in more
-/// than one file. `defining_files(name)` returns the distinct files that define
-/// `name` (deduped by path); a component is flagged when that is more than one.
-/// Queried per open-document component, so no whole-workspace map is built per
-/// publish. The caller gates on a scanned workspace, since cross-file duplicates
-/// aren't observable from a single file. Anchored on the component name; an
-/// Error, matching `rossi validate`. Only cross-file duplicates are caught:
-/// two same-named components in one (e.g. merged) file collapse to a single
-/// indexed entry, so that within-file case is left to `rossi validate`.
+/// Duplicate-component diagnostics (EB019): a component name declared more
+/// than once. `declarations(name)` returns one file identity per declaration,
+/// grouped by file, so the two shapes are distinguishable — several
+/// declarations in one (e.g. `import --merge`) file, or one apiece across
+/// several files. Identities, not basenames: two directories may each hold an
+/// `m.eventb`, and collapsing those would report a cross-file duplicate as a
+/// within-file one. Queried per open-document component, so no whole-workspace
+/// map is built per publish. The caller gates on a scanned workspace, since
+/// cross-file duplicates aren't observable from a single file. Anchored on the
+/// component name; an Error, and worded to match `rossi validate`.
 pub(crate) fn duplicate_component_diagnostics(
     components: &[rossi::Component],
-    defining_files: impl Fn(&str) -> Vec<String>,
+    declarations: impl Fn(&str) -> Vec<String>,
     text: &str,
 ) -> Vec<Diagnostic> {
     let mut out = Vec::new();
     for component in components {
         let name = component.name();
-        let files = defining_files(name);
+        let files = declarations(name);
         if files.len() < 2 {
             continue;
         }
+        // Entries arrive grouped by file, so consecutive dedup is enough to
+        // recover the distinct ones.
+        let mut distinct = files.clone();
+        distinct.dedup();
+        let message = if let [file] = distinct.as_slice() {
+            format!(
+                "component `{name}` is defined {} times in {}",
+                files.len(),
+                crate::cross_references::display_name(file)
+            )
+        } else {
+            format!(
+                "component `{name}` is defined in multiple files: {}",
+                distinct
+                    .iter()
+                    .map(|uri| crate::cross_references::display_name(uri))
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            )
+        };
         out.push(lsp_diagnostic(
             name_range(component, text),
             rule_severity(RuleId::DuplicateComponent),
             Some(NumberOrString::String(
                 RuleId::DuplicateComponent.code().to_string(),
             )),
-            format!(
-                "component `{name}` is defined in multiple files: {}",
-                files.join(", ")
-            ),
+            message,
         ));
     }
     out
@@ -824,6 +842,50 @@ mod tests {
     }
 
     // --- cross-component: duplicate component name (EB019) ------------------
+
+    #[test]
+    fn duplicate_component_within_one_file_names_the_count() {
+        // Two declarations, one file: listing the file twice would read as a
+        // cross-file duplicate, so say how many times instead.
+        let text = "CONTEXT c\nEND\n";
+        let declarations = |n: &str| {
+            if n == "c" {
+                vec!["merged.eventb".to_string(), "merged.eventb".to_string()]
+            } else {
+                vec![]
+            }
+        };
+        let diags = duplicate_component_diagnostics(&parse_one(text), declarations, text);
+        assert_eq!(diags.len(), 1, "{diags:?}");
+        assert_eq!(code_of(&diags[0]), Some("EB019"));
+        assert_eq!(
+            diags[0].message,
+            "component `c` is defined 2 times in merged.eventb"
+        );
+    }
+
+    #[test]
+    fn two_files_sharing_a_basename_are_not_reported_as_one_file() {
+        // Two directories may each hold an `m.eventb`. Counting by basename
+        // would report the pair as one file holding two declarations.
+        let text = "CONTEXT c\nEND\n";
+        let declarations = |n: &str| {
+            if n == "c" {
+                vec![
+                    "file:///one/m.eventb".to_string(),
+                    "file:///two/m.eventb".to_string(),
+                ]
+            } else {
+                vec![]
+            }
+        };
+        let diags = duplicate_component_diagnostics(&parse_one(text), declarations, text);
+        assert_eq!(diags.len(), 1, "{diags:?}");
+        assert_eq!(
+            diags[0].message,
+            "component `c` is defined in multiple files: m.eventb, m.eventb"
+        );
+    }
 
     #[test]
     fn duplicate_component_is_eb019_error() {
