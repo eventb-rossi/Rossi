@@ -1452,8 +1452,8 @@ fn workspace_scan_builds_cross_ref_graph() {
             std::fs::write(model_dir.join(format!("{}.eventb", file.name)), &file.text).unwrap();
         }
 
-        // Fresh manager per model: the name→URI map is flat, and models may
-        // reuse component names.
+        // Fresh manager per model: models may reuse component names, and a
+        // shared index would make those look like cross-file duplicates.
         let crm = CrossReferenceManager::new();
         let scanned = crm
             .scan_workspace(&model_dir)
