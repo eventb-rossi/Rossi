@@ -169,8 +169,7 @@ impl Type {
     /// parametric type like `List(ℤ)`, which parses as a function
     /// application and is rejected by the interpretation step.
     pub fn parse_rodin(s: &str) -> Option<Type> {
-        let expr = crate::parser::parse_expression_str(s).ok()?;
-        super::typecheck::type_from_expression(&expr)
+        parse_canonical(s).or_else(|| parse_spelled(s))
     }
 
     fn write_canonical(&self, out: &mut String) {
@@ -210,6 +209,99 @@ impl Type {
                     out.push(')');
                 }
             }
+        }
+    }
+}
+
+/// A type spelling read through the formula parser: the general path,
+/// and the authority on everything [`parse_canonical`] declines.
+fn parse_spelled(s: &str) -> Option<Type> {
+    let expr = crate::parser::parse_expression_str(s).ok()?;
+    super::typecheck::type_from_expression(&expr)
+}
+
+/// The canonical spellings of [`Type::to_rodin_canonical`] read
+/// directly: `ℤ`, `BOOL`, an identifier, `ℙ(T)`, `(T)` and products,
+/// folded left like the formula parser does, with no whitespace. Proof
+/// files repeat a few dozen such spellings millions of times, and the
+/// formula parser costs microseconds per call.
+///
+/// The only claim is inclusion: a `Some` here is what [`parse_spelled`]
+/// returns too. Every other input — whitespace, the ASCII operator
+/// spellings, `ℙ1`, primes, non-ASCII identifier characters, reserved
+/// or keyword words, an application `S(x)`, deep nesting — is `None`,
+/// leaving the formula parser to decide, so this never has to know how
+/// the parser treats an unusual spelling.
+fn parse_canonical(s: &str) -> Option<Type> {
+    let mut cursor = Canonical { rest: s.as_bytes() };
+    let ty = cursor.product(0)?;
+    cursor.rest.is_empty().then_some(ty)
+}
+
+/// The byte cursor of [`parse_canonical`].
+struct Canonical<'a> {
+    rest: &'a [u8],
+}
+
+impl Canonical<'_> {
+    /// Parenthesis depth beyond which the formula parser takes over
+    /// (with its own nesting limit and stack growth).
+    const MAX_DEPTH: usize = 32;
+
+    fn eat(&mut self, token: &str) -> bool {
+        match self.rest.strip_prefix(token.as_bytes()) {
+            Some(rest) => {
+                self.rest = rest;
+                true
+            }
+            None => false,
+        }
+    }
+
+    /// `atom ('×' atom)*`, left-nested.
+    fn product(&mut self, depth: usize) -> Option<Type> {
+        let mut ty = self.atom(depth)?;
+        while self.eat("×") {
+            ty = Type::prod(ty, self.atom(depth)?);
+        }
+        Some(ty)
+    }
+
+    fn atom(&mut self, depth: usize) -> Option<Type> {
+        if depth > Self::MAX_DEPTH {
+            return None;
+        }
+        if self.eat("ℤ") {
+            return Some(Type::Int);
+        }
+        if self.eat("ℙ(") {
+            let inner = self.product(depth + 1)?;
+            return self.eat(")").then(|| Type::pow(inner));
+        }
+        if self.eat("(") {
+            let inner = self.product(depth + 1)?;
+            return self.eat(")").then_some(inner);
+        }
+        // An identifier: the grammar's `ident_core`, as `names` spells
+        // it. `BOOL` is a keyword token before it is a word, as in the
+        // grammar.
+        let len = self
+            .rest
+            .iter()
+            .take_while(|b| crate::names::is_math_identifier_part(**b as char))
+            .count();
+        if len == 0 || !crate::names::is_math_identifier_start(self.rest[0] as char) {
+            return None;
+        }
+        let (word, rest) = self.rest.split_at(len);
+        let word = std::str::from_utf8(word).ok()?;
+        self.rest = rest;
+        if word == "BOOL" {
+            Some(Type::Bool)
+        } else if crate::builtins::is_reserved_name(word) || crate::keywords::is_keyword(word) {
+            None
+        } else {
+            Some(Type::given(word))
         }
     }
 }
@@ -324,7 +416,102 @@ mod tests {
             Type::relation(Type::Int, Type::given("S")),
         ];
         for t in types {
-            assert_eq!(Type::parse_rodin(&t.to_rodin_canonical()), Some(t));
+            let canonical = t.to_rodin_canonical();
+            // The fast path handles every canonical form by itself.
+            assert_eq!(parse_canonical(&canonical), Some(t.clone()), "{canonical}");
+            assert_eq!(Type::parse_rodin(&canonical), Some(t));
+        }
+    }
+
+    /// The token alphabet of the differential tests: the canonical
+    /// tokens, each class of spelling the formula parser treats
+    /// specially (keyword tokens, reserved words, ASCII operator
+    /// spellings, structural keywords), and near misses.
+    const TOKENS: [&str; 24] = [
+        "ℤ", "BOOL", "S", "x", "ℙ(", "(", ")", "×", "INT", "NAT", "POW", "ℙ1(", "card", "id",
+        "true", "end", "skip", "x'", "BOOLEAN", "_a", "1", "**", " ", "é",
+    ];
+
+    /// Whenever the fast path accepts a string, the formula parser
+    /// agrees — the inclusion `parse_canonical` promises.
+    fn agrees_with_parser(s: &str) {
+        if let Some(fast) = parse_canonical(s) {
+            assert_eq!(parse_spelled(s), Some(fast), "{s:?}");
+        }
+    }
+
+    #[test]
+    fn canonical_fast_path_agrees_with_parser() {
+        // Every sequence of up to three tokens.
+        let mut sequences = vec![String::new()];
+        for _ in 0..3 {
+            let next: Vec<String> = sequences
+                .iter()
+                .flat_map(|prefix| TOKENS.iter().map(move |token| format!("{prefix}{token}")))
+                .collect();
+            for s in &next {
+                agrees_with_parser(s);
+            }
+            sequences = next;
+        }
+    }
+
+    proptest::proptest! {
+        /// Longer random token sequences.
+        #[test]
+        fn canonical_fast_path_agrees_with_parser_on_long_inputs(
+            tokens in proptest::collection::vec(0..TOKENS.len(), 0..10)
+        ) {
+            let s: String = tokens.iter().map(|&i| TOKENS[i]).collect();
+            agrees_with_parser(&s);
+        }
+    }
+
+    /// Every ASCII word the grammar reads as a token, and every ASCII
+    /// operator spelling, is declined by the fast path — except `BOOL`,
+    /// the one keyword it reads itself: the word lists it consults must
+    /// keep up with `grammar.pest`.
+    #[test]
+    fn grammar_words_are_declined_by_fast_path() {
+        let grammar = include_str!("../grammar.pest");
+        let mut words: Vec<String> = grammar
+            .lines()
+            .map(|line| line.split("//").next().unwrap_or(""))
+            .flat_map(crate::operators::pest_string_literals)
+            .collect();
+        words.extend(
+            crate::operators::OPERATOR_SPELLINGS
+                .iter()
+                .map(|op| op.ascii.to_string()),
+        );
+        // Token words only: `"_"` is a character-class literal, and an
+        // identifier the fast path reads like the formula parser does.
+        words.retain(|word| {
+            word.starts_with(|c: char| c.is_ascii_alphabetic())
+                && crate::names::is_valid_math_identifier(word)
+        });
+        assert!(words.iter().any(|word| word == "POW"), "{words:?}");
+        let accepted: Vec<String> = words
+            .into_iter()
+            .filter(|word| word != "BOOL" && parse_canonical(word).is_some())
+            .collect();
+        assert!(accepted.is_empty(), "{accepted:?}");
+    }
+
+    /// Spellings the formula parser owns are declined by the fast path
+    /// and still resolved by `parse_rodin`.
+    #[test]
+    fn parser_owned_spellings_fall_through() {
+        for (s, expected) in [
+            ("INT", Some(Type::Int)),
+            ("ℙ1(S)", Some(Type::pow(Type::given("S")))),
+            ("POW(ℤ)", Some(Type::pow(Type::Int))),
+            ("ℤ × S", Some(Type::prod(Type::Int, Type::given("S")))),
+            ("card", None),
+            ("S(x)", None),
+        ] {
+            assert_eq!(parse_canonical(s), None, "{s}");
+            assert_eq!(Type::parse_rodin(s), expected, "{s}");
         }
     }
 

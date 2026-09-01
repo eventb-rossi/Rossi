@@ -1479,6 +1479,55 @@ fn contains_whole_word(text: &str, word: &str) -> bool {
     false
 }
 
+/// Extract and un-escape every `"…"` literal on a line, handling the pest
+/// escapes our operator rules use (`\\`, `\"`, `\u{XXXX}`).
+#[cfg(test)]
+pub(crate) fn pest_string_literals(line: &str) -> Vec<String> {
+    let mut lits = Vec::new();
+    let mut chars = line.chars().peekable();
+    while let Some(c) = chars.next() {
+        if c != '"' {
+            continue;
+        }
+        let mut s = String::new();
+        while let Some(c) = chars.next() {
+            match c {
+                '"' => break,
+                '\\' => match chars.next() {
+                    Some('\\') => s.push('\\'),
+                    Some('"') => s.push('"'),
+                    Some('n') => s.push('\n'),
+                    Some('t') => s.push('\t'),
+                    Some('r') => s.push('\r'),
+                    Some('u') => {
+                        // \u{XXXX}
+                        if chars.next() == Some('{') {
+                            let mut hex = String::new();
+                            while let Some(&h) = chars.peek() {
+                                chars.next();
+                                if h == '}' {
+                                    break;
+                                }
+                                hex.push(h);
+                            }
+                            if let Some(ch) =
+                                u32::from_str_radix(&hex, 16).ok().and_then(char::from_u32)
+                            {
+                                s.push(ch);
+                            }
+                        }
+                    }
+                    Some(other) => s.push(other),
+                    None => break,
+                },
+                _ => s.push(c),
+            }
+        }
+        lits.push(s);
+    }
+    lits
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1632,54 +1681,6 @@ mod tests {
         // Out of bounds.
         assert_eq!(operator_at("a = b", 99), None);
         assert_eq!(operator_at("", 0), None);
-    }
-
-    /// Extract and un-escape every `"…"` literal on a line, handling the pest
-    /// escapes our operator rules use (`\\`, `\"`, `\u{XXXX}`).
-    fn pest_string_literals(line: &str) -> Vec<String> {
-        let mut lits = Vec::new();
-        let mut chars = line.chars().peekable();
-        while let Some(c) = chars.next() {
-            if c != '"' {
-                continue;
-            }
-            let mut s = String::new();
-            while let Some(c) = chars.next() {
-                match c {
-                    '"' => break,
-                    '\\' => match chars.next() {
-                        Some('\\') => s.push('\\'),
-                        Some('"') => s.push('"'),
-                        Some('n') => s.push('\n'),
-                        Some('t') => s.push('\t'),
-                        Some('r') => s.push('\r'),
-                        Some('u') => {
-                            // \u{XXXX}
-                            if chars.next() == Some('{') {
-                                let mut hex = String::new();
-                                while let Some(&h) = chars.peek() {
-                                    chars.next();
-                                    if h == '}' {
-                                        break;
-                                    }
-                                    hex.push(h);
-                                }
-                                if let Some(ch) =
-                                    u32::from_str_radix(&hex, 16).ok().and_then(char::from_u32)
-                                {
-                                    s.push(ch);
-                                }
-                            }
-                        }
-                        Some(other) => s.push(other),
-                        None => break,
-                    },
-                    _ => s.push(c),
-                }
-            }
-            lits.push(s);
-        }
-        lits
     }
 
     /// The editor-grammar generator renders [`OPERATOR_SPELLINGS`], so that table
