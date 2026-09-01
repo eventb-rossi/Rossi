@@ -46,6 +46,9 @@ jobs:
       - name: Test symbol matcher
         run: npm run test:matcher
 
+      - name: Test manifest
+        run: npm run test:manifest
+
       - name: Package VSIX
         run: npm run package -- --out /tmp/event-b.vsix
 
