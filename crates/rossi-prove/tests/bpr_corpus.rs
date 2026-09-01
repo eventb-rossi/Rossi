@@ -12,6 +12,7 @@ use std::fs::File;
 use std::io::{BufReader, Write};
 use std::path::PathBuf;
 
+use rayon::prelude::*;
 use rossi_prove::bpr::{Keep, ProofBody, ProofEntry, read_bpr};
 use rossi_prove::confidence::Confidence;
 use rossi_prove::skeleton::Skeleton;
@@ -203,15 +204,27 @@ fn corpus_bpr_scan() {
     let mut report = String::from(
         "model\tbpr_files\tlegacy_files\tproofs\tloaded\tunsupported\tclasses\tconf_match\tconf_capped\tconf_diff\n",
     );
+    // Archives are independent: scan them in parallel, then fold the
+    // results in archive order so the report stays stable.
+    let scanned: Vec<Result<Tally, String>> = rossi_prove::thread_pool().install(|| {
+        zips.par_iter()
+            .map(|path| {
+                let mut tally = Tally::default();
+                scan_zip(path, &mut tally).map(|()| tally)
+            })
+            .collect()
+    });
     let mut failures = Vec::new();
     let mut total = Tally::default();
-    for path in &zips {
+    for (path, scanned) in zips.iter().zip(scanned) {
         let model = path.file_stem().unwrap_or_default().to_string_lossy();
-        let mut tally = Tally::default();
-        if let Err(err) = scan_zip(path, &mut tally) {
-            failures.push(err);
-            continue;
-        }
+        let tally = match scanned {
+            Ok(tally) => tally,
+            Err(err) => {
+                failures.push(err);
+                continue;
+            }
+        };
         let classes = tally
             .unsupported
             .iter()
