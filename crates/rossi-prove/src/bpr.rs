@@ -14,7 +14,7 @@
 //! an explicit frame stack — no parser recursion — and the caller
 //! chooses per proof how much to materialize ([`Keep`]).
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, HashSet};
 use std::io::BufRead;
 
 use quick_xml::Reader;
@@ -30,7 +30,7 @@ use crate::registry::{self, ReasonerDesc};
 use crate::rule::{Antecedent, Rule};
 use crate::sequent::TypedIdent;
 use crate::skeleton::{Skeleton, StoredInput, StoredRule};
-use crate::xml::{attrs, get};
+use crate::xml::{attr, attrs, get};
 
 /// How much of one proof to materialize.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
@@ -39,7 +39,9 @@ pub enum Keep {
     #[default]
     Skip,
     /// Additionally resolve the stored dependencies — the status
-    /// path; the rule tree is skipped unread.
+    /// path. The rule tree is skipped unread, and so is every intern
+    /// entry the dependencies do not name: a malformed one fails only
+    /// a full read.
     Deps,
     /// Materialize the whole proof, skeleton included.
     Full,
@@ -208,6 +210,9 @@ struct RawProof {
     fresh: String,
     goal: Option<String>,
     hyps: String,
+    /// The intern entries the dependencies name: the goal and the
+    /// used hypotheses.
+    referenced: HashSet<String>,
     sets: String,
     base_idents: Vec<(String, String)>,
     rule: Option<RawRule>,
@@ -221,6 +226,24 @@ struct RawProof {
     /// First reason this proof cannot be represented, if any.
     poison: Option<String>,
     keep: Keep,
+}
+
+impl RawProof {
+    /// Whether the child element `name` is swallowed unread. A skipped
+    /// proof needs nothing below its root attributes, and without the
+    /// rule tree the dependencies consult only the goal and the used
+    /// hypotheses among the predicate entries — never an expression.
+    fn swallows(&self, name: &[u8], e: &BytesStart<'_>) -> bool {
+        match self.keep {
+            Keep::Skip => true,
+            Keep::Deps => {
+                name == PR_EXPR.as_bytes()
+                    || (name == PR_PRED.as_bytes()
+                        && !attr(e, NAME).is_some_and(|entry| self.referenced.contains(&entry)))
+            }
+            Keep::Full => false,
+        }
+    }
 }
 
 #[derive(Debug, Default)]
@@ -310,16 +333,14 @@ fn open(
         if !empty {
             *depth += 1;
         }
-        if name == PR_RULE.as_bytes() {
-            let attrs = attrs(e);
-            if let Some(id) = get(&attrs, NAME)
-                && let Some(Frame::Proof(proof)) = stack
-                    .iter_mut()
-                    .rev()
-                    .find(|frame| matches!(frame, Frame::Proof(_)))
-            {
-                proof.skipped_rule_names.push(id.to_string());
-            }
+        if name == PR_RULE.as_bytes()
+            && let Some(id) = attr(e, NAME)
+            && let Some(Frame::Proof(proof)) = stack
+                .iter_mut()
+                .rev()
+                .find(|frame| matches!(frame, Frame::Proof(_)))
+        {
+            proof.skipped_rule_names.push(id);
         }
         return Ok(());
     }
@@ -346,14 +367,14 @@ fn open(
         return Ok(());
     }
 
-    // A skipped proof needs nothing below its root attributes: swallow
-    // every child subtree without materializing attributes or intern
-    // tables (the bulk of a `.bpr`), exactly as if each child were a
-    // poisoned region. `resolve_proof` maps `Keep::Skip` to
-    // `ProofBody::Skipped` unconditionally, so nothing read here could
-    // ever be consulted.
+    // Swallow the subtrees the keep level never consults without
+    // materializing attributes or intern tables (the bulk of a
+    // `.bpr`), exactly as if each were a poisoned region:
+    // `resolve_proof` maps `Keep::Skip` to `ProofBody::Skipped`
+    // unconditionally, and a dependencies-only read resolves nothing
+    // through the swallowed entries.
     if let Some(Frame::Proof(proof)) = stack.last()
-        && proof.keep == Keep::Skip
+        && proof.swallows(name, e)
     {
         if !empty {
             stack.push(Frame::Skip(0));
@@ -386,6 +407,10 @@ fn open(
                 sets: get(&attrs, PR_SETS).unwrap_or_default().to_string(),
                 ..RawProof::default()
             };
+            proof.referenced = csv(&proof.hyps)
+                .into_iter()
+                .chain(proof.goal.clone())
+                .collect();
             match parse_confidence(&attrs) {
                 Ok(confidence) => proof.confidence = confidence,
                 // A typed attribute read fails on a non-integer
@@ -1338,6 +1363,19 @@ mod tests {
             </org.eventb.core.prProof>"#};
         let entries = read(&file(stray), Keep::Deps);
         assert!(unsupported(&entries[0]).contains("unexpected element"));
+    }
+
+    #[test]
+    fn unreferenced_entries_only_fail_full_reads() {
+        let body = indoc! {r#"
+            <org.eventb.core.prProof name="a" org.eventb.core.confidence="1000" org.eventb.core.prFresh="" org.eventb.core.prGoal="p0" org.eventb.core.prHyps="">
+            <org.eventb.core.prPred name="p0" org.eventb.core.predicate="⊤"/>
+            <org.eventb.core.prPred name="p1" org.eventb.core.predicate="⊤ ⊤"/>
+            </org.eventb.core.prProof>"#};
+        let entries = read(&file(body), Keep::Deps);
+        loaded(&entries[0]);
+        let entries = read(&file(body), Keep::Full);
+        assert!(unsupported(&entries[0]).contains("predicate"));
     }
 
     #[test]
