@@ -14,7 +14,7 @@
 //! an explicit frame stack — no parser recursion — and the caller
 //! chooses per proof how much to materialize ([`Keep`]).
 
-use std::collections::{BTreeMap, HashSet};
+use std::collections::{BTreeMap, HashMap, HashSet};
 use std::io::BufRead;
 
 use quick_xml::Reader;
@@ -146,8 +146,9 @@ pub fn read_bpr(
 
 /// Reads a `.bpr` document proof by proof, handing each to `sink` as
 /// its element closes — a component's proofs never need to be in
-/// memory together. A read failure still fails the whole document:
-/// the proofs already handed out must be discarded.
+/// memory together, though the parses they share are held until the
+/// document ends. A read failure still fails the whole document: the
+/// proofs already handed out must be discarded.
 pub fn visit_bpr(
     reader: impl BufRead,
     mut keep: impl FnMut(&str) -> Keep,
@@ -156,6 +157,11 @@ pub fn visit_bpr(
     let mut xml = Reader::from_reader(reader);
     let mut buf = Vec::new();
     let mut stack: Vec<Frame> = Vec::new();
+    let mut visit = Visit {
+        keep: &mut keep,
+        sink: &mut sink,
+        parses: Parses::default(),
+    };
     let mut saw_root = false;
     let mut root_closed = false;
 
@@ -166,8 +172,7 @@ pub fn visit_bpr(
                     &e,
                     false,
                     &mut stack,
-                    &mut sink,
-                    &mut keep,
+                    &mut visit,
                     &mut saw_root,
                     &mut root_closed,
                 )?;
@@ -177,14 +182,13 @@ pub fn visit_bpr(
                     &e,
                     true,
                     &mut stack,
-                    &mut sink,
-                    &mut keep,
+                    &mut visit,
                     &mut saw_root,
                     &mut root_closed,
                 )?;
             }
             Event::End(_) => match stack.pop() {
-                Some(frame) => close(frame, &mut stack, &mut sink),
+                Some(frame) => close(frame, &mut stack, &mut visit),
                 // With no frame open this is the file root's end tag:
                 // quick-xml has already matched it against its start.
                 None => root_closed = true,
@@ -213,6 +217,38 @@ fn csv(s: &str) -> Vec<String> {
     } else {
         s.split(',').map(str::to_string).collect()
     }
+}
+
+/// What one [`visit_bpr`] call carries through the element handlers:
+/// the caller's keep policy and sink, and the document's shared parses.
+struct Visit<'a> {
+    keep: &'a mut dyn FnMut(&str) -> Keep,
+    sink: &'a mut dyn FnMut(ProofEntry),
+    parses: Parses,
+}
+
+/// The untyped parses of one document, shared by all its proofs: a
+/// component's proofs restate the same few hundred hypotheses thousands
+/// of times over. Type-checking stays per proof, against that proof's
+/// own environment, so sharing the parse changes nothing downstream. A
+/// parse failure is remembered too, and reported by every proof using
+/// the formula, as before.
+#[derive(Default)]
+struct Parses {
+    preds: HashMap<String, Result<Predicate, String>>,
+    exprs: HashMap<String, Result<rossi::Expression, String>>,
+}
+
+/// The memoized parse of `formula`.
+fn memoized<'a, T>(
+    parses: &'a mut HashMap<String, Result<T, String>>,
+    formula: &str,
+    parse: impl FnOnce() -> Result<T, String>,
+) -> Result<&'a T, String> {
+    if !parses.contains_key(formula) {
+        parses.insert(formula.to_string(), parse());
+    }
+    parses[formula].as_ref().map_err(String::clone)
 }
 
 #[derive(Debug, Default)]
@@ -327,8 +363,7 @@ fn open(
     e: &BytesStart<'_>,
     empty: bool,
     stack: &mut Vec<Frame>,
-    sink: &mut dyn FnMut(ProofEntry),
-    keep: &mut impl FnMut(&str) -> Keep,
+    visit: &mut Visit<'_>,
     saw_root: &mut bool,
     root_closed: &mut bool,
 ) -> Result<(), BprError> {
@@ -431,7 +466,7 @@ fn open(
                 // proof, never upgrade garbage to a real confidence.
                 Err(reason) => proof.poison = Some(reason),
             }
-            proof.keep = keep(&proof.name);
+            proof.keep = (visit.keep)(&proof.name);
             Disp::Push(Box::new(Frame::Proof(Box::new(proof))))
         }
         Some(Frame::Proof(proof)) => match name {
@@ -565,7 +600,7 @@ fn open(
         }
     };
     if empty {
-        close(frame, stack, sink);
+        close(frame, stack, visit);
     } else {
         stack.push(frame);
     }
@@ -624,11 +659,11 @@ fn input_key(attrs: &[(String, String)]) -> String {
     name.strip_prefix('.').unwrap_or(name).to_string()
 }
 
-fn close(frame: Frame, stack: &mut Vec<Frame>, sink: &mut dyn FnMut(ProofEntry)) {
+fn close(frame: Frame, stack: &mut Vec<Frame>, visit: &mut Visit<'_>) {
     match (frame, stack.last_mut()) {
         (Frame::Skip(0), _) | (Frame::Leaf, _) | (Frame::Lang, _) => {}
         (Frame::Skip(depth), _) => stack.push(Frame::Skip(depth - 1)),
-        (Frame::Proof(proof), _) => sink(resolve_proof(*proof)),
+        (Frame::Proof(proof), _) => (visit.sink)(resolve_proof(*proof, &mut visit.parses)),
         (Frame::Rule(rule), Some(Frame::Proof(proof))) => proof.rule = Some(rule),
         (Frame::Rule(rule), Some(Frame::Ante(ante))) => ante.child = Some(rule),
         (Frame::Ante(ante), Some(Frame::Rule(rule))) => rule.antecedents.push(ante),
@@ -642,7 +677,7 @@ fn close(frame: Frame, stack: &mut Vec<Frame>, sink: &mut dyn FnMut(ProofEntry))
 
 /// Resolves one raw proof into a [`ProofEntry`], degrading to
 /// [`ProofBody::Unsupported`] on any representation problem.
-fn resolve_proof(raw: RawProof) -> ProofEntry {
+fn resolve_proof(raw: RawProof, parses: &mut Parses) -> ProofEntry {
     let name = raw.name.clone();
     let confidence = raw.confidence;
     let manual = raw.manual;
@@ -655,7 +690,7 @@ fn resolve_proof(raw: RawProof) -> ProofEntry {
             None => ProofBody::Skipped,
         }
     } else {
-        match resolve_body(raw) {
+        match resolve_body(raw, parses) {
             Ok(proof) => ProofBody::Loaded(Box::new(proof)),
             Err(reason) => ProofBody::Unsupported(reason),
         }
@@ -688,7 +723,7 @@ fn entry_env(
     Ok(env.make_snapshot())
 }
 
-fn resolve_body(raw: RawProof) -> Result<StoredProof, String> {
+fn resolve_body(raw: RawProof, parses: &mut Parses) -> Result<StoredProof, String> {
     if let Some(reason) = raw.poison {
         return Err(reason);
     }
@@ -707,13 +742,15 @@ fn resolve_body(raw: RawProof) -> Result<StoredProof, String> {
     }
     let base_env = builder.make_snapshot();
 
-    // The intern tables, parsed against the base environment extended
-    // with each entry's own identifiers.
+    // The intern tables, type-checked against the base environment
+    // extended with each entry's own identifiers.
     let mut preds: BTreeMap<String, Predicate> = BTreeMap::new();
     for entry in &raw.preds {
         let env = entry_env(&base_env, &entry.idents)?;
-        let parsed = parse_predicate_str(&entry.formula)
-            .map_err(|err| format!("predicate `{}`: {err}", entry.formula))?;
+        let parsed = memoized(&mut parses.preds, &entry.formula, || {
+            parse_predicate_str(&entry.formula)
+                .map_err(|err| format!("predicate `{}`: {err}", entry.formula))
+        })?;
         let typed = parsed
             .type_check(&env)
             .typed
@@ -723,8 +760,10 @@ fn resolve_body(raw: RawProof) -> Result<StoredProof, String> {
     let mut exprs = BTreeMap::new();
     for entry in &raw.exprs {
         let env = entry_env(&base_env, &entry.idents)?;
-        let parsed = parse_expression_str(&entry.formula)
-            .map_err(|err| format!("expression `{}`: {err}", entry.formula))?;
+        let parsed = memoized(&mut parses.exprs, &entry.formula, || {
+            parse_expression_str(&entry.formula)
+                .map_err(|err| format!("expression `{}`: {err}", entry.formula))
+        })?;
         let typed = parsed
             .type_check(&env)
             .typed
