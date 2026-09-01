@@ -10,7 +10,6 @@ use rossi::NamedComponent;
 use rossi_build::ProjectComponent;
 use std::fs;
 use std::path::{Path, PathBuf};
-use walkdir::WalkDir;
 
 pub(crate) type CmdResult<T> = std::result::Result<T, Box<dyn std::error::Error>>;
 
@@ -168,17 +167,16 @@ fn collect_files(
 
     for input in inputs {
         if input.is_dir() {
-            // Dot-directories (e.g. `.rossi/rodin` Rodin workspaces, `.git`)
-            // hold generated or foreign files, never sources.
-            for entry in WalkDir::new(input).into_iter().filter_entry(|entry| {
-                entry.depth() == 0 || !rossi_build::walk::is_hidden_dir(entry)
-            }) {
+            // The crate's one source-tree walk: dot-directories (`.rossi/rodin`
+            // Rodin workspaces, `.git`) skipped, symlinks followed under a
+            // depth cap. Sharing it keeps what the CLI collects and what the
+            // LSP indexes from drifting apart.
+            for entry in rossi_build::walk::source_walk(input) {
                 let entry = entry?;
                 let path = entry.path();
-                let file_type = entry.file_type();
-                let is_file = file_type.is_file()
-                    || file_type.is_symlink() && std::fs::metadata(path)?.is_file();
-                if is_file
+                // `source_walk` follows links, so a linked file already
+                // arrives as a plain file entry.
+                if entry.file_type().is_file()
                     && let Some(ext) = path.extension().and_then(|e| e.to_str())
                     && matches_extension(ext)
                 {

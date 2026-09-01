@@ -1208,7 +1208,6 @@ dependencies = [
  "rossi-prove",
  "serde",
  "serde_json",
- "walkdir",
  "zip",
 ]
 
