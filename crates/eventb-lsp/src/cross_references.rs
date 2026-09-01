@@ -54,6 +54,37 @@ struct ComponentLoc {
     edges: ComponentEdges,
 }
 
+/// The components a file declares on disk, and any overlay for the buffer the
+/// editor currently holds open for it. The same shape the workspace symbol
+/// index uses, and for the same reason: an open buffer answers for its file
+/// wholesale, and closing it must reveal what is saved without re-reading.
+///
+/// `open: Some(vec![])` is meaningful — a buffer that parses to nothing
+/// deliberately shadows the saved components rather than letting them leak
+/// back while the document is invalid.
+#[derive(Debug, Default, Clone)]
+struct DocumentComponents {
+    disk: Vec<ComponentLoc>,
+    open: Option<Vec<ComponentLoc>>,
+}
+
+impl DocumentComponents {
+    fn effective(&self) -> &[ComponentLoc] {
+        self.open.as_deref().unwrap_or(&self.disk)
+    }
+
+    fn is_empty(&self) -> bool {
+        self.disk.is_empty() && self.open.is_none()
+    }
+}
+
+/// Which of a document's two layers a write addresses.
+#[derive(Debug, Clone, Copy)]
+enum Layer {
+    Disk,
+    Open,
+}
+
 /// The outgoing edges of a component, mirroring the two shapes
 /// [`DependencyGraph::upsert_context`] and [`DependencyGraph::upsert_machine`]
 /// accept.
@@ -117,11 +148,11 @@ pub struct CrossReferenceManager {
     /// Structural dependency graph (SEES / REFINES / EXTENDS).
     graph: RwLock<DependencyGraph>,
 
-    /// Map from file URI to the components defined there. Most files hold a
-    /// single component, but `rossi import --merge` output concatenates
-    /// several into one file. Keyed through [`Self::document_key`], so one
-    /// file reaching the server under two spellings occupies one entry.
-    uri_to_component: DashMap<String, Vec<ComponentLoc>>,
+    /// Map from file URI to the components saved there and any open overlay.
+    /// Most files hold a single component, but `rossi import --merge` output
+    /// concatenates several into one file. Keyed through [`Self::document_key`],
+    /// so one file reaching the server under two spellings occupies one entry.
+    uri_to_component: DashMap<String, DocumentComponents>,
 
     /// Map from component name to every file that declares it. Names are
     /// meant to be unique within a project, but duplicates are *diagnosed*
@@ -157,6 +188,11 @@ pub(crate) fn display_name(uri: &str) -> String {
         .and_then(Path::file_name)
         .map(|name| name.to_string_lossy().into_owned())
         .unwrap_or_else(|| uri.to_string())
+}
+
+/// A declaration's component name, for the `&ComponentLoc -> String` maps.
+fn declared_name(loc: &ComponentLoc) -> String {
+    loc.name.clone()
 }
 
 impl Default for CrossReferenceManager {
@@ -206,40 +242,90 @@ impl CrossReferenceManager {
         self.index_components(uri, &components);
     }
 
-    /// Index a document's already-parsed components into the dependency graph
-    /// and the URI ↔ name maps. The single-source-of-truth entry point: the
-    /// edit path passes the document manager's stored parse straight through.
+    /// Index a document's already-parsed components as the open overlay for
+    /// its file. The single-source-of-truth entry point for the edit path,
+    /// which passes the document manager's stored parse straight through.
+    ///
+    /// A buffer that parses to nothing installs an *empty* overlay rather than
+    /// dropping the file: while the document is open it answers for its file,
+    /// and letting the saved components reappear mid-edit would resolve
+    /// references against text the user can no longer see.
     pub fn index_components(&self, uri: String, components: &[rossi::Component]) {
-        debug!("Updating components for URI: {}", uri);
+        debug!("Updating open components for URI: {}", uri);
+        self.write_layer(uri, Layer::Open, Some(Self::locs_of(components)));
+    }
+
+    /// Refresh the saved components for a file from the workspace scan or a
+    /// watched-file event. Resolves the spelling first, so a file the watcher
+    /// reports before any editor opens it is already keyed by file identity
+    /// and the later open overlay lands on the same entry.
+    pub(crate) fn index_disk_components(&self, uri: String, components: &[rossi::Component]) {
+        debug!("Updating disk components for URI: {}", uri);
+        self.register_document_uri(&uri);
+        self.write_layer(uri, Layer::Disk, Some(Self::locs_of(components)));
+    }
+
+    /// Drop a document's open overlay, revealing whatever is saved for it.
+    /// Closing an editor needs no file read: the saved layer is already here.
+    pub(crate) fn remove_document(&self, uri: &str) {
+        debug!("Removing open components for URI: {}", uri);
+        self.write_layer(uri.to_string(), Layer::Open, None);
+    }
+
+    /// Drop a deleted file's saved components, keeping any open overlay: the
+    /// buffer outlives the file until the editor closes it.
+    pub(crate) fn remove_disk_document(&self, uri: &str) {
+        debug!("Removing disk components for URI: {}", uri);
+        self.write_layer(uri.to_string(), Layer::Disk, None);
+    }
+
+    /// Remove a file from the index entirely, both layers.
+    pub fn remove_component(&self, uri: &str) {
+        debug!("Removing components for URI: {}", uri);
+        self.remove_document(uri);
+        self.remove_disk_document(uri);
+    }
+
+    fn locs_of(components: &[rossi::Component]) -> Vec<ComponentLoc> {
+        components.iter().map(ComponentLoc::of).collect()
+    }
+
+    /// Write one layer of a document and bring the name index and the graph
+    /// back in step with the result.
+    ///
+    /// The two locks are only ever taken in one order: this reads and writes
+    /// the declaration maps, and only then — in [`Self::rebuild_names`] —
+    /// takes the graph.
+    fn write_layer(&self, uri: String, layer: Layer, locs: Option<Vec<ComponentLoc>>) {
         let uri = self.document_key(&uri);
 
-        if components.is_empty() {
-            debug!("No components recovered for cross-references in {uri}");
-            // Drop any previously-indexed components for this URI.
-            self.remove_component(&uri);
-            return;
+        let before: Vec<String>;
+        let after: Vec<String>;
+        {
+            let mut entry = self.uri_to_component.entry(uri.clone()).or_default();
+            let document = entry.value_mut();
+            before = document.effective().iter().map(declared_name).collect();
+            match layer {
+                Layer::Disk => document.disk = locs.unwrap_or_default(),
+                Layer::Open => document.open = locs,
+            }
+            after = document.effective().iter().map(declared_name).collect();
         }
+        self.uri_to_component
+            .remove_if(&uri, |_, document| document.is_empty());
 
-        let locs: Vec<ComponentLoc> = components.iter().map(ComponentLoc::of).collect();
-        let previous = self.uri_to_component.insert(uri.clone(), locs.clone());
-
-        for loc in &locs {
+        for name in &after {
             self.name_to_uris
-                .entry(loc.name.clone())
+                .entry(name.clone())
                 .or_default()
                 .insert(uri.clone());
         }
-        for prev in previous.iter().flatten() {
-            if !locs.iter().any(|loc| loc.name == prev.name) {
-                self.forget_declaration(&prev.name, &uri);
+        for name in &before {
+            if !after.contains(name) {
+                self.forget_declaration(name, &uri);
             }
         }
-
-        self.rebuild_names(
-            locs.iter()
-                .map(|loc| loc.name.as_str())
-                .chain(previous.iter().flatten().map(|prev| prev.name.as_str())),
-        );
+        self.rebuild_names(before.iter().chain(&after).map(String::as_str));
     }
 
     /// Drop `uri` from the set of files declaring `name`, discarding the name
@@ -255,8 +341,8 @@ impl CrossReferenceManager {
     /// represents it, dropping the node when no file declares it any more.
     ///
     /// Every lookup happens before the graph lock is taken: the declaration
-    /// maps are read first and the graph written once, so the two locks are
-    /// only ever acquired in that order.
+    /// maps are read first and the graph written once, so the two are only
+    /// ever acquired in that order.
     fn rebuild_names<'a>(&self, names: impl Iterator<Item = &'a str>) {
         let mut pending: BTreeMap<&'a str, Option<ComponentLoc>> = BTreeMap::new();
         for name in names {
@@ -274,8 +360,8 @@ impl CrossReferenceManager {
                     graph.remove(loc.other_kind(), name);
                     loc.upsert_into(&mut graph);
                 }
-                // The kind is gone with the last declaration, so clear both:
-                // a name is at most one of them, and removing the other is a
+                // The kind went with the last declaration, so clear both: a
+                // name is at most one of them, and removing the other is a
                 // no-op.
                 None => {
                     graph.remove(ComponentKind::Context, name);
@@ -286,38 +372,24 @@ impl CrossReferenceManager {
     }
 
     /// The declaration of `name` that represents it: the first component of
-    /// that name in the lowest-ordered file declaring it. Deterministic by
-    /// construction — the alternative is whichever write landed last, which
-    /// varies run to run and would make go-to-definition unstable.
+    /// that name in the lowest-ordered file declaring it, reading each file's
+    /// open buffer where it has one. Deterministic by construction — the
+    /// alternative is whichever write landed last, which varies run to run and
+    /// would make go-to-definition unstable.
     fn declaration(&self, name: &str) -> Option<ComponentLoc> {
         let uris = self.name_to_uris.get(name)?;
         for uri in uris.value() {
-            if let Some(locs) = self.uri_to_component.get(uri)
-                && let Some(loc) = locs.value().iter().find(|loc| loc.name == name)
+            if let Some(document) = self.uri_to_component.get(uri)
+                && let Some(loc) = document
+                    .value()
+                    .effective()
+                    .iter()
+                    .find(|loc| loc.name == name)
             {
                 return Some(loc.clone());
             }
         }
         None
-    }
-
-    /// Remove a file's components when the file is deleted
-    pub fn remove_component(&self, uri: &str) {
-        debug!("Removing components for URI: {}", uri);
-
-        let key = self.document_key(uri);
-        let uri = key.as_str();
-        let Some((_uri, locs)) = self.uri_to_component.remove(uri) else {
-            return;
-        };
-        for loc in &locs {
-            self.forget_declaration(&loc.name, uri);
-        }
-        // Each name either has another declarer, whose node is rebuilt here,
-        // or none, and leaves the graph. A move needs no ordering rule for
-        // this to hold: it arrives as a create plus a delete in no guaranteed
-        // order, and either order ends with the surviving file's node.
-        self.rebuild_names(locs.iter().map(|loc| loc.name.as_str()));
     }
 
     /// Resolve a file URI once on the blocking pool before open-document
@@ -356,6 +428,7 @@ impl CrossReferenceManager {
             .filter(|entry| {
                 entry
                     .value()
+                    .effective()
                     .iter()
                     .any(|location| component_names.contains(location.name.as_str()))
             })
@@ -380,7 +453,7 @@ impl CrossReferenceManager {
     pub fn get_component_name(&self, uri: &str) -> Option<String> {
         self.uri_to_component
             .get(&self.document_key(uri))
-            .and_then(|locs| locs.value().first().map(|loc| loc.name.clone()))
+            .and_then(|document| document.value().effective().first().map(declared_name))
     }
 
     /// Find all components that reference a given component
@@ -454,10 +527,10 @@ impl CrossReferenceManager {
         let count = sources.len();
         for (uri, content) in sources {
             let components = crate::component_util::parse_all(&content);
-            // Resolve the scan's spelling now, off the request path, so the
-            // client's own spelling of the same file lands on this entry.
-            self.register_document_uri(&uri);
-            self.index_components(uri.clone(), &components);
+            // `index_disk_components` resolves the scan's spelling, off the
+            // request path, so the client's own spelling of the same file
+            // lands on this entry.
+            self.index_disk_components(uri.clone(), &components);
             index_file(uri, &components, &content);
         }
 
@@ -466,20 +539,24 @@ impl CrossReferenceManager {
         Ok(count)
     }
 
-    /// Replace an open-document graph overlay with the file currently on disk.
-    pub(crate) fn restore_document_from_disk(&self, uri: &Url) -> std::io::Result<()> {
+    /// Refresh a file's saved components from disk, leaving any open overlay
+    /// alone — the buffer still answers for the file until the editor closes
+    /// it. A file that is gone drops its saved layer rather than erroring, the
+    /// way a watched-file deletion arrives.
+    pub(crate) fn refresh_document_from_disk(&self, uri: &Url) -> std::io::Result<()> {
         let key = uri.to_string();
         let Ok(path) = uri.to_file_path() else {
-            self.remove_component(&key);
+            self.remove_disk_document(&key);
             return Ok(());
         };
         match std::fs::read_to_string(path) {
             Ok(text) => {
-                self.update_component(key, &text);
+                let components = crate::component_util::parse_all(&text);
+                self.index_disk_components(key, &components);
                 Ok(())
             }
             Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
-                self.remove_component(&key);
+                self.remove_disk_document(&key);
                 Ok(())
             }
             Err(error) => Err(error),
@@ -540,11 +617,10 @@ impl CrossReferenceManager {
     /// declaring it twice contributes two entries, and the caller can tell
     /// "twice in one file" from "once in each of two files".
     ///
-    /// Entries are keyed by canonical file identity, so a file reaching the
-    /// server under two spellings occupies one of them and cannot look like a
-    /// cross-file duplicate. Two directories each holding an `m.eventb`,
-    /// though, are two files and two entries — deduplication is by identity,
-    /// never by basename. Queried per open-document name, so no
+    /// Entries are the canonical file identity, never a basename: a file
+    /// reaching the server under two spellings occupies one entry and cannot
+    /// look like a cross-file duplicate, while two directories each holding an
+    /// `m.eventb` stay two files. Queried per open-document name, so no
     /// whole-workspace map is built per publish.
     pub fn component_declarations(&self, name: &str) -> Vec<String> {
         let Some(uris) = self.name_to_uris.get(name) else {
@@ -552,10 +628,15 @@ impl CrossReferenceManager {
         };
         let mut files = Vec::new();
         for uri in uris.value() {
-            let Some(locs) = self.uri_to_component.get(uri) else {
+            let Some(document) = self.uri_to_component.get(uri) else {
                 continue;
             };
-            for _ in locs.value().iter().filter(|loc| loc.name == name) {
+            for _ in document
+                .value()
+                .effective()
+                .iter()
+                .filter(|loc| loc.name == name)
+            {
                 files.push(uri.clone());
             }
         }
@@ -847,18 +928,6 @@ END
     }
 
     #[test]
-    fn changing_a_component_kind_drops_the_old_node() {
-        let manager = CrossReferenceManager::new();
-        manager.update_component("file:///m.eventb".to_string(), "MACHINE m\nSEES ctx\nEND\n");
-        assert!(manager.contains(ComponentKind::Machine, "m"));
-
-        manager.update_component("file:///m.eventb".to_string(), "CONTEXT m\nEND\n");
-
-        assert!(manager.contains(ComponentKind::Context, "m"));
-        assert!(!manager.contains(ComponentKind::Machine, "m"));
-    }
-
-    #[test]
     fn removing_a_declarer_rebuilds_the_node_from_the_survivor() {
         // The survivor's own edges must come back, not the removed file's:
         // the node is rebuilt from the declaration that remains, so a stale
@@ -908,18 +977,97 @@ END
     }
 
     #[test]
-    fn closing_an_unsaved_overlay_restores_disk_cross_references() {
+    fn an_open_overlay_shadows_the_saved_components_until_it_is_dropped() {
         let root = TempWorkspace::new("eventb-lsp-close-restore-test");
         let path = root.join("model.eventb");
         std::fs::write(&path, "CONTEXT saved\nEND\n").unwrap();
         let uri = Url::from_file_path(&path).unwrap();
         let manager = CrossReferenceManager::new();
+        manager.refresh_document_from_disk(&uri).unwrap();
 
         manager.update_component(uri.to_string(), "CONTEXT unsaved\nEND\n");
-        manager.restore_document_from_disk(&uri).unwrap();
+        assert_eq!(manager.find_component_uri("unsaved"), Some(uri.to_string()));
+        assert!(manager.find_component_uri("saved").is_none());
+
+        // Closing reveals what is saved, without re-reading the file.
+        manager.remove_document(uri.as_str());
 
         assert!(manager.find_component_uri("unsaved").is_none());
         assert_eq!(manager.find_component_uri("saved"), Some(uri.to_string()));
+    }
+
+    #[test]
+    fn a_file_deleted_while_open_keeps_its_buffer_and_loses_its_saved_layer() {
+        let root = TempWorkspace::new("eventb-lsp-delete-while-open");
+        let path = root.join("model.eventb");
+        std::fs::write(&path, "CONTEXT saved\nEND\n").unwrap();
+        let uri = Url::from_file_path(&path).unwrap();
+        let manager = CrossReferenceManager::new();
+        manager.refresh_document_from_disk(&uri).unwrap();
+        manager.update_component(uri.to_string(), "CONTEXT open\nEND\n");
+
+        std::fs::remove_file(&path).unwrap();
+        manager.refresh_document_from_disk(&uri).unwrap();
+
+        assert_eq!(manager.find_component_uri("open"), Some(uri.to_string()));
+        manager.remove_document(uri.as_str());
+        assert!(manager.find_component_uri("open").is_none());
+        assert!(manager.find_component_uri("saved").is_none());
+    }
+
+    #[test]
+    fn an_unparsable_buffer_hides_the_saved_components() {
+        // While a document is open it answers for its file; letting the saved
+        // components reappear mid-edit would resolve references against text
+        // the user can no longer see.
+        let manager = CrossReferenceManager::new();
+        manager.index_disk_components(
+            "file:///m.eventb".to_string(),
+            &crate::component_util::parse_all("CONTEXT saved\nEND\n"),
+        );
+
+        manager.update_component("file:///m.eventb".to_string(), "not Event-B at all");
+        assert!(manager.find_component_uri("saved").is_none());
+
+        manager.remove_document("file:///m.eventb");
+        assert_eq!(
+            manager.find_component_uri("saved").as_deref(),
+            Some("file:///m.eventb")
+        );
+    }
+
+    #[test]
+    fn changing_a_component_kind_drops_the_old_node() {
+        let manager = CrossReferenceManager::new();
+        manager.update_component("file:///m.eventb".to_string(), "MACHINE m\nSEES ctx\nEND\n");
+        assert!(manager.contains(ComponentKind::Machine, "m"));
+
+        manager.update_component("file:///m.eventb".to_string(), "CONTEXT m\nEND\n");
+
+        assert!(manager.contains(ComponentKind::Context, "m"));
+        assert!(!manager.contains(ComponentKind::Machine, "m"));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_watched_file_created_after_the_scan_keys_as_the_editor_will_spell_it() {
+        // The watcher reports a brand-new file before any editor opens it, so
+        // its saved layer must already be keyed by file identity — otherwise
+        // the later `didOpen` overlay lands on a second entry and the one
+        // component looks like a cross-file duplicate.
+        let root = TempWorkspace::new("eventb-lsp-symlink-watch");
+        std::fs::create_dir_all(root.join("real")).unwrap();
+        std::os::unix::fs::symlink(root.join("real"), root.join("link")).unwrap();
+        std::fs::write(root.join("real").join("m.eventb"), "CONTEXT c\nEND\n").unwrap();
+
+        let manager = CrossReferenceManager::new();
+        let uri = Url::from_file_path(root.join("link").join("m.eventb")).unwrap();
+        manager.refresh_document_from_disk(&uri).unwrap();
+        manager.register_document_uri(uri.as_str());
+        manager.update_component(uri.to_string(), "CONTEXT c\nEND\n");
+
+        let declarations = manager.component_declarations("c");
+        assert_eq!(declarations.len(), 1, "{declarations:?}");
     }
 
     #[test]
@@ -1219,7 +1367,8 @@ END
     #[test]
     fn component_declarations_counts_same_named_files_in_two_directories() {
         // Two directories may each hold an `m.eventb`. That is a real
-        // cross-file duplicate, so the basenames must not collapse into one.
+        // cross-file duplicate, so the two must stay distinguishable — which
+        // sharing a basename would not be.
         let manager = CrossReferenceManager::new();
         let src = "CONTEXT c\nEND\n";
         manager.update_component("file:///one/m.eventb".to_string(), src);

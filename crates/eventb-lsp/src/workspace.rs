@@ -101,7 +101,7 @@ impl WorkspaceSymbolProvider {
 
     /// Refresh the disk layer from the file now on disk. A file that is gone
     /// drops its saved symbols instead of erroring, mirroring
-    /// [`crate::cross_references::CrossReferenceManager::restore_document_from_disk`]:
+    /// [`crate::cross_references::CrossReferenceManager::refresh_document_from_disk`]:
     /// a save only races a delete by accident, but a watched-file event
     /// reports deletions as a matter of course.
     pub(crate) fn refresh_document_from_disk(&self, uri: &Url) -> std::io::Result<()> {
