@@ -66,8 +66,11 @@ pub(crate) fn parser_stack_red_zone(depth: usize) -> usize {
 
 /// Size of the stack segment `stacker::maybe_grow` allocates when the red
 /// zone is hit (~3× the measured worst case at [`MAX_NESTING_DEPTH`]:
-/// 256 levels × ~86 KB/level ≈ 21.5 MB in debug builds).
-pub(crate) const PARSER_STACK_SIZE: usize = 64 * 1024 * 1024;
+/// 256 levels × ~86 KB/level ≈ 21.5 MB in debug builds). Worker threads
+/// that parse in bulk should start with a stack this large: on a default
+/// 2 MB thread stack every parse falls inside the red zone and maps a
+/// fresh segment, which under many threads costs more than the parse.
+pub const PARSER_STACK_SIZE: usize = 64 * 1024 * 1024;
 
 /// Bytes that end an operand (identifier, literal, closing bracket, postfix
 /// inverse). A `-` directly following one of these is a *binary* minus, which
