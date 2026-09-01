@@ -32,6 +32,8 @@ mod common;
 use std::collections::BTreeMap;
 use std::path::Path;
 
+use rayon::prelude::*;
+
 use common::{
     collect_zips, corpus_dir, flagged_unsupported, load_flags, prove_known_divergence,
     workspace_root, write_report,
@@ -81,6 +83,14 @@ struct ReasonerCounts {
     nodes: usize,
     replayed_eq: usize,
     replayed_diff: usize,
+}
+
+impl ReasonerCounts {
+    fn add(&mut self, other: &ReasonerCounts) {
+        self.nodes += other.nodes;
+        self.replayed_eq += other.replayed_eq;
+        self.replayed_diff += other.replayed_diff;
+    }
 }
 
 /// Set equality on needed hypotheses: some (contrHyps) are built
@@ -546,25 +556,44 @@ fn replay_reproduces_recorded_rules() {
     let baseline = load_baseline(&corpus);
     let zips = collect_zips(&corpus).expect("corpus listing");
 
+    // Archives are independent: check them in parallel, then fold the
+    // results in archive order so the reports stay stable.
+    type Checked = (Counts, BTreeMap<String, ReasonerCounts>, Vec<String>);
+    let checked: Vec<Result<Checked, String>> = rossi_prove::thread_pool().install(|| {
+        zips.par_iter()
+            .map(|path| {
+                let model = path.file_stem().unwrap_or_default().to_string_lossy();
+                if flagged_unsupported(&flags, &model) {
+                    return Err("flagged".to_string());
+                }
+                let mut counts = Counts::default();
+                let mut per_reasoner = BTreeMap::new();
+                let mut problems = Vec::new();
+                check_model(path, &mut counts, &mut per_reasoner, &mut problems)?;
+                Ok((counts, per_reasoner, problems))
+            })
+            .collect()
+    });
+
     let mut rows = Vec::new();
     let mut failures = Vec::new();
     let mut total = Counts::default();
     let mut per_reasoner: BTreeMap<String, ReasonerCounts> = BTreeMap::new();
-    for path in &zips {
+    for (path, checked) in zips.iter().zip(checked) {
         let model = path
             .file_stem()
             .unwrap_or_default()
             .to_string_lossy()
             .to_string();
-        if flagged_unsupported(&flags, &model) {
-            rows.push(report_row(&model, &Counts::default(), "skip", "flagged"));
-            continue;
-        }
-        let mut counts = Counts::default();
-        let mut problems = Vec::new();
-        if let Err(err) = check_model(path, &mut counts, &mut per_reasoner, &mut problems) {
-            rows.push(report_row(&model, &counts, "skip", &err));
-            continue;
+        let (counts, model_reasoners, mut problems) = match checked {
+            Ok(checked) => checked,
+            Err(err) => {
+                rows.push(report_row(&model, &Counts::default(), "skip", &err));
+                continue;
+            }
+        };
+        for (id, model_counts) in model_reasoners {
+            per_reasoner.entry(id).or_default().add(&model_counts);
         }
         if let Some(base) = baseline.get(&model) {
             if counts.replayed_eq < *base {

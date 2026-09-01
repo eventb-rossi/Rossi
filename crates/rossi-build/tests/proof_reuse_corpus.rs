@@ -18,6 +18,8 @@ mod common;
 use std::collections::BTreeMap;
 use std::path::Path;
 
+use rayon::prelude::*;
+
 use common::{
     collect_zips, corpus_dir, flagged_unsupported, load_flags, prove_known_divergence,
     workspace_root, write_report,
@@ -243,25 +245,40 @@ fn reuse_reproduces_recorded_statuses() {
     let flags = load_flags(&corpus.join("model_flags.tsv")).unwrap_or_default();
     let zips = collect_zips(&corpus).expect("corpus listing");
 
+    // Archives are independent: check them in parallel, then fold the
+    // results in archive order so the report stays stable.
+    let checked: Vec<Result<(Counts, Vec<String>), String>> =
+        rossi_prove::thread_pool().install(|| {
+            zips.par_iter()
+                .map(|path| {
+                    let model = path.file_stem().unwrap_or_default().to_string_lossy();
+                    if flagged_unsupported(&flags, &model) {
+                        return Err("flagged".to_string());
+                    }
+                    let mut counts = Counts::default();
+                    let mut problems = Vec::new();
+                    check_model(path, &mut counts, &mut problems)?;
+                    Ok((counts, problems))
+                })
+                .collect()
+        });
+
     let mut rows = Vec::new();
     let mut failures = Vec::new();
     let mut total = Counts::default();
-    for path in &zips {
+    for (path, checked) in zips.iter().zip(checked) {
         let model = path
             .file_stem()
             .unwrap_or_default()
             .to_string_lossy()
             .to_string();
-        if flagged_unsupported(&flags, &model) {
-            rows.push(report_row(&model, &Counts::default(), "skip", "flagged"));
-            continue;
-        }
-        let mut counts = Counts::default();
-        let mut problems = Vec::new();
-        if let Err(err) = check_model(path, &mut counts, &mut problems) {
-            rows.push(report_row(&model, &counts, "skip", &err));
-            continue;
-        }
+        let (counts, problems) = match checked {
+            Ok(checked) => checked,
+            Err(err) => {
+                rows.push(report_row(&model, &Counts::default(), "skip", &err));
+                continue;
+            }
+        };
         let verdict = if counts.diverge > 0 || !problems.is_empty() {
             match prove_known_divergence(&corpus, &model) {
                 Some(reason) => ("known", reason),
