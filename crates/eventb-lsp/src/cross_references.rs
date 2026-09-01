@@ -190,19 +190,24 @@ impl CrossReferenceManager {
     }
 
     /// Remove a file's components when the file is deleted
-    #[allow(dead_code)]
     pub fn remove_component(&self, uri: &str) {
         debug!("Removing components for URI: {}", uri);
 
         if let Some((_uri, locs)) = self.uri_to_component.remove(uri) {
             let mut graph = self.graph.write();
             for loc in &locs {
-                graph.remove(loc.kind, &loc.name);
+                // A name is only ours to drop while this file still owns it.
+                // `name_to_uri` and the graph must agree, so the two removals
+                // share one condition rather than the graph's being
+                // unconditional. A move makes this reachable: it arrives as a
+                // create plus a delete in no guaranteed order, and when the
+                // create lands first the new file already owns `loc.name`.
                 if self
                     .name_to_uri
                     .get(&loc.name)
-                    .is_some_and(|u| u.value().as_str() == uri)
+                    .is_none_or(|u| u.value().as_str() == uri)
                 {
+                    graph.remove(loc.kind, &loc.name);
                     self.name_to_uri.remove(&loc.name);
                 }
             }
@@ -323,9 +328,7 @@ impl CrossReferenceManager {
         for entry in rossi_build::walk::source_walk(root_path) {
             let entry = entry?;
             let path = entry.path();
-            if entry.file_type().is_file()
-                && matches!(path.extension().and_then(|s| s.to_str()), Some("eventb"))
-            {
+            if entry.file_type().is_file() && rossi_build::walk::is_source_file(path) {
                 let uri = Url::from_file_path(path).map_err(|()| {
                     std::io::Error::new(
                         std::io::ErrorKind::InvalidData,
@@ -719,6 +722,22 @@ END
         assert!(manager.find_component_uri("eventb_ctx").is_some());
         assert!(manager.find_component_uri("rossi_ctx").is_none());
         assert!(manager.find_component_uri("ignored").is_none());
+    }
+
+    #[test]
+    fn removing_a_file_keeps_a_name_another_file_has_claimed() {
+        let manager = CrossReferenceManager::new();
+        manager.update_component("file:///old.eventb".to_string(), "CONTEXT ctx\nEND\n");
+        // The move's create half lands first and takes ownership of `ctx`.
+        manager.update_component("file:///new.eventb".to_string(), "CONTEXT ctx\nEND\n");
+
+        manager.remove_component("file:///old.eventb");
+
+        assert_eq!(
+            manager.find_component_uri("ctx").as_deref(),
+            Some("file:///new.eventb")
+        );
+        assert!(manager.contains(ComponentKind::Context, "ctx"));
     }
 
     #[test]
