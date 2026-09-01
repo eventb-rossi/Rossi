@@ -123,7 +123,7 @@ impl TypeChecker {
                 }
             }
         }
-        self.env = builder.make_snapshot();
+        self.env = builder.into_snapshot();
     }
 
     fn check_preds(&mut self, preds: &[Predicate]) {
