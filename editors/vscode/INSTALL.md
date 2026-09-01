@@ -128,7 +128,10 @@ If either Rossi binary is not in `PATH`, configure it:
    /path/to/rossi
    ```
 
-Or edit `settings.json` directly:
+These are user/machine settings: a workspace's own `.vscode/settings.json`
+cannot supply them, so cloning a repository can never redirect the binaries
+the extension launches. To edit them by hand, open your **user**
+`settings.json` (`Ctrl+Shift+P` → *Preferences: Open User Settings (JSON)*):
 ```json
 {
   "rossi.languageServer.path": "/path/to/eventb-language-server",
@@ -136,7 +139,7 @@ Or edit `settings.json` directly:
 }
 ```
 
-Configure `rossi.rodin.path` only if the `Open in Rodin` code lens cannot use the platform default (the lens builds into a persistent `.rossi/rodin` workspace next to your sources — relocatable via `rossi.rodin.workspace` — so proofs made in Rodin survive rebuilds; consider gitignoring `.rossi/`). Examples:
+Configure `rossi.rodin.path` — a user setting too — only if the `Open in Rodin` code lens cannot use the platform default (the lens builds into a persistent `.rossi/rodin` workspace next to your sources — relocatable via `rossi.rodin.workspace`, which a trusted workspace may also set — so proofs made in Rodin survive rebuilds; consider gitignoring `.rossi/`). Examples:
 
 ```json
 {

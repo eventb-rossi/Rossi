@@ -2,6 +2,20 @@
 
 ## Unreleased
 
+### Security
+
+- The settings naming an executable — `rossi.tool.path`,
+  `rossi.languageServer.path`, `rossi.rodin.path` and `rossi.animate.path` — are
+  now user/machine settings, and `rossi.rodin.workspace` is machine-overridable.
+  A workspace's own `.vscode/settings.json` could previously supply them, so
+  opening a cloned repository was enough to have the extension launch a program
+  of that repository's choosing — `rossi.languageServer.path` before any user
+  action. Move them to your user `settings.json` if you had been setting them
+  per project.
+- The extension now declares limited support for untrusted workspaces, so it
+  stays usable in Restricted Mode; the five settings above are ignored there in
+  favour of the built-in defaults.
+
 ### Fixed
 
 - The auto-downloaded toolchain is now kept in lock-step with the extension: the
