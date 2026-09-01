@@ -566,3 +566,35 @@ fn build_directory_to_zip_carries_proofs_and_statuses() {
 
     std::fs::remove_dir_all(&tmp).ok();
 }
+
+#[test]
+fn nested_rodin_xml_does_not_route_a_text_directory_to_the_project_loader() {
+    // The gate that chooses the Rodin-project path used to walk recursively
+    // and compare extensions case-insensitively, while the loader it handed
+    // off to reads only direct children and matches case-sensitively. A
+    // directory whose only XML sits in a subdirectory therefore passed the
+    // gate and loaded as zero components — an empty project, built without a
+    // word. The Event-B text beside it is what should be built.
+    let tmp = tempdir_unique("rossi-cli-build-nested-xml");
+    std::fs::create_dir_all(tmp.join("sub")).unwrap();
+    std::fs::write(tmp.join("sub").join("M.bum"), "<not really xml>").unwrap();
+    std::fs::write(tmp.join("ctx.eventb"), ASCII_CONTEXT).unwrap();
+    let out_zip = tmp.join("out.zip");
+
+    let output = rossi_command()
+        .args([
+            "build",
+            tmp.to_str().unwrap(),
+            "--output",
+            out_zip.to_str().unwrap(),
+        ])
+        .output()
+        .expect("Failed to execute command");
+
+    assert!(
+        output.status.success(),
+        "the text sibling must be built; stderr={}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert!(out_zip.exists(), "an output archive must be written");
+}
