@@ -8,10 +8,12 @@
 //! [`ComponentLoader`](crate::component_loader::ComponentLoader), which parses
 //! each file at most once per request.
 
+use rossi::ast::Span;
 use rossi::deps::{ComponentKind, EdgeKind};
 use rossi::keywords::KeywordId;
 use rossi::{Component, ComponentNameSite};
 
+use crate::formula_walk;
 use crate::lsp_types::Position;
 use crate::position::position_to_offset;
 use crate::text_utils;
@@ -83,6 +85,53 @@ pub fn component_at_offset(components: &[Component], offset: usize) -> Option<&C
                 .find(|c| c.span().is_some_and(|s| s.start <= offset))
         })
         .or_else(|| components.first())
+}
+
+/// Whether `offset` sits on an occurrence of `name` the model actually
+/// declares: a declaration (carrier set, constant, variable, event, event
+/// parameter, or the component's own name) or a formula occurrence of one.
+/// Component names also resolve through [`resolve_component_at_position`],
+/// which reaches dependency clauses this does not.
+///
+/// Spans, not spellings. Rodin allows a declared name to spell a structural
+/// keyword (EB028 warns about it), so providers cannot decide what the cursor
+/// is on by looking the word up in the keyword table: the name is a name at
+/// its own declaration and uses, while the keyword token of the same spelling
+/// elsewhere in the file is still a keyword. `Span::contains` is half-open and
+/// LSP treats the caret immediately after a name as targeting it, so the
+/// trailing edge counts.
+pub(crate) fn declared_name_at_offset(components: &[Component], offset: usize, name: &str) -> bool {
+    let hit = |element: &rossi::NamedElement| {
+        element.name == name && element.span.is_some_and(|span| covers(span, offset))
+    };
+    let named = |element_name: &str, span: Option<Span>| {
+        element_name == name && span.is_some_and(|span| covers(span, offset))
+    };
+    components.iter().any(|component| {
+        let declared = match component {
+            Component::Context(c) => {
+                named(&c.name, c.name_span)
+                    || c.sets.iter().any(&hit)
+                    || c.constants.iter().any(&hit)
+            }
+            Component::Machine(m) => {
+                named(&m.name, m.name_span)
+                    || m.variables.iter().any(&hit)
+                    || m.events.iter().any(|event| {
+                        named(&event.name, event.name_span) || event.parameters.iter().any(&hit)
+                    })
+            }
+        };
+        declared
+            || formula_walk::collect_all_occurrences(component)
+                .iter()
+                .any(|occurrence| occurrence.name == name && covers(occurrence.span, offset))
+    })
+}
+
+/// Whether `span` covers `offset`, counting the trailing edge.
+fn covers(span: Span, offset: usize) -> bool {
+    span.contains(offset) || span.end == offset
 }
 
 /// Resolve a component declaration or component-level dependency operand at
