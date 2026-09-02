@@ -9,12 +9,13 @@ use crate::Severity;
 
 /// Validation rule identifiers exposed in `Diagnostic.rule_id`.
 ///
-/// Codes use the stable `EBnnn` scheme (`"EB001"`..`"EB028"`); gaps are
+/// Codes use the stable `EBnnn` scheme (`"EB001"`..`"EB030"`); gaps are
 /// rules not yet implemented in rossi (EB020 unknown
 /// type) or removed as valueless (EB013 dead
 /// constant — every hit was already an EB006 typing Error). EB023, EB024
 /// and EB028 are rossi-only extensions; EB025 is a refinement static-check
-/// emitted by `crate::build`.
+/// emitted by `crate::build`; EB029 and EB030 are structural parse errors
+/// raised by the Camille grammar (`rossi::ParseError`), not by a check.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum RuleId {
     /// EB001 — XML parse error (corrupt Rodin archive, malformed `.buc`/`.bum`).
@@ -85,10 +86,16 @@ pub enum RuleId {
     /// `THEN`, …) that rossi or Camille re-lexes where the name is written.
     /// (rossi-only.)
     KeywordName,
+    /// EB029 — A clause header (`WHERE`, `INVARIANTS`, `THEN`, …) has nothing
+    /// under it, or a label has no formula after it.
+    EmptyClause,
+    /// EB030 — An event clause is written after one it must precede (Rodin
+    /// fixes the order `ANY`, `WHERE`, `WITH`, `WITNESS`, `THEN`).
+    ClauseOutOfOrder,
 }
 
 impl RuleId {
-    /// Stable string code (`"EB001"`..`"EB028"`).
+    /// Stable string code (`"EB001"`..`"EB030"`).
     #[must_use]
     pub fn code(self) -> &'static str {
         match self {
@@ -118,6 +125,8 @@ impl RuleId {
             RuleId::AssignmentInPredicate => "EB026",
             RuleId::EventMergeMismatch => "EB027",
             RuleId::KeywordName => "EB028",
+            RuleId::EmptyClause => "EB029",
+            RuleId::ClauseOutOfOrder => "EB030",
         }
     }
 
@@ -151,6 +160,8 @@ impl RuleId {
             RuleId::AssignmentInPredicate => "Assignment operator in predicate",
             RuleId::EventMergeMismatch => "Merged abstract events mismatch",
             RuleId::KeywordName => "Structural keyword as identifier",
+            RuleId::EmptyClause => "Empty clause or label",
+            RuleId::ClauseOutOfOrder => "Event clause out of order",
         }
     }
 
@@ -232,6 +243,12 @@ impl RuleId {
             RuleId::KeywordName => {
                 "A declared name (context, machine, carrier set, constant, variable, event, or event parameter) is spelled like a structural keyword that textual notation cannot read back as a name: rossi's grammar recognises the keyword where the name is written (the keyword that ends its list, as in `sets a end`, or `INITIALISATION` as an event name), or stock Camille reserves that lowercase spelling outright (`machine`). Rodin's object model allows the name, but the model cannot round-trip through `.eventb` text."
             }
+            RuleId::EmptyClause => {
+                "A clause header carries no members — `WHERE` followed straight by `THEN`, `INVARIANTS` by the next section — or a label carries no formula. Write the guards, actions or predicates the clause needs, or delete the header; delete a label that has nothing to name."
+            }
+            RuleId::ClauseOutOfOrder => {
+                "An event's clauses are written in a fixed order — `ANY`, `WHERE`, `WITH`, `WITNESS`, `THEN` — so a clause below one it must precede cannot be read. Move it above that clause."
+            }
         }
     }
 
@@ -256,6 +273,8 @@ impl RuleId {
             | RuleId::DisappearedVariable
             | RuleId::AssignmentInPredicate
             | RuleId::EventMergeMismatch
+            | RuleId::EmptyClause
+            | RuleId::ClauseOutOfOrder
             | RuleId::DuplicateComponent => Severity::Error,
             RuleId::WellDefinedness => Severity::Info,
             RuleId::DeadVariable
@@ -266,6 +285,25 @@ impl RuleId {
             | RuleId::ProofFileParseError
             | RuleId::ShadowedName
             | RuleId::KeywordName => Severity::Warning,
+        }
+    }
+
+    /// The rule a parse error belongs to, when the grammar names the mistake
+    /// precisely enough for one. `None` means the failure carries no more than
+    /// "this text was rejected", which each consumer tags with the rule for
+    /// its own notation — EB004 for Camille text, EB001 for Rodin XML.
+    ///
+    /// One home for the mapping keeps the CLI, the SARIF report and the editor
+    /// naming the same mistake the same way.
+    #[must_use]
+    pub fn for_parse_error(error: &rossi::ParseError) -> Option<RuleId> {
+        match error {
+            rossi::ParseError::EmptyClause { .. } | rossi::ParseError::MissingFormula { .. } => {
+                Some(RuleId::EmptyClause)
+            }
+            rossi::ParseError::ClauseOutOfOrder { .. } => Some(RuleId::ClauseOutOfOrder),
+            rossi::ParseError::AssignmentInPredicate { .. } => Some(RuleId::AssignmentInPredicate),
+            _ => None,
         }
     }
 
@@ -300,6 +338,8 @@ impl RuleId {
             RuleId::AssignmentInPredicate,
             RuleId::EventMergeMismatch,
             RuleId::KeywordName,
+            RuleId::EmptyClause,
+            RuleId::ClauseOutOfOrder,
         ]
     }
 }
@@ -348,6 +388,8 @@ mod tests {
         assert_eq!(RuleId::DisappearedVariable.code(), "EB025");
         assert_eq!(RuleId::AssignmentInPredicate.code(), "EB026");
         assert_eq!(RuleId::KeywordName.code(), "EB028");
+        assert_eq!(RuleId::EmptyClause.code(), "EB029");
+        assert_eq!(RuleId::ClauseOutOfOrder.code(), "EB030");
     }
 
     #[test]
