@@ -10,9 +10,10 @@ use crate::lsp_types::{
     CodeAction, CodeActionKind, CodeActionOrCommand, CodeActionParams, CodeActionResponse,
     Position, Range, TextEdit, Url, WorkspaceEdit,
 };
-use crate::text_utils::line_keyword_is;
+use crate::text_utils::{line_keyword, line_keyword_is};
 use rossi::keywords::KeywordId;
 use rossi::operators;
+use rossi_build::rules::RuleId;
 use std::collections::HashMap;
 
 /// The source action that normalizes every operator to the configured
@@ -87,6 +88,26 @@ fn diagnostic_code_is(diagnostic: &crate::lsp_types::Diagnostic, code: &str) -> 
         &diagnostic.code,
         Some(crate::lsp_types::NumberOrString::String(s)) if s == code
     )
+}
+
+/// The 0-indexed `line` of `text`, if it has one.
+fn line_of(text: &str, line: u32) -> Option<&str> {
+    text.lines().nth(line as usize)
+}
+
+/// The slice of `text` a diagnostic `range` covers.
+fn text_in_range(text: &str, range: Range) -> Option<&str> {
+    let start = crate::position::position_to_offset(text, range.start)?;
+    let end = crate::position::position_to_offset(text, range.end)?;
+    text.get(start..end)
+}
+
+/// The keyword the diagnostic `range` underlines, if it underlines exactly
+/// one. A diagnostic on a formula yields `None`, and so does one on a label:
+/// EB029 covers both an empty clause and a label with no formula, and a label
+/// carries its `@` sigil, which no keyword spelling does.
+fn keyword_at(text: &str, range: Range) -> Option<KeywordId> {
+    rossi::keywords::lookup(text_in_range(text, range)?).map(|keyword| keyword.id)
 }
 
 /// Provides code actions and refactorings
@@ -416,13 +437,45 @@ impl CodeActionProvider {
             .context
             .diagnostics
             .iter()
-            .filter(|d| diagnostic_code_is(d, "EB026"))
+            .filter(|d| diagnostic_code_is(d, RuleId::AssignmentInPredicate.code()))
         {
             if let Some(action) = self.create_fix_assignment_in_predicate_action(
                 &params.text_document.uri,
                 diagnostic,
                 text,
             ) {
+                actions.push(CodeActionOrCommand::CodeAction(action));
+            }
+        }
+
+        // Delete a clause header with nothing under it (EB029). The same rule
+        // also covers a label with no formula, where there is nothing to fix
+        // on the user's behalf — only they can write the missing predicate —
+        // so the action is offered only when the diagnostic underlines a
+        // clause keyword.
+        for diagnostic in params
+            .context
+            .diagnostics
+            .iter()
+            .filter(|d| diagnostic_code_is(d, RuleId::EmptyClause.code()))
+        {
+            if let Some(action) =
+                self.create_remove_empty_clause_action(&params.text_document.uri, diagnostic, text)
+            {
+                actions.push(CodeActionOrCommand::CodeAction(action));
+            }
+        }
+
+        // Move a clause written below one it must precede (EB030).
+        for diagnostic in params
+            .context
+            .diagnostics
+            .iter()
+            .filter(|d| diagnostic_code_is(d, RuleId::ClauseOutOfOrder.code()))
+        {
+            if let Some(action) =
+                self.create_move_clause_action(&params.text_document.uri, diagnostic, text)
+            {
                 actions.push(CodeActionOrCommand::CodeAction(action));
             }
         }
@@ -491,15 +544,147 @@ impl CodeActionProvider {
         diagnostic: &crate::lsp_types::Diagnostic,
         text: &str,
     ) -> Option<CodeAction> {
-        let start = crate::position::position_to_offset(text, diagnostic.range.start)?;
-        let end = crate::position::position_to_offset(text, diagnostic.range.end)?;
-        let operator = text.get(start..end)?;
+        let operator = text_in_range(text, diagnostic.range)?;
         let replacement = match operator {
             ":=" | "≔" => "=",
             ":∈" | "::" => "∈",
             _ => return None,
         };
         Some(self.replace_operator_fix(uri, diagnostic, operator, replacement))
+    }
+
+    /// Quick fix for EB029 (an empty clause): delete the header that has
+    /// nothing under it. The keyword usually sits alone on its line, so the
+    /// line goes with it; a header sharing its line with something else loses
+    /// only the keyword. Returns `None` when the diagnostic underlines a label
+    /// rather than a clause keyword — the other half of EB029, where the
+    /// missing formula is the user's to write.
+    fn create_remove_empty_clause_action(
+        &self,
+        uri: &Url,
+        diagnostic: &crate::lsp_types::Diagnostic,
+        text: &str,
+    ) -> Option<CodeAction> {
+        let keyword = keyword_at(text, diagnostic.range)?;
+        let line = diagnostic.range.start.line;
+        let alone = line_of(text, line)?.trim() == text_in_range(text, diagnostic.range)?;
+        let range = if alone {
+            Range {
+                start: Position::new(line, 0),
+                end: Position::new(line + 1, 0),
+            }
+        } else {
+            diagnostic.range
+        };
+        Some(CodeAction {
+            title: format!("Remove empty {}", rossi::keywords::spell(keyword)),
+            kind: Some(CodeActionKind::QUICKFIX),
+            diagnostics: Some(vec![diagnostic.clone()]),
+            edit: Some(single_edit(uri, range, String::new())),
+            command: None,
+            is_preferred: Some(true),
+            disabled: None,
+            data: None,
+        })
+    }
+
+    /// Quick fix for EB030 (an event clause written out of order): move the
+    /// clause above the earliest clause it must precede.
+    ///
+    /// The diagnostic spans the whole clause, so the lines it covers are what
+    /// moves. The destination comes from the grammar's own clause order
+    /// ([`rossi::keywords::event_clause_boundary`]), scanning up only to the
+    /// line that opens or closes the enclosing event, so a clause is never
+    /// lifted out of it.
+    fn create_move_clause_action(
+        &self,
+        uri: &Url,
+        diagnostic: &crate::lsp_types::Diagnostic,
+        text: &str,
+    ) -> Option<CodeAction> {
+        let masked = rossi::comments::mask_comments_chars(text);
+        let lines: Vec<&str> = masked.lines().collect();
+        let first = diagnostic.range.start.line as usize;
+        let last = diagnostic.range.end.line as usize;
+        if last >= lines.len() {
+            return None;
+        }
+        // The range spans the whole clause, so the keyword is the first token
+        // of its first line.
+        let clause = line_keyword(lines[first])?;
+        // Whole lines move, so the clause must own its last one: in
+        // `WITH @w y = 1 END` the event's END would travel with the clause.
+        let clause_end = crate::position::position_to_offset(&masked, diagnostic.range.end)?;
+        if !masked[clause_end..]
+            .lines()
+            .next()
+            .unwrap_or("")
+            .trim()
+            .is_empty()
+        {
+            return None;
+        }
+        let follows = rossi::keywords::event_clause_boundary(clause);
+        let mut target = None;
+        for (index, line) in lines[..first].iter().enumerate().rev() {
+            let Some(keyword) = line_keyword(line) else {
+                continue;
+            };
+            // The event this clause belongs to starts here, so the scan stops:
+            // `END` closes the event above (an inline status — `convergent
+            // EVENT e` — hides the header keyword, so `EVENT` alone is not
+            // enough to stay inside the event), and `EVENTS` opens the block.
+            if matches!(
+                keyword,
+                KeywordId::Event | KeywordId::Events | KeywordId::End
+            ) {
+                break;
+            }
+            if follows.contains(&keyword) {
+                target = Some((index, keyword));
+            }
+        }
+        let (target_line, target_keyword) = target?;
+        let moved: String = text
+            .lines()
+            .skip(first)
+            .take(last - first + 1)
+            .map(|line| format!("{line}\n"))
+            .collect();
+        let edits = vec![
+            TextEdit {
+                range: Range {
+                    start: Position::new(target_line as u32, 0),
+                    end: Position::new(target_line as u32, 0),
+                },
+                new_text: moved,
+            },
+            TextEdit {
+                range: Range {
+                    start: Position::new(first as u32, 0),
+                    end: Position::new(last as u32 + 1, 0),
+                },
+                new_text: String::new(),
+            },
+        ];
+        Some(CodeAction {
+            title: format!(
+                "Move {} above {}",
+                rossi::keywords::spell(clause),
+                rossi::keywords::spell(target_keyword)
+            ),
+            kind: Some(CodeActionKind::QUICKFIX),
+            diagnostics: Some(vec![diagnostic.clone()]),
+            edit: Some(WorkspaceEdit {
+                changes: Some(HashMap::from([(uri.clone(), edits)])),
+                document_changes: None,
+                change_annotations: None,
+            }),
+            command: None,
+            is_preferred: Some(true),
+            disabled: None,
+            data: None,
+        })
     }
 
     /// Create action to add missing END keyword
@@ -839,47 +1024,12 @@ impl CodeActionProvider {
         }
     }
 
-    /// Get text within a range
+    /// Get text within a range.
     ///
-    /// LSP positions use character (code-point) offsets, not byte offsets.
-    /// This method properly converts character offsets to byte offsets.
+    /// LSP positions are UTF-16 offsets, so this goes through the one
+    /// converter rather than indexing bytes.
     fn get_text_in_range(&self, text: &str, range: &Range) -> Option<String> {
-        let lines: Vec<&str> = text.lines().collect();
-
-        let start_line = range.start.line as usize;
-        let end_line = range.end.line as usize;
-
-        if start_line >= lines.len() || end_line >= lines.len() {
-            return None;
-        }
-
-        if start_line == end_line {
-            let line = lines[start_line];
-            let start_byte = crate::position::utf16_to_byte(line, range.start.character as usize)?;
-            let end_byte = crate::position::utf16_to_byte(line, range.end.character as usize)?;
-            Some(line[start_byte..end_byte].to_string())
-        } else {
-            let mut result = String::new();
-
-            // First line
-            let start_byte =
-                crate::position::utf16_to_byte(lines[start_line], range.start.character as usize)?;
-            result.push_str(&lines[start_line][start_byte..]);
-            result.push('\n');
-
-            // Middle lines
-            for line in lines.iter().take(end_line).skip(start_line + 1) {
-                result.push_str(line);
-                result.push('\n');
-            }
-
-            // Last line
-            let end_byte =
-                crate::position::utf16_to_byte(lines[end_line], range.end.character as usize)?;
-            result.push_str(&lines[end_line][..end_byte]);
-
-            Some(result)
-        }
+        text_in_range(text, *range).map(str::to_owned)
     }
 }
 
