@@ -547,12 +547,11 @@ fn validate_text_source(
             let only_precise_errors =
                 !results.is_empty() && results.len() == recovered.errors.len();
             if !only_precise_errors {
-                let mut fallback = error_result(
-                    input,
-                    inner(),
-                    format!("{e}"),
-                    Some(RuleId::CamilleParseError),
-                );
+                // A structural mistake the grammar can name gets its own rule;
+                // everything else is the generic "this text is not Camille"
+                // failure.
+                let rule = RuleId::for_parse_error(&e).unwrap_or(RuleId::CamilleParseError);
+                let mut fallback = error_result(input, inner(), format!("{e}"), Some(rule));
                 fallback.region = parse_error_region(&e, source);
                 results.push(fallback);
             }
