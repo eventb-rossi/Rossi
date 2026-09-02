@@ -18,7 +18,8 @@ use std::sync::Arc;
 
 use crate::component_loader::ComponentLoader;
 use crate::component_util::{
-    ComponentIdentity, component_at_offset, parse_all, resolve_component_at_position,
+    ComponentIdentity, component_at_offset, declared_name_at_offset, parse_all,
+    resolve_component_at_position,
 };
 use crate::cross_references::CrossReferenceManager;
 use crate::document::DocumentManager;
@@ -200,8 +201,14 @@ impl HoverProvider {
 
         // Static documentation needs no AST or dependency environment. Keep it
         // ahead of fallback parsing for bare-provider and closed-document hovers.
+        // The exception is a word that spells a structural keyword: Rodin allows
+        // a declared name to do that, and then the keyword card is the wrong
+        // answer, so that one branch consults the AST.
+        let stored = parsed.as_deref().map(|parsed| parsed.components());
+        let offset = position_to_offset(text, position).unwrap_or(text.len());
         if let Some(mut hover) = self
             .hover_keyword(&word)
+            .filter(|_| !declaration_shadows_keyword(stored, text, offset, &word))
             .or_else(|| self.hover_operator(&word))
             .or_else(|| self.hover_builtin(&word))
         {
@@ -212,14 +219,13 @@ impl HoverProvider {
         // Select the cursor's component against the stored parse's own text, or
         // recover from the same served text when no document snapshot exists.
         let owned;
-        let components: &[Component] = match parsed.as_deref() {
-            Some(parsed) => parsed.components(),
+        let components: &[Component] = match stored {
+            Some(components) => components,
             None => {
                 owned = parse_all(text);
                 &owned
             }
         };
-        let offset = position_to_offset(text, position).unwrap_or(text.len());
         let cursor_component = component_at_offset(components, offset);
 
         // One loader per request: each visible context/machine in the SEES /
@@ -424,6 +430,22 @@ fn append_constraint_section(description: &mut String, header: &str, constraints
     description.push_str(&format!("\n\n**{header}:**\n"));
     for constraint in constraints {
         description.push_str(&format!("- `{constraint}`\n"));
+    }
+}
+
+/// Whether the cursor is on a declared name that merely spells a keyword, so
+/// the keyword card would be the wrong answer. Called only once the word is
+/// known to be a keyword, so a document with no stored parse pays for the
+/// fallback parse in that case alone.
+fn declaration_shadows_keyword(
+    stored: Option<&[Component]>,
+    text: &str,
+    offset: usize,
+    word: &str,
+) -> bool {
+    match stored {
+        Some(components) => declared_name_at_offset(components, offset, word),
+        None => declared_name_at_offset(&parse_all(text), offset, word),
     }
 }
 
@@ -1188,6 +1210,38 @@ mod tests {
 
         let formula = markup(hover_with_doc(source, 8, 4).expect("hover on variable"));
         assert!(formula.contains("# Variable: C"), "got: {formula}");
+    }
+
+    #[test]
+    fn keyword_spelled_declaration_hovers_as_the_name() {
+        // Rodin allows a carrier set named `end`; EB028 warns about it but the
+        // model still loads. Hovering the declaration, or a use of it, must
+        // describe the set — not the `END` keyword it spells.
+        let source = "CONTEXT c\nSETS\n    end\nAXIOMS\n    @axm1 end ≠ ∅\nEND\n";
+        for (line, character) in [(2, 4), (4, 10)] {
+            let card = markup(
+                hover_with_doc(source, line, character).expect("hover on the keyword-spelled set"),
+            );
+            assert!(card.contains("end"), "line {line} got: {card}");
+            assert!(
+                !card.contains("Marks the end of"),
+                "line {line} showed the END keyword card: {card}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_real_keyword_still_hovers_as_a_keyword() {
+        // The offset decides, not the spelling: in the very file that declares
+        // a set named `end`, the closing `END` is still the keyword.
+        let source = "CONTEXT c\nSETS\n    end\nAXIOMS\n    @axm1 end ≠ ∅\nEND\n";
+        let card = markup(hover_with_doc(source, 5, 0).expect("hover on the END token"));
+        assert!(card.contains("END"), "got: {card}");
+
+        // And a file with no such declaration is unaffected.
+        let plain = "CONTEXT c\nCONSTANTS\n    k\nAXIOMS\n    @axm1 k ∈ ℕ\nEND\n";
+        let card = markup(hover_with_doc(plain, 1, 0).expect("hover on CONSTANTS"));
+        assert!(card.contains("CONSTANTS"), "got: {card}");
     }
 
     #[test]

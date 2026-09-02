@@ -13,7 +13,9 @@ use rossi::Component;
 use rossi::ast::Span;
 
 use crate::component_loader::ComponentLoader;
-use crate::component_util::{component_at_offset, parse_all, resolve_component_at_position};
+use crate::component_util::{
+    component_at_offset, declared_name_at_offset, parse_all, resolve_component_at_position,
+};
 use crate::cross_references::CrossReferenceManager;
 use crate::document::DocumentManager;
 use crate::formula_walk;
@@ -93,7 +95,7 @@ impl RenameProvider {
                     }
                 };
                 let offset = position_to_offset(text, position)?;
-                if !renameable_name_at_offset(components, offset, &identifier) {
+                if !declared_name_at_offset(components, offset, &identifier) {
                     debug!("Cannot rename keyword '{}'", identifier);
                     return None;
                 }
@@ -238,51 +240,6 @@ fn is_valid_new_name(s: &str, is_component: bool) -> bool {
     } else {
         rossi::names::is_valid_math_identifier(s)
     }
-}
-
-/// Whether `offset` sits on an occurrence of `name` that rename can rewrite:
-/// a declaration (carrier set, constant, variable, event, event parameter, or
-/// the component's own name) or a formula occurrence of one. Component names
-/// are covered by [`resolve_component_at_position`], which also reaches
-/// dependency clauses, but a component whose header the cursor is on resolves
-/// here too.
-///
-/// Spans, not spellings: a name spelled like a keyword is renameable at its
-/// own declaration while the keyword token of the same spelling elsewhere in
-/// the file is not. [`Span::contains`] is half-open and LSP treats the caret
-/// immediately after a name as targeting it, so the trailing edge counts.
-fn renameable_name_at_offset(components: &[Component], offset: usize, name: &str) -> bool {
-    let hit = |element: &rossi::NamedElement| {
-        element.name == name && element.span.is_some_and(|span| covers(span, offset))
-    };
-    let named = |element_name: &str, span: Option<Span>| {
-        element_name == name && span.is_some_and(|span| covers(span, offset))
-    };
-    components.iter().any(|component| {
-        let declared = match component {
-            Component::Context(c) => {
-                named(&c.name, c.name_span)
-                    || c.sets.iter().any(&hit)
-                    || c.constants.iter().any(&hit)
-            }
-            Component::Machine(m) => {
-                named(&m.name, m.name_span)
-                    || m.variables.iter().any(&hit)
-                    || m.events.iter().any(|event| {
-                        named(&event.name, event.name_span) || event.parameters.iter().any(&hit)
-                    })
-            }
-        };
-        declared
-            || formula_walk::collect_all_occurrences(component)
-                .iter()
-                .any(|occurrence| occurrence.name == name && covers(occurrence.span, offset))
-    })
-}
-
-/// Whether `span` covers `offset`, counting the trailing edge.
-fn covers(span: Span, offset: usize) -> bool {
-    span.contains(offset) || span.end == offset
 }
 
 /// Check if a string is reserved vocabulary that cannot name an identifier:
