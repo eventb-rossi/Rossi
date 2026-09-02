@@ -911,7 +911,9 @@ fn clause_out_of_order_error(
         before: crate::keywords::spell(before).to_string(),
         line,
         column,
-        span: Some(Span::from_pest(span)),
+        // The clause's own text, without the whitespace the parser skipped
+        // past its last member: the span says what has to move.
+        span: Some(trimmed_span(span.start(), span.as_str())),
     }
 }
 
@@ -4857,7 +4859,7 @@ fn recover_common_event_clauses(
     if let Some((content_start, content_end)) = clause_content_range(
         positions,
         KeywordId::Then,
-        crate::keywords::event_clause_boundary(KeywordId::Then),
+        crate::keywords::EVENT_CLAUSE_KEYWORDS,
         body_end,
     ) {
         *actions = recover_actions_in_range(text, content_start, content_end, errors);
@@ -4950,7 +4952,7 @@ fn recover_events(
             if let Some((content_start, content_end)) = clause_content_range(
                 &positions,
                 KeywordId::Then,
-                crate::keywords::event_clause_boundary(KeywordId::Then),
+                crate::keywords::EVENT_CLAUSE_KEYWORDS,
                 body_end,
             ) {
                 init.actions = recover_actions_in_range(text, content_start, content_end, errors);

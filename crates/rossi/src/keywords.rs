@@ -393,13 +393,23 @@ const EVENT_REFINES_FOLLOW: &[KeywordId] = &[Status, Any];
 // INITIALISATION event.
 const EVENT_HEADER: &[KeywordId] = &[Initialisation];
 
+/// Every keyword that opens or closes an event clause.
+///
+/// The boundary error recovery uses for the body of `THEN`, the last clause:
+/// anything that follows it and opens a clause is misplaced, so the actions
+/// stop there rather than swallowing the stray clause and reporting it as a
+/// broken action. [`event_clause_boundary`] is the grammar's follow-set and is
+/// deliberately narrower — a valid event has nothing after `THEN` but `END`.
+pub(crate) const EVENT_CLAUSE_KEYWORDS: &[KeywordId] = EVENT_SECTION;
+
 /// The keywords that end an event clause opened by `after`: the suffix of
-/// [`EVENT_SECTION`] past that clause, mirroring the grammar's event-body
+/// the event-section list past that clause, mirroring the grammar's event-body
 /// clause order (`event_body` in `grammar.pest`). `STATUS`, `REFINES` and
 /// `ANY` open the body before any of those keywords, so they are bounded by
-/// the whole list. Keeps the parser's error recovery on the one follow-set
+/// the whole list. Keeps the parser's error recovery — and the editor's
+/// move-a-misplaced-clause quick fix — on the one follow-set
 /// `site_terminators_match_grammar` pins to the grammar.
-pub(crate) fn event_clause_boundary(after: KeywordId) -> &'static [KeywordId] {
+pub fn event_clause_boundary(after: KeywordId) -> &'static [KeywordId] {
     match EVENT_SECTION.iter().position(|&k| k == after) {
         Some(index) => &EVENT_SECTION[index + 1..],
         None => EVENT_SECTION,
@@ -784,6 +794,8 @@ mod tests {
         for before in [Status, Refines, Any] {
             assert_eq!(event_clause_boundary(before), EVENT_SECTION, "{before:?}");
         }
+        // The wider set the THEN-body recovery uses is that same list.
+        assert_eq!(EVENT_CLAUSE_KEYWORDS, EVENT_SECTION);
     }
 
     #[test]

@@ -117,20 +117,23 @@ pub fn is_clause_boundary_keyword(word: &str) -> bool {
     rossi::keywords::is_clause_boundary(word)
 }
 
-/// Whether `line`'s first whitespace-delimited token is the keyword `id`,
-/// resolved case-insensitively through the canonical keyword table. A header
-/// line like `EVENT do-step` or `sees C1` matches on its leading keyword
-/// regardless of casing or what follows.
+/// The keyword `line` opens with, resolved case-insensitively through the
+/// canonical keyword table. A header line like `EVENT do-step` or `sees C1`
+/// yields its leading keyword regardless of casing or what follows.
 ///
 /// Uses the whole first token (not [`first_identifier_word`], which would strip
 /// a leading `@`): a labelled action such as `@end y := 0` must NOT be read as
 /// the `END` keyword.
-pub fn line_keyword_is(line: &str, id: rossi::keywords::KeywordId) -> bool {
+pub fn line_keyword(line: &str) -> Option<rossi::keywords::KeywordId> {
     line.split_whitespace()
         .next()
         .and_then(rossi::keywords::lookup)
         .map(|keyword| keyword.id)
-        == Some(id)
+}
+
+/// Whether `line` opens with the keyword `id`.
+pub fn line_keyword_is(line: &str, id: rossi::keywords::KeywordId) -> bool {
+    line_keyword(line) == Some(id)
 }
 
 /// Whether `line` begins a new structural region (clause, component, or event)

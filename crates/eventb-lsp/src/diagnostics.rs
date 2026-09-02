@@ -151,22 +151,18 @@ pub(crate) fn parse_error_to_diagnostic(error: &rossi::ParseError, text: &str) -
     use rossi::ParseError;
 
     // pest's multi-line dump is collapsed to a single line; located variants
-    // keep their own message; everything else uses the Display rendering. A
-    // misplaced assignment carries the EB026 code so the quick-fix provider can
-    // recognise it (other parse errors have no rule code).
-    let (code, message) = match error {
-        ParseError::PestError { message, .. } => (None, concise_pest_message(message)),
+    // keep their own message; everything else uses the Display rendering.
+    let message = match error {
+        ParseError::PestError { message, .. } => concise_pest_message(message),
         ParseError::RecoverableError { message, .. } | ParseError::ClauseError { message, .. } => {
-            (None, message.clone())
+            message.clone()
         }
-        ParseError::AssignmentInPredicate { .. } => (
-            Some(NumberOrString::String(
-                RuleId::AssignmentInPredicate.code().to_string(),
-            )),
-            error.to_string(),
-        ),
-        _ => (None, error.to_string()),
+        _ => error.to_string(),
     };
+    // A mistake the grammar names precisely carries its rule, which is what the
+    // quick-fix provider keys on; a plain syntax error has none.
+    let code =
+        RuleId::for_parse_error(error).map(|rule| NumberOrString::String(rule.code().to_string()));
 
     lsp_diagnostic(
         parse_error_range(error, text),
@@ -560,6 +556,52 @@ mod tests {
         assert!(diagnostic.message.starts_with("Syntax error:"));
         assert!(!diagnostic.message.contains("-->"));
         assert!(!diagnostic.message.contains('\n'));
+    }
+
+    #[test]
+    fn structural_parse_errors_carry_their_rule_and_underline_the_construct() {
+        // The range is what a quick fix acts on: the clause keyword for an
+        // empty clause, the label for a bare label, the whole clause for one
+        // written out of order. The wording itself is pinned where the errors
+        // are raised (`crates/rossi/tests/empty_clause_test.rs`).
+        for (text, code, range) in [
+            (
+                "MACHINE m\nVARIABLES\n    x\nEVENTS\n    EVENT e\n    WHERE\n    THEN\n        @act1 x ≔ 1\n    END\nEND\n",
+                "EB029",
+                (Position::new(5, 4), Position::new(5, 9)),
+            ),
+            (
+                "MACHINE m\nVARIABLES\n    x\nINVARIANTS\n    @inv1\nEND\n",
+                "EB029",
+                (Position::new(4, 4), Position::new(4, 9)),
+            ),
+            (
+                "MACHINE m\nVARIABLES\n    x\nEVENTS\n    EVENT e\n    THEN\n        @act1 x ≔ 1\n    WITH\n        @w y = 1\n    END\nEND\n",
+                "EB030",
+                (Position::new(7, 4), Position::new(8, 16)),
+            ),
+        ] {
+            let error = rossi::parse(text).expect_err("must fail strict parsing");
+            let diagnostic = parse_error_to_diagnostic(&error, text);
+            assert_eq!(code_of(&diagnostic), Some(code), "for:\n{text}");
+            assert_eq!(
+                (diagnostic.range.start, diagnostic.range.end),
+                range,
+                "for:\n{text}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_misplaced_clause_is_reported_once() {
+        // Recovery re-reads the event from text, and a clause written after
+        // THEN sits inside what would otherwise be read as the action list —
+        // reporting the same mistake again as two unparsable actions. The
+        // actions stop at the misplaced keyword, so only the real error stands.
+        let text = "MACHINE m\nVARIABLES\n    x\nEVENTS\n    EVENT e\n    THEN\n        @act1 x ≔ 1\n    WITH\n        @w y = 1\n    END\nEND\n";
+        let diagnostics = document_diagnostics(&doc_of(text));
+        assert_eq!(diagnostics.len(), 1, "{diagnostics:?}");
+        assert_eq!(code_of(&diagnostics[0]), Some("EB030"));
     }
 
     #[test]

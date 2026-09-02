@@ -535,6 +535,17 @@ fn test_add_missing_end_offered_for_eof_diagnostic() {
     );
 }
 
+/// The quick fix among `actions` whose title starts with `prefix`, if offered.
+fn action_titled<'a>(
+    actions: &'a [CodeActionOrCommand],
+    prefix: &str,
+) -> Option<&'a eventb_lsp::lsp_types::CodeAction> {
+    actions.iter().find_map(|a| match a {
+        CodeActionOrCommand::CodeAction(action) if action.title.starts_with(prefix) => Some(action),
+        _ => None,
+    })
+}
+
 /// Build a CodeActionParams carrying a single diagnostic with rule `code`
 /// whose range is `op_range` (the operator it underlines), the shape the
 /// diagnostics provider emits; the quick fixes read only the range and code.
@@ -547,16 +558,6 @@ fn diagnostic_params(uri: &str, op_range: Range, code: &str) -> CodeActionParams
         ..Default::default()
     }];
     params
-}
-
-/// The `Replace …` quick fix among `actions`, if offered.
-fn replace_fix(actions: &[CodeActionOrCommand]) -> Option<&eventb_lsp::lsp_types::CodeAction> {
-    actions.iter().find_map(|a| match a {
-        CodeActionOrCommand::CodeAction(action) if action.title.starts_with("Replace") => {
-            Some(action)
-        }
-        _ => None,
-    })
 }
 
 #[test]
@@ -573,7 +574,8 @@ fn eb026_offers_equality_swap_for_becomes_equal() {
         .provide_code_actions(&params, text, true)
         .unwrap_or_default();
 
-    let fix = replace_fix(&actions).expect("a Replace quick fix must be offered for EB026");
+    let fix =
+        action_titled(&actions, "Replace").expect("a Replace quick fix must be offered for EB026");
     assert_eq!(fix.title, "Replace `:=` with `=`");
     assert_eq!(fix.kind, Some(CodeActionKind::QUICKFIX));
     assert!(fix.diagnostics.is_some(), "fix attaches to the diagnostic");
@@ -622,7 +624,7 @@ fn eb026_offers_no_swap_for_becomes_such_that() {
         .unwrap_or_default();
 
     assert!(
-        replace_fix(&actions).is_none(),
+        action_titled(&actions, "Replace").is_none(),
         "no Replace quick fix for `:|`, got {actions:?}"
     );
 }
@@ -642,7 +644,8 @@ fn ascii_operator_advisory_offers_the_unicode_spelling() {
         .provide_code_actions(&params, text, true)
         .unwrap_or_default();
 
-    let fix = replace_fix(&actions).expect("a Replace quick fix must be offered for the advisory");
+    let fix = action_titled(&actions, "Replace")
+        .expect("a Replace quick fix must be offered for the advisory");
     assert_eq!(fix.title, "Replace `&` with `∧`");
     assert_eq!(fix.kind, Some(CodeActionKind::QUICKFIX));
     assert!(fix.diagnostics.is_some(), "fix attaches to the diagnostic");
@@ -669,7 +672,7 @@ fn ascii_operator_advisory_offers_nothing_for_a_stale_range() {
         .unwrap_or_default();
 
     assert!(
-        replace_fix(&actions).is_none(),
+        action_titled(&actions, "Replace").is_none(),
         "no Replace quick fix for a range that is not one operator token, got {actions:?}"
     );
 }
@@ -788,5 +791,145 @@ fn test_ascii_operators_in_comments_do_not_offer_conversion() {
     assert!(
         !offers_unicode_conversion,
         "ASCII operators inside comments must not trigger the conversion action"
+    );
+}
+
+#[test]
+fn eb029_offers_to_remove_an_empty_clause() {
+    // `WHERE` with no guards: deleting the header is the whole fix, and the
+    // keyword is alone on its line, so the line goes with it.
+    let provider = CodeActionProvider::new();
+    let text = "MACHINE m\nVARIABLES\n    x\nEVENTS\n    EVENT e\n    WHERE\n    THEN\n        @act1 x ≔ 1\n    END\nEND\n";
+    // The diagnostic underlines the clause keyword, as the provider emits it.
+    let keyword = Range {
+        start: Position::new(5, 4),
+        end: Position::new(5, 9),
+    };
+    let params = diagnostic_params("file:///m.eventb", keyword, "EB029");
+    let actions = provider
+        .provide_code_actions(&params, text, true)
+        .unwrap_or_default();
+
+    let fix = action_titled(&actions, "Remove empty")
+        .expect("a Remove quick fix must be offered for EB029");
+    assert_eq!(fix.title, "Remove empty WHERE");
+    assert_eq!(fix.kind, Some(CodeActionKind::QUICKFIX));
+    assert!(fix.diagnostics.is_some(), "fix attaches to the diagnostic");
+    let edit = &fix.edit.as_ref().unwrap().changes.as_ref().unwrap()
+        [&Url::parse("file:///m.eventb").unwrap()][0];
+    assert_eq!(edit.new_text, "");
+    assert_eq!(
+        edit.range,
+        Range {
+            start: Position::new(5, 0),
+            end: Position::new(6, 0),
+        },
+        "the whole line goes, not just the keyword"
+    );
+}
+
+#[test]
+fn eb029_offers_nothing_for_a_label_with_no_formula() {
+    // Same rule, but nothing to delete on the user's behalf: what belongs
+    // after `@inv1` is a predicate only they can write.
+    let provider = CodeActionProvider::new();
+    let text = "MACHINE m\nVARIABLES\n    x\nINVARIANTS\n    @inv1\nEND\n";
+    // The diagnostic underlines the label, not a clause keyword.
+    let label = Range {
+        start: Position::new(4, 4),
+        end: Position::new(4, 9),
+    };
+    let params = diagnostic_params("file:///m.eventb", label, "EB029");
+    let actions = provider
+        .provide_code_actions(&params, text, true)
+        .unwrap_or_default();
+
+    assert!(
+        action_titled(&actions, "Remove empty").is_none(),
+        "a bare label is not an empty clause: {actions:?}"
+    );
+}
+
+#[test]
+fn eb030_offers_to_move_the_clause_above_the_one_it_must_precede() {
+    let provider = CodeActionProvider::new();
+    let text = "MACHINE m\nVARIABLES\n    x\nEVENTS\n    EVENT e\n    THEN\n        @act1 x ≔ 1\n    WITH\n        @w y = 1\n    END\nEND\n";
+    // The diagnostic spans the whole misplaced clause, as the provider emits it.
+    let clause = Range {
+        start: Position::new(7, 4),
+        end: Position::new(8, 16),
+    };
+    let params = diagnostic_params("file:///m.eventb", clause, "EB030");
+    let actions = provider
+        .provide_code_actions(&params, text, true)
+        .unwrap_or_default();
+
+    let fix = action_titled(&actions, "Move").expect("a Move quick fix must be offered for EB030");
+    assert_eq!(fix.title, "Move WITH above THEN");
+    assert_eq!(fix.kind, Some(CodeActionKind::QUICKFIX));
+    let edits = &fix.edit.as_ref().unwrap().changes.as_ref().unwrap()
+        [&Url::parse("file:///m.eventb").unwrap()];
+    // Insert the clause above THEN, then delete it where it was written.
+    assert_eq!(edits.len(), 2, "{edits:?}");
+    assert_eq!(
+        edits[0].range,
+        Range {
+            start: Position::new(5, 0),
+            end: Position::new(5, 0),
+        }
+    );
+    assert_eq!(edits[0].new_text, "    WITH\n        @w y = 1\n");
+    assert_eq!(
+        edits[1].range,
+        Range {
+            start: Position::new(7, 0),
+            end: Position::new(9, 0),
+        }
+    );
+    assert_eq!(edits[1].new_text, "");
+}
+
+#[test]
+fn eb030_move_stays_inside_its_own_event() {
+    // `convergent EVENT b` hides the header keyword behind the inline status:
+    // the scan must still stop there (the previous event's `END` closes it)
+    // rather than targeting a clause of the event above.
+    let provider = CodeActionProvider::new();
+    let text = "MACHINE m\nVARIABLES\n    x\nEVENTS\n    EVENT a\n    THEN\n        @a1 x ≔ 1\n    END\n    convergent EVENT b\n    THEN\n        @b1 x ≔ 2\n    WITH\n        @w y = 1\n    END\nEND\n";
+    let clause = Range {
+        start: Position::new(11, 4),
+        end: Position::new(12, 16),
+    };
+    let params = diagnostic_params("file:///m.eventb", clause, "EB030");
+    let actions = provider
+        .provide_code_actions(&params, text, true)
+        .unwrap_or_default();
+    let fix = action_titled(&actions, "Move").expect("a Move quick fix must be offered");
+    let edits = &fix.edit.as_ref().unwrap().changes.as_ref().unwrap()
+        [&Url::parse("file:///m.eventb").unwrap()];
+    assert_eq!(
+        edits[0].range.start,
+        Position::new(9, 0),
+        "the clause moves above its own THEN, not the previous event's"
+    );
+}
+
+#[test]
+fn eb030_offers_nothing_when_the_clause_shares_its_last_line() {
+    // Whole lines move, so a clause that does not own its last line would
+    // drag the event's END along with it.
+    let provider = CodeActionProvider::new();
+    let text = "MACHINE m\nVARIABLES\n    x\nEVENTS\n    EVENT e\n    THEN\n        @act1 x ≔ 1\n    WITH @w y = 1 END\nEND\n";
+    let clause = Range {
+        start: Position::new(7, 4),
+        end: Position::new(7, 17),
+    };
+    let params = diagnostic_params("file:///m.eventb", clause, "EB030");
+    let actions = provider
+        .provide_code_actions(&params, text, true)
+        .unwrap_or_default();
+    assert!(
+        action_titled(&actions, "Move").is_none(),
+        "the END shares the line: {actions:?}"
     );
 }
