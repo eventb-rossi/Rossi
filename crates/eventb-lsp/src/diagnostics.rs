@@ -211,14 +211,14 @@ fn parse_error_range(error: &rossi::ParseError, text: &str) -> Range {
 /// These are exactly the checks that need no project, no cross-component
 /// resolution, and no type inference — duplicate identifiers (EB021) and
 /// labels (EB022) from the shared `rossi_build::duplicates` core (the same
-/// detection the SC build enforces), plus the shadowed-name lint (EB023)
-/// from `rossi_build::lint::run_component` — so they are safe to recompute
-/// on every keystroke alongside the parse errors. `rossi validate` runs the
-/// same two passes on loose `.eventb` text; this only maps their output into
-/// the protocol's shape. `text` is the source the components were parsed
-/// from, so the diagnostic spans index into it. The result is lazy so the
-/// sole caller can extend its diagnostics vector directly, without a
-/// throwaway intermediate `Vec`.
+/// detection the SC build enforces), plus the shadowed-name (EB023) and
+/// keyword-name (EB028) lints from `rossi_build::lint::run_component` — so
+/// they are safe to recompute on every keystroke alongside the parse errors.
+/// `rossi validate` runs the same two passes on loose `.eventb` text; this
+/// only maps their output into the protocol's shape. `text` is the source
+/// the components were parsed from, so the diagnostic spans index into it.
+/// The result is lazy so the sole caller can extend its diagnostics vector
+/// directly, without a throwaway intermediate `Vec`.
 pub(crate) fn lint_diagnostics<'a>(
     components: &'a [rossi::Component],
     text: &'a str,
@@ -676,7 +676,7 @@ mod tests {
         assert_eq!(d.range.end.character, 14);
     }
 
-    // --- single-component lints (EB021-023) ---------------------------------
+    // --- single-component lints (EB021-023, EB028) --------------------------
     //
     // These exercise the run_component pass surfaced through the LSP. The
     // snippets parse cleanly (strict `rossi::parse`), so every diagnostic comes
@@ -767,6 +767,22 @@ mod tests {
         assert_eq!(diags.len(), 1, "{diags:?}");
         assert_eq!(code_of(&diags[0]), Some("EB023"));
         assert_eq!(diags[0].severity, Some(DiagnosticSeverity::WARNING));
+    }
+
+    #[test]
+    fn keyword_name_is_eb028_warning() {
+        // `end` parses as a carrier set (the first item of a list is not
+        // keyword-guarded) but spells a structural keyword no textual
+        // notation can represent — a keyword name (EB028), reported as a
+        // Warning on the declaration.
+        let text = "CONTEXT c\nSETS\n    end\nAXIOMS\n    @axm1 1 = 1\nEND\n";
+        let diags = lint_for(text);
+        assert_eq!(diags.len(), 1, "{diags:?}");
+        assert_eq!(code_of(&diags[0]), Some("EB028"));
+        assert_eq!(diags[0].severity, Some(DiagnosticSeverity::WARNING));
+        assert_eq!(diags[0].range.start.line, 2);
+        assert_eq!(diags[0].range.start.character, 4);
+        assert_eq!(diags[0].range.end.character, 7);
     }
 
     #[test]
