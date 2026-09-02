@@ -282,13 +282,13 @@ fn fired_actions<'a>(
                 // whole action — the hiding step included — so an
                 // inference that adds nothing but still hides a source
                 // counts as fired.
-                let next = action.perform(&cur);
+                let next = action.perform(cur.clone());
                 let fired = !ProverSequent::ptr_eq(&next, &cur);
                 cur = next;
                 fired
             }
             _ => {
-                cur = action.perform(&cur);
+                cur = action.perform(cur);
                 false
             }
         };

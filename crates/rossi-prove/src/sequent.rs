@@ -7,7 +7,9 @@
 //! with no logical meaning), and a goal. Sequents are immutable and
 //! structurally shared; every mutator returns this very sequent when
 //! nothing changed, so [`ProverSequent::ptr_eq`] is the cheap "the
-//! rule did nothing" signal the proof builder keys on.
+//! rule did nothing" signal the proof builder keys on. Mutators take
+//! the sequent by value and edit it in place when no other handle
+//! holds it; clone first to keep the original.
 
 use std::collections::HashSet;
 use std::sync::Arc;
@@ -43,8 +45,9 @@ impl TypedIdent {
 /// A sequent and the sequents derived from it share their sets; a set
 /// is copied by the first insert or remove that changes it while
 /// shared. Sequents hold hundreds of hypotheses and a proof step
-/// touches one or two, so a step copies only the sets it changes, and
-/// [`OrderedPredSet::is`] tells a mutator which those were.
+/// touches one or two, so an edit copies only the sets it changes, and
+/// only while another sequent still holds them (see
+/// [`ProverSequent::edited`]).
 #[derive(Debug, Clone, Default)]
 struct OrderedPredSet(Arc<PredSetData>);
 
@@ -63,22 +66,27 @@ impl OrderedPredSet {
         set
     }
 
-    /// Appends `pred` unless already present.
-    fn insert(&mut self, pred: &Predicate) {
-        if !self.0.index.contains(pred) {
-            let data = Arc::make_mut(&mut self.0);
-            data.index.insert(pred.clone());
-            data.order.push(pred.clone());
+    /// Appends `pred` unless already present; whether the set changed.
+    fn insert(&mut self, pred: &Predicate) -> bool {
+        if self.0.index.contains(pred) {
+            return false;
         }
+        let data = Arc::make_mut(&mut self.0);
+        data.index.insert(pred.clone());
+        data.order.push(pred.clone());
+        true
     }
 
-    /// Removes `pred`, keeping the order of the rest.
-    fn remove(&mut self, pred: &Predicate) {
-        if self.0.index.contains(pred) {
-            let data = Arc::make_mut(&mut self.0);
-            data.index.remove(pred);
-            data.order.retain(|p| p != pred);
+    /// Removes `pred`, keeping the order of the rest; whether the set
+    /// changed.
+    fn remove(&mut self, pred: &Predicate) -> bool {
+        if !self.0.index.contains(pred) {
+            return false;
         }
+        let data = Arc::make_mut(&mut self.0);
+        data.index.remove(pred);
+        data.order.retain(|p| p != pred);
+        true
     }
 
     fn contains(&self, pred: &Predicate) -> bool {
@@ -87,12 +95,6 @@ impl OrderedPredSet {
 
     fn iter(&self) -> std::slice::Iter<'_, Predicate> {
         self.0.order.iter()
-    }
-
-    /// Whether this is still the very set `origin` is: nothing changed
-    /// it since it was cloned from there.
-    fn is(&self, origin: &OrderedPredSet) -> bool {
-        Arc::ptr_eq(&self.0, &origin.0)
     }
 }
 
@@ -190,7 +192,7 @@ fn has_predicate_variable(pred: &Predicate) -> bool {
 #[derive(Debug, Clone)]
 pub struct ProverSequent(Arc<SequentData>);
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 struct SequentData {
     type_env: SealedTypeEnvironment,
     global: OrderedPredSet,
@@ -198,6 +200,12 @@ struct SequentData {
     hidden: OrderedPredSet,
     selected: OrderedPredSet,
     goal: Predicate,
+}
+
+impl SequentData {
+    fn contains_hypothesis(&self, pred: &Predicate) -> bool {
+        self.local.contains(pred) || self.global.contains(pred)
+    }
 }
 
 impl ProverSequent {
@@ -263,7 +271,7 @@ impl ProverSequent {
 
     /// Whether `pred` is a hypothesis (global or local).
     pub fn contains_hypothesis(&self, pred: &Predicate) -> bool {
-        self.0.local.contains(pred) || self.0.global.contains(pred)
+        self.0.contains_hypothesis(pred)
     }
 
     /// Whether every given predicate is a hypothesis.
@@ -281,25 +289,29 @@ impl ProverSequent {
         self.0.hidden.contains(hyp)
     }
 
-    /// The incremental constructor behind every mutator: `None` keeps
-    /// this sequent's field.
-    fn derive(
-        &self,
-        type_env: Option<SealedTypeEnvironment>,
-        local: OrderedPredSet,
-        hidden: OrderedPredSet,
-        selected: OrderedPredSet,
-        goal: Option<Predicate>,
-    ) -> ProverSequent {
-        let data = &self.0;
-        ProverSequent(Arc::new(SequentData {
-            type_env: type_env.unwrap_or_else(|| data.type_env.clone()),
-            global: data.global.clone(),
-            local,
-            hidden,
-            selected,
-            goal: goal.unwrap_or_else(|| data.goal.clone()),
-        }))
+    /// Hands the sequent to `edit` and returns the result. A sequent
+    /// another handle still holds — one a proof tree node keeps — is
+    /// edited on a shallow copy and comes back as the very same
+    /// sequent unless `edit` reports a change, so
+    /// [`ProverSequent::ptr_eq`] keeps its meaning; a sequent this
+    /// handle owns alone — the intermediate result between two
+    /// hypothesis actions of one antecedent — has no observer and is
+    /// edited in place.
+    fn edited(self, edit: impl FnOnce(&mut SequentData) -> bool) -> ProverSequent {
+        match Arc::try_unwrap(self.0) {
+            Ok(mut data) => {
+                edit(&mut data);
+                ProverSequent(Arc::new(data))
+            }
+            Err(origin) => {
+                let mut data = (*origin).clone();
+                if edit(&mut data) {
+                    ProverSequent(Arc::new(data))
+                } else {
+                    ProverSequent(origin)
+                }
+            }
+        }
     }
 
     /// Adds fresh identifiers and hypotheses and/or replaces the goal —
@@ -335,105 +347,83 @@ impl ProverSequent {
             return None;
         }
 
-        let new_type_env = checker.env_changed.then_some(checker.env);
         let new_goal = new_goal.filter(|goal| **goal != self.0.goal).cloned();
 
-        let data = &self.0;
-        let mut local = data.local.clone();
-        let mut selected = data.selected.clone();
-        let mut hidden = data.hidden.clone();
-        for hyp in add_hyps {
-            if !self.contains_hypothesis(hyp) {
-                local.insert(hyp);
+        // Every chain of actions opens on a tree node's sequent, so
+        // this one is shared; the clone keeps it that way.
+        Some(self.clone().edited(|data| {
+            let mut changed = false;
+            if checker.env_changed {
+                data.type_env = checker.env;
+                changed = true;
             }
-            if !unsel_added.contains(hyp) {
-                selected.insert(hyp);
+            if let Some(goal) = new_goal {
+                data.goal = goal;
+                changed = true;
             }
-            hidden.remove(hyp);
-        }
-        if new_type_env.is_none()
-            && new_goal.is_none()
-            && local.is(&data.local)
-            && hidden.is(&data.hidden)
-            && selected.is(&data.selected)
-        {
-            return Some(self.clone());
-        }
-        Some(self.derive(new_type_env, local, hidden, selected, new_goal))
+            for hyp in add_hyps {
+                if !data.contains_hypothesis(hyp) {
+                    changed |= data.local.insert(hyp);
+                }
+                if !unsel_added.contains(hyp) {
+                    changed |= data.selected.insert(hyp);
+                }
+                changed |= data.hidden.remove(hyp);
+            }
+            changed
+        }))
     }
 
     /// Selects the given hypotheses, un-hiding them; predicates that
     /// are not hypotheses are ignored.
-    pub fn select_hypotheses(&self, to_select: &[Predicate]) -> ProverSequent {
-        let data = &self.0;
-        let mut selected = data.selected.clone();
-        let mut hidden = data.hidden.clone();
-        for hyp in to_select {
-            if self.contains_hypothesis(hyp) {
-                selected.insert(hyp);
-                hidden.remove(hyp);
+    pub fn select_hypotheses(self, to_select: &[Predicate]) -> ProverSequent {
+        self.edited(|data| {
+            let mut changed = false;
+            for hyp in to_select {
+                if data.contains_hypothesis(hyp) {
+                    changed |= data.selected.insert(hyp);
+                    changed |= data.hidden.remove(hyp);
+                }
             }
-        }
-        if hidden.is(&data.hidden) && selected.is(&data.selected) {
-            return self.clone();
-        }
-        self.derive(None, data.local.clone(), hidden, selected, None)
+            changed
+        })
     }
 
     /// Deselects the given hypotheses.
-    pub fn deselect_hypotheses(&self, to_deselect: &[Predicate]) -> ProverSequent {
-        let data = &self.0;
-        let mut selected = data.selected.clone();
-        for hyp in to_deselect {
-            selected.remove(hyp);
-        }
-        if selected.is(&data.selected) {
-            return self.clone();
-        }
-        self.derive(
-            None,
-            data.local.clone(),
-            data.hidden.clone(),
-            selected,
-            None,
-        )
+    pub fn deselect_hypotheses(self, to_deselect: &[Predicate]) -> ProverSequent {
+        self.edited(|data| {
+            let mut changed = false;
+            for hyp in to_deselect {
+                changed |= data.selected.remove(hyp);
+            }
+            changed
+        })
     }
 
     /// Hides the given hypotheses, deselecting them; predicates that
     /// are not hypotheses are ignored.
-    pub fn hide_hypotheses(&self, to_hide: &[Predicate]) -> ProverSequent {
-        let data = &self.0;
-        let mut selected = data.selected.clone();
-        let mut hidden = data.hidden.clone();
-        for hyp in to_hide {
-            if self.contains_hypothesis(hyp) {
-                hidden.insert(hyp);
-                selected.remove(hyp);
+    pub fn hide_hypotheses(self, to_hide: &[Predicate]) -> ProverSequent {
+        self.edited(|data| {
+            let mut changed = false;
+            for hyp in to_hide {
+                if data.contains_hypothesis(hyp) {
+                    changed |= data.hidden.insert(hyp);
+                    changed |= data.selected.remove(hyp);
+                }
             }
-        }
-        if hidden.is(&data.hidden) && selected.is(&data.selected) {
-            return self.clone();
-        }
-        self.derive(None, data.local.clone(), hidden, selected, None)
+            changed
+        })
     }
 
     /// Un-hides the given hypotheses.
-    pub fn show_hypotheses(&self, to_show: &[Predicate]) -> ProverSequent {
-        let data = &self.0;
-        let mut hidden = data.hidden.clone();
-        for hyp in to_show {
-            hidden.remove(hyp);
-        }
-        if hidden.is(&data.hidden) {
-            return self.clone();
-        }
-        self.derive(
-            None,
-            data.local.clone(),
-            hidden,
-            data.selected.clone(),
-            None,
-        )
+    pub fn show_hypotheses(self, to_show: &[Predicate]) -> ProverSequent {
+        self.edited(|data| {
+            let mut changed = false;
+            for hyp in to_show {
+                changed |= data.hidden.remove(hyp);
+            }
+            changed
+        })
     }
 
     /// Forward inference `hyps ⊢ ∃ added_idents · inf_hyps`: adds the
@@ -445,90 +435,83 @@ impl ProverSequent {
     /// selected, and hidden iff all source hypotheses are hidden — so
     /// with no source hypotheses they land hidden.
     pub fn perform_fwd_inf(
-        &self,
+        self,
         hyps: &[Predicate],
         added_idents: &[TypedIdent],
         inf_hyps: &[Predicate],
     ) -> ProverSequent {
         self.fwd_inf(hyps, added_idents, inf_hyps)
-            .unwrap_or_else(|| self.clone())
+            .unwrap_or_else(|unchanged| unchanged)
     }
 
     /// A rewrite hypothesis action: the forward inference followed by
     /// hiding `to_hide` (the rewritten-away hypotheses). An
     /// inapplicable inference skips the hiding too.
     pub fn perform_rewrite(
-        &self,
+        self,
         hyps: &[Predicate],
         added_idents: &[TypedIdent],
         inf_hyps: &[Predicate],
         to_hide: &[Predicate],
     ) -> ProverSequent {
         match self.fwd_inf(hyps, added_idents, inf_hyps) {
-            Some(next) => next.hide_hypotheses(to_hide),
-            None => self.clone(),
+            Ok(next) => next.hide_hypotheses(to_hide),
+            Err(unchanged) => unchanged,
         }
     }
 
-    /// The shared forward-inference core: `None` means inapplicable.
+    /// The shared forward-inference core: an inapplicable inference
+    /// hands the sequent back as the `Err`.
     fn fwd_inf(
-        &self,
+        self,
         hyps: &[Predicate],
         added_idents: &[TypedIdent],
         inf_hyps: &[Predicate],
-    ) -> Option<ProverSequent> {
+    ) -> Result<ProverSequent, ProverSequent> {
         let mut checker = TypeChecker::new(self.0.type_env.clone());
         checker.check_preds(hyps);
         checker.add_idents(added_idents);
         checker.check_preds(inf_hyps);
         if checker.rejected() {
-            return None;
+            return Err(self);
         }
         if inf_hyps.iter().any(has_predicate_variable) {
-            return None;
+            return Err(self);
         }
         if !self.contains_hypotheses(hyps) {
-            return None;
+            return Err(self);
         }
 
-        let new_type_env = checker.env_changed.then_some(checker.env);
+        let select_inf = hyps.iter().any(|hyp| self.0.selected.contains(hyp));
+        let hide_inf = !select_inf && hyps.iter().all(|hyp| self.0.hidden.contains(hyp));
 
-        let data = &self.0;
-        let select_inf = hyps.iter().any(|hyp| data.selected.contains(hyp));
-        let hide_inf = !select_inf && hyps.iter().all(|hyp| data.hidden.contains(hyp));
-
-        let mut local = data.local.clone();
-        let mut selected = data.selected.clone();
-        let mut hidden = data.hidden.clone();
-        let mut reselected = false;
-        for inf in inf_hyps {
-            if !self.contains_hypothesis(inf) {
-                local.insert(inf);
-                if select_inf {
-                    selected.insert(inf);
-                }
-                if hide_inf {
-                    hidden.insert(inf);
-                }
-            } else if select_inf && !data.hidden.contains(inf) {
-                // Re-selecting an already-present visible inferred
-                // hypothesis counts as a modification even when it was
-                // already selected — reproduced faithfully, since the
-                // identity signal feeds the proof builder's skip
-                // detection.
-                selected.insert(inf);
-                reselected = true;
+        Ok(self.edited(|data| {
+            let mut changed = false;
+            if checker.env_changed {
+                data.type_env = checker.env;
+                changed = true;
             }
-        }
-        if new_type_env.is_none()
-            && !reselected
-            && local.is(&data.local)
-            && hidden.is(&data.hidden)
-            && selected.is(&data.selected)
-        {
-            return Some(self.clone());
-        }
-        Some(self.derive(new_type_env, local, hidden, selected, None))
+            for inf in inf_hyps {
+                if !data.contains_hypothesis(inf) {
+                    changed |= data.local.insert(inf);
+                    if select_inf {
+                        changed |= data.selected.insert(inf);
+                    }
+                    if hide_inf {
+                        changed |= data.hidden.insert(inf);
+                    }
+                } else if select_inf && !data.hidden.contains(inf) {
+                    // Re-selecting an already-present visible inferred
+                    // hypothesis counts as a modification even when it
+                    // was already selected — reproduced faithfully,
+                    // since the identity signal feeds the proof
+                    // builder's skip detection.
+                    data.selected.insert(inf);
+                    changed = true;
+                }
+            }
+            changed
+        }))
     }
 }
 
@@ -580,46 +563,49 @@ mod tests {
 
         assert!(ProverSequent::ptr_eq(
             &seq,
-            &seq.select_hypotheses(std::slice::from_ref(&selected))
+            &seq.clone()
+                .select_hypotheses(std::slice::from_ref(&selected))
         ));
         // A non-hypothesis is ignored by select and hide.
         assert!(ProverSequent::ptr_eq(
             &seq,
-            &seq.select_hypotheses(std::slice::from_ref(&unknown))
+            &seq.clone()
+                .select_hypotheses(std::slice::from_ref(&unknown))
         ));
         assert!(ProverSequent::ptr_eq(
             &seq,
-            &seq.hide_hypotheses(std::slice::from_ref(&unknown))
+            &seq.clone().hide_hypotheses(std::slice::from_ref(&unknown))
         ));
         assert!(ProverSequent::ptr_eq(
             &seq,
-            &seq.deselect_hypotheses(std::slice::from_ref(&unknown))
+            &seq.clone()
+                .deselect_hypotheses(std::slice::from_ref(&unknown))
         ));
         assert!(ProverSequent::ptr_eq(
             &seq,
-            &seq.show_hypotheses(std::slice::from_ref(&selected))
+            &seq.clone().show_hypotheses(std::slice::from_ref(&selected))
         ));
     }
 
-    /// A step copies only the sets it changes: hiding an unselected
-    /// hypothesis leaves the selected set shared with the origin.
+    /// An edit copies a set only while another sequent shares it; the
+    /// next edit, on a sequent it owns alone, grows that copy in place.
     #[test]
-    fn mutators_copy_only_the_sets_they_change() {
+    fn edits_copy_shared_sets_once() {
         let seq = base();
         let env = seq.type_env().clone();
-        let unselected = pred(&env, "y=3");
         let selected = pred(&env, "x=1");
+        let hidden = pred(&env, "y=3");
 
-        let shown = seq.show_hypotheses(std::slice::from_ref(&unselected));
-        let next = shown.hide_hypotheses(std::slice::from_ref(&unselected));
-        assert!(next.is_hidden(&unselected));
-        assert!(next.0.selected.is(&shown.0.selected));
-        assert!(!next.0.hidden.is(&shown.0.hidden));
+        let shown = seq.clone().show_hypotheses(std::slice::from_ref(&hidden));
+        assert!(!shown.is_hidden(&hidden));
+        assert!(Arc::ptr_eq(&shown.0.selected.0, &seq.0.selected.0));
 
-        let next = seq.deselect_hypotheses(std::slice::from_ref(&selected));
+        let hidden_set = Arc::as_ptr(&shown.0.hidden.0);
+        let next = shown.hide_hypotheses(std::slice::from_ref(&selected));
+        assert!(next.is_hidden(&selected));
         assert!(!next.is_selected(&selected));
-        assert!(next.0.hidden.is(&seq.0.hidden));
-        assert!(next.0.local.is(&seq.0.local));
+        assert!(std::ptr::eq(Arc::as_ptr(&next.0.hidden.0), hidden_set));
+        assert!(Arc::ptr_eq(&next.0.local.0, &seq.0.local.0));
     }
 
     #[test]
@@ -629,15 +615,15 @@ mod tests {
         let h1 = pred(&env, "x=1");
         let h2 = pred(&env, "y=3");
 
-        let hidden = seq.hide_hypotheses(std::slice::from_ref(&h1));
+        let hidden = seq.clone().hide_hypotheses(std::slice::from_ref(&h1));
         assert!(hidden.is_hidden(&h1));
         assert!(!hidden.is_selected(&h1));
 
-        let selected = seq.select_hypotheses(std::slice::from_ref(&h2));
+        let selected = seq.clone().select_hypotheses(std::slice::from_ref(&h2));
         assert!(!selected.is_hidden(&h2));
         assert!(selected.is_selected(&h2));
 
-        let shown = seq.show_hypotheses(std::slice::from_ref(&h2));
+        let shown = seq.clone().show_hypotheses(std::slice::from_ref(&h2));
         assert!(!shown.is_hidden(&h2));
         assert!(!shown.is_selected(&h2));
     }
@@ -757,7 +743,7 @@ mod tests {
         let inf = pred(&env, "x+y=4");
 
         // Any selected source selects the inferred hypothesis.
-        let next = seq.perform_fwd_inf(
+        let next = seq.clone().perform_fwd_inf(
             std::slice::from_ref(&sel_src),
             &[],
             std::slice::from_ref(&inf),
@@ -766,7 +752,7 @@ mod tests {
         assert!(next.is_selected(&inf));
 
         // All-hidden sources hide the inferred hypothesis.
-        let next = seq.perform_fwd_inf(
+        let next = seq.clone().perform_fwd_inf(
             std::slice::from_ref(&hid_src),
             &[],
             std::slice::from_ref(&inf),
@@ -784,7 +770,7 @@ mod tests {
         let missing = pred(&env, "x=9");
 
         // Missing source hypothesis.
-        let out = seq.perform_fwd_inf(
+        let out = seq.clone().perform_fwd_inf(
             std::slice::from_ref(&missing),
             &[],
             std::slice::from_ref(&inf),
@@ -792,7 +778,7 @@ mod tests {
         assert!(ProverSequent::ptr_eq(&seq, &out));
 
         // Clashing introduced identifier.
-        let out = seq.perform_fwd_inf(
+        let out = seq.clone().perform_fwd_inf(
             &[],
             &[TypedIdent::new("x", Type::Int)],
             std::slice::from_ref(&inf),
@@ -807,7 +793,7 @@ mod tests {
         let src = pred(&env, "x=1");
         let inf = pred(&env, "1=x");
 
-        let next = seq.perform_rewrite(
+        let next = seq.clone().perform_rewrite(
             std::slice::from_ref(&src),
             &[],
             std::slice::from_ref(&inf),
@@ -819,7 +805,7 @@ mod tests {
 
         // An inapplicable inference skips the hiding too.
         let missing = pred(&env, "x=9");
-        let out = seq.perform_rewrite(
+        let out = seq.clone().perform_rewrite(
             std::slice::from_ref(&missing),
             &[],
             std::slice::from_ref(&inf),
