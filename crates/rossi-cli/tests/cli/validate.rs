@@ -1666,6 +1666,45 @@ fn validate_zip_missing_target_reports_eb003() {
 }
 
 #[test]
+fn validate_stdin_empty_clause_reports_eb029_at_the_keyword() {
+    // A structural mistake the grammar can name is reported as itself, at the
+    // construct that is wrong, rather than as the whole-file EB004 fallback
+    // anchored on the line the parser happened to reach.
+    let source = "MACHINE m\nVARIABLES\n    x\nEVENTS\n    EVENT e\n    WHERE\n    THEN\n        @act1 x ≔ 1\n    END\nEND\n";
+    let output = run_cli_with_stdin(&["validate", "--format", "json", "-"], source);
+    assert!(!output.status.success(), "expected non-zero exit for EB029");
+    let rows: serde_json::Value =
+        serde_json::from_slice(&output.stdout).expect("JSON output should be valid");
+    let row = rows
+        .as_array()
+        .expect("rows array")
+        .iter()
+        .find(|row| row["rule_id"] == "EB029")
+        .unwrap_or_else(|| panic!("expected an EB029 row: {rows}"));
+    assert_eq!(row["error"], "`WHERE` clause is empty");
+    assert_eq!(row["region"]["start_line"], 6);
+    assert_eq!(row["region"]["start_column"], 5);
+}
+
+#[test]
+fn validate_stdin_clause_out_of_order_reports_eb030() {
+    let source = "MACHINE m\nVARIABLES\n    x\nEVENTS\n    EVENT e\n    THEN\n        @act1 x ≔ 1\n    WITH\n        @w y = 1\n    END\nEND\n";
+    let output = run_cli_with_stdin(&["validate", "--format", "json", "-"], source);
+    assert!(!output.status.success(), "expected non-zero exit for EB030");
+    let rows: serde_json::Value =
+        serde_json::from_slice(&output.stdout).expect("JSON output should be valid");
+    let row = rows
+        .as_array()
+        .expect("rows array")
+        .iter()
+        .find(|row| row["rule_id"] == "EB030")
+        .unwrap_or_else(|| panic!("expected an EB030 row: {rows}"));
+    assert_eq!(row["error"], "`WITH` clause must come before `THEN`");
+    assert_eq!(row["region"]["start_line"], 8);
+    assert_eq!(row["region"]["start_column"], 5);
+}
+
+#[test]
 fn validate_stdin_camille_error_reports_eb004() {
     // Loose `.eventb` text that the Camille grammar rejects is tagged EB004
     // (whole-file Camille parse error), not EB005 (formula-level error).
