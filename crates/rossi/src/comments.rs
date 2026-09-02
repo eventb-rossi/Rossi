@@ -74,6 +74,14 @@ impl LexicalSpans {
         }
         out
     }
+
+    /// The comment and label spans merged into one sorted, disjoint list:
+    /// every byte a code rewrite must copy through untouched.
+    fn opaque_spans(&self) -> Vec<Span> {
+        let mut spans: Vec<Span> = self.comments.iter().chain(&self.labels).copied().collect();
+        spans.sort_by_key(|s| s.start);
+        spans
+    }
 }
 
 /// Lexically scan `source` for comments and labels.
@@ -189,18 +197,20 @@ pub fn comment_text(raw: &str) -> Option<String> {
     normalize_comment(inner)
 }
 
-/// Apply `f` to the code between comments, leaving comment text untouched.
+/// Apply `f` to the code between comments and labels, leaving comment text
+/// and label text untouched.
 ///
-/// The transformed code segments and the verbatim comments are reassembled
-/// in order. Used by rewrites that must never alter comment prose, e.g. the
-/// LSP's ASCII ⇄ Unicode operator conversion.
+/// The transformed code segments and the verbatim comments and labels are
+/// reassembled in order. Used by rewrites that must never alter comment
+/// prose or a label's spelling, e.g. the LSP's ASCII ⇄ Unicode operator
+/// conversion: `@inv1.1` and `@safety-END` are names, not a dot and a minus.
 pub fn map_code_segments(source: &str, f: impl Fn(&str) -> String) -> String {
     map_code_segments_in_range(source, 0, source.len(), f)
 }
 
 /// Like [`map_code_segments`] but transforms only the byte range
-/// `[start, end)` of `source`, using the comment spans of the **whole**
-/// `source`.
+/// `[start, end)` of `source`, using the comment and label spans of the
+/// **whole** `source`.
 ///
 /// Because comment extents come from the full text, a range that begins or
 /// ends inside a comment is still treated as comment text — essential when
@@ -214,8 +224,8 @@ pub fn map_code_segments_in_range(
 ) -> String {
     let mut out = String::with_capacity(end.saturating_sub(start));
     let mut pos = start;
-    for span in comment_spans(source) {
-        // Intersect this comment with the requested range.
+    for span in lexical_spans(source).opaque_spans() {
+        // Intersect this comment or label with the requested range.
         let c_lo = span.start.max(start);
         let c_hi = span.end.min(end);
         if c_lo >= c_hi {
@@ -348,6 +358,15 @@ mod tests {
         let src = "x <= 1 // keep <= as is\ny <= 2 /* and <= here */\n";
         let out = map_code_segments(src, |code| code.replace("<=", "≤"));
         assert_eq!(out, "x ≤ 1 // keep <= as is\ny ≤ 2 /* and <= here */\n");
+    }
+
+    #[test]
+    fn map_code_segments_leaves_labels_verbatim() {
+        // A label is a name: the `-` in `@safety-END` and the `.` in `@inv1.1`
+        // are label text, never the subtraction or dot operator.
+        let src = "@safety-END x - 1\n@inv1.1 y . z // a - b\n";
+        let out = map_code_segments(src, |code| code.replace('-', "−").replace('.', "·"));
+        assert_eq!(out, "@safety-END x − 1\n@inv1.1 y · z // a - b\n");
     }
 
     #[test]
