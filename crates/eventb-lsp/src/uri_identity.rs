@@ -6,8 +6,10 @@
 //! index that keys on the raw string then holds one file twice — which reads
 //! as two files declaring the same component, i.e. a phantom duplicate.
 //!
-//! Both workspace indexes resolve spellings through this table, so they agree
-//! on file identity as well as on file content.
+//! Both workspace indexes share one of these, so they agree on file identity
+//! as well as on file content. Note `DocumentManager` still canonicalizes
+//! paths of its own (`open_file_texts`, `open_document_by_path`); those key on
+//! `PathBuf` rather than on a URI and are not folded in here yet.
 
 use dashmap::DashMap;
 use tower_lsp::lsp_types::Url;
@@ -26,22 +28,55 @@ impl DocumentUris {
     /// nothing and keeps the syntactic key, which is still an improvement on
     /// the raw string.
     pub(crate) fn register(&self, uri: &str) {
-        let normalized = Self::normalized(uri);
-        if let Some(canonical) = Self::canonical(&normalized) {
-            self.aliases.insert(normalized, canonical);
+        if self.aliases.contains_key(uri) {
+            return;
         }
+        let normalized = Self::normalized(uri);
+        let Some(canonical) = Self::canonical(&normalized) else {
+            return;
+        };
+        // Alias the raw spelling too, so the common case — the client sends a
+        // byte-identical URI on every edit — resolves on a hash lookup rather
+        // than re-parsing the URL.
+        self.aliases.insert(uri.to_string(), canonical.clone());
+        self.aliases.insert(normalized, canonical);
     }
 
     /// The key `uri` is indexed under: its filesystem identity if one has been
-    /// resolved, otherwise its syntactic normalization. The latter is free —
-    /// parsing a URL already folds `.` segments and percent-encoding — so
-    /// spellings that differ only on paper agree without a syscall.
+    /// resolved, otherwise its syntactic normalization. Parsing a URL folds
+    /// `.` segments and percent-encoding, so spellings that differ only on
+    /// paper agree even without a syscall — but the raw spelling is tried
+    /// first, since this runs on the edit path and a registered document sends
+    /// the same bytes every time.
     pub(crate) fn key(&self, uri: &str) -> String {
+        if let Some(key) = self.aliases.get(uri) {
+            return key.value().clone();
+        }
         let normalized = Self::normalized(uri);
         self.aliases
             .get(&normalized)
             .map(|key| key.value().clone())
             .unwrap_or(normalized)
+    }
+
+    /// A URI's basename, for a message naming a file to the user. Falls back
+    /// to the whole URI when it names no file.
+    pub(crate) fn display_name(uri: &str) -> String {
+        Url::parse(uri)
+            .ok()
+            .as_ref()
+            .map(Self::display_name_of)
+            .unwrap_or_else(|| uri.to_string())
+    }
+
+    /// [`Self::display_name`] for a URL the caller already holds.
+    pub(crate) fn display_name_of(url: &Url) -> String {
+        url.to_file_path()
+            .ok()
+            .as_deref()
+            .and_then(std::path::Path::file_name)
+            .map(|name| name.to_string_lossy().into_owned())
+            .unwrap_or_else(|| url.to_string())
     }
 
     fn normalized(uri: &str) -> String {

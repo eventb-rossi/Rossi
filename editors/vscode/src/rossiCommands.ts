@@ -878,7 +878,7 @@ async function classifyInput(input: string): Promise<InputKind> {
     }
 
     const ext = path.extname(input).toLowerCase();
-    if (ext === '.eventb' || ext === '.txt') {
+    if (isEventBTextExtension(ext)) {
         return 'eventbFile';
     }
     if (ext === '.zip') {
@@ -907,12 +907,23 @@ async function validationTargetFor(input: string): Promise<ValidationTarget> {
     return { inputs: [input], cwd: path.dirname(input) };
 }
 
-/// Dot-named directories (`.rossi/rodin` Rodin workspaces, `.git`, Eclipse
-/// `.metadata`) hold generated or foreign files, never sources. The CLI and
-/// the language server both skip them, so scanning them here would hand
-/// `rossi validate` generated sources neither of those would ever look at.
+/**
+ * Dot-named directories (`.rossi/rodin` Rodin workspaces, `.git`, Eclipse
+ * `.metadata`) hold generated or foreign files, never sources. The CLI and
+ * the language server both skip them, so scanning them here would hand
+ * `rossi validate` generated sources neither of those would ever look at.
+ */
 function isGeneratedDirectory(name: string): boolean {
     return name.startsWith('.');
+}
+
+/**
+ * Event-B text the CLI accepts from a directory scan. Deliberately wider than
+ * the `.eventb` the language server indexes: `rossi validate` and `rossi fmt`
+ * take a `.txt` too.
+ */
+function isEventBTextExtension(ext: string): boolean {
+    return ext === '.eventb' || ext === '.txt';
 }
 
 async function scanDirectory(dir: string): Promise<{ hasEventB: boolean; hasRodinXml: boolean }> {
@@ -929,7 +940,7 @@ async function scanDirectory(dir: string): Promise<{ hasEventB: boolean; hasRodi
             result.hasRodinXml ||= child.hasRodinXml;
         } else if (entry.isFile()) {
             const ext = path.extname(entry.name).toLowerCase();
-            result.hasEventB ||= ext === '.eventb' || ext === '.txt';
+            result.hasEventB ||= isEventBTextExtension(ext);
             result.hasRodinXml ||= ext === '.buc' || ext === '.bum';
         }
     }
@@ -948,7 +959,7 @@ async function collectEventBTextFiles(dir: string): Promise<string[]> {
             files.push(...await collectEventBTextFiles(entryPath));
         } else if (entry.isFile()) {
             const ext = path.extname(entry.name).toLowerCase();
-            if (ext === '.eventb' || ext === '.txt') {
+            if (isEventBTextExtension(ext)) {
                 files.push(entryPath);
             }
         }

@@ -17,20 +17,23 @@ fn is_hidden_name(name: &OsStr) -> bool {
     name.to_str().is_some_and(|name| name.starts_with('.'))
 }
 
-/// A directory entry for a dot-named directory, which holds generated or
-/// foreign files, never Event-B sources.
-pub fn is_hidden_dir(entry: &walkdir::DirEntry) -> bool {
+/// A directory entry to skip: a dot-named directory.
+fn is_hidden_dir(entry: &walkdir::DirEntry) -> bool {
     entry.file_type().is_dir() && is_hidden_name(entry.file_name())
 }
 
-/// The extension every Event-B source file carries. Exposed so the consumers
-/// that must agree on it — the LSP's workspace scan and its watcher glob, the
-/// Rodin build — spell it once rather than each carrying a literal.
+/// The extension every Event-B source file carries. Exposed for the client
+/// watcher glob (`**/*.eventb`), the one consumer that needs the bare
+/// extension rather than [`is_source_file`].
 pub const SOURCE_EXTENSION: &str = "eventb";
 
 /// Whether `path` names an Event-B source file. The extension half of what
 /// [`source_walk`] yields, which that walk deliberately leaves to its callers
 /// so they can pair it with their own containment rule.
+///
+/// Only `.eventb`: `.txt` is too generic to pick up from a directory — a
+/// `README.txt` is not a component — though the CLI still validates a `.txt`
+/// a user names explicitly.
 pub fn is_source_file(path: &Path) -> bool {
     path.extension().and_then(OsStr::to_str) == Some(SOURCE_EXTENSION)
 }

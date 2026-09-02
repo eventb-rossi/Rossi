@@ -385,46 +385,39 @@ pub(crate) fn cross_reference_diagnostics(
 }
 
 /// Duplicate-component diagnostics (EB019): a component name declared more
-/// than once. `declarations(name)` returns one file identity per declaration,
-/// grouped by file, so the two shapes are distinguishable — several
-/// declarations in one (e.g. `import --merge`) file, or one apiece across
-/// several files. Identities, not basenames: two directories may each hold an
-/// `m.eventb`, and collapsing those would report a cross-file duplicate as a
-/// within-file one. Queried per open-document component, so no whole-workspace
-/// map is built per publish. The caller gates on a scanned workspace, since
+/// than once. `declarations(name)` answers as
+/// [`crate::cross_references::CrossReferenceManager::component_declarations`]
+/// does — each declaring file with its declaration count — which is what
+/// separates several declarations in one (e.g. `import --merge`) file from one
+/// apiece across several files. The caller gates on a scanned workspace, since
 /// cross-file duplicates aren't observable from a single file. Anchored on the
 /// component name; an Error, and worded to match `rossi validate`.
 pub(crate) fn duplicate_component_diagnostics(
     components: &[rossi::Component],
-    declarations: impl Fn(&str) -> Vec<String>,
+    declarations: impl Fn(&str) -> Vec<(String, usize)>,
     text: &str,
 ) -> Vec<Diagnostic> {
     let mut out = Vec::new();
     for component in components {
         let name = component.name();
         let files = declarations(name);
-        if files.len() < 2 {
+        if files.iter().map(|(_, count)| count).sum::<usize>() < 2 {
             continue;
         }
-        // Entries arrive grouped by file, so consecutive dedup is enough to
-        // recover the distinct ones.
-        let mut distinct = files.clone();
-        distinct.dedup();
-        let message = if let [file] = distinct.as_slice() {
-            format!(
-                "component `{name}` is defined {} times in {}",
-                files.len(),
-                crate::cross_references::display_name(file)
-            )
-        } else {
-            format!(
+        let display = |uri: &String| crate::uri_identity::DocumentUris::display_name(uri);
+        let message = match files.as_slice() {
+            [(file, count)] => format!(
+                "component `{name}` is defined {count} times in {}",
+                display(file)
+            ),
+            _ => format!(
                 "component `{name}` is defined in multiple files: {}",
-                distinct
+                files
                     .iter()
-                    .map(|uri| crate::cross_references::display_name(uri))
+                    .map(|(uri, _)| display(uri))
                     .collect::<Vec<_>>()
                     .join(", ")
-            )
+            ),
         };
         out.push(lsp_diagnostic(
             name_range(component, text),
@@ -850,7 +843,7 @@ mod tests {
         let text = "CONTEXT c\nEND\n";
         let declarations = |n: &str| {
             if n == "c" {
-                vec!["merged.eventb".to_string(), "merged.eventb".to_string()]
+                vec![("merged.eventb".to_string(), 2)]
             } else {
                 vec![]
             }
@@ -872,8 +865,8 @@ mod tests {
         let declarations = |n: &str| {
             if n == "c" {
                 vec![
-                    "file:///one/m.eventb".to_string(),
-                    "file:///two/m.eventb".to_string(),
+                    ("file:///one/m.eventb".to_string(), 1),
+                    ("file:///two/m.eventb".to_string(), 1),
                 ]
             } else {
                 vec![]
@@ -892,7 +885,7 @@ mod tests {
         let text = "CONTEXT c\nEND\n";
         let files = |n: &str| {
             if n == "c" {
-                vec!["a.eventb".to_string(), "b.eventb".to_string()]
+                vec![("a.eventb".to_string(), 1), ("b.eventb".to_string(), 1)]
             } else {
                 vec![]
             }
@@ -912,7 +905,7 @@ mod tests {
     fn unique_component_has_no_eb019() {
         let text = "CONTEXT c\nEND\n";
         // Defined in exactly one file — not a cross-file duplicate.
-        let files = |_n: &str| vec!["c.eventb".to_string()];
+        let files = |_n: &str| vec![("c.eventb".to_string(), 1)];
         assert!(duplicate_component_diagnostics(&parse_one(text), files, text).is_empty());
     }
 }
