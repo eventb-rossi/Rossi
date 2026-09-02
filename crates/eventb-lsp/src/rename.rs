@@ -57,6 +57,15 @@ impl RenameProvider {
     /// Prepare for rename: validate the position and return the range of the symbol
     pub fn prepare_rename(&self, params: &TextDocumentPositionParams, text: &str) -> Option<Range> {
         let position = params.position;
+        let uri = &params.text_document.uri;
+
+        // Read the same snapshot [`Self::rename`] does, so the range offered
+        // here and the edits performed there index one consistent text.
+        let cursor = self
+            .document_manager
+            .as_ref()
+            .and_then(|dm| dm.parse_result(uri));
+        let text = cursor.as_deref().map_or(text, |parsed| parsed.text());
 
         // Get the identifier at the cursor position
         let (identifier, range) = get_identifier_and_range_at_position(text, position)?;
@@ -66,13 +75,28 @@ impl RenameProvider {
             identifier, position
         );
 
-        // Structural component names are labels and may spell a language
-        // keyword. Ordinary keyword tokens still cannot be renamed.
+        // A declared name may spell a language keyword: Rodin's object model
+        // allows it, so imported models contain them and EB028 asks the user
+        // to rename them. Only a real keyword token has no name to rename, so
+        // decide on the cursor's offset rather than the word's spelling.
         if is_keyword(&identifier) {
             let masked = rossi::comments::mask_comments_chars(text);
-            if resolve_component_at_position(text, &masked, position, &identifier).is_none() {
-                debug!("Cannot rename keyword '{}'", identifier);
-                return None;
+            let is_component =
+                resolve_component_at_position(text, &masked, position, &identifier).is_some();
+            if !is_component {
+                let owned;
+                let components: &[Component] = match cursor.as_deref() {
+                    Some(parsed) => parsed.components(),
+                    None => {
+                        owned = parse_all(text);
+                        &owned
+                    }
+                };
+                let offset = position_to_offset(text, position)?;
+                if !renameable_name_at_offset(components, offset, &identifier) {
+                    debug!("Cannot rename keyword '{}'", identifier);
+                    return None;
+                }
             }
         }
 
@@ -214,6 +238,51 @@ fn is_valid_new_name(s: &str, is_component: bool) -> bool {
     } else {
         rossi::names::is_valid_math_identifier(s)
     }
+}
+
+/// Whether `offset` sits on an occurrence of `name` that rename can rewrite:
+/// a declaration (carrier set, constant, variable, event, event parameter, or
+/// the component's own name) or a formula occurrence of one. Component names
+/// are covered by [`resolve_component_at_position`], which also reaches
+/// dependency clauses, but a component whose header the cursor is on resolves
+/// here too.
+///
+/// Spans, not spellings: a name spelled like a keyword is renameable at its
+/// own declaration while the keyword token of the same spelling elsewhere in
+/// the file is not. [`Span::contains`] is half-open and LSP treats the caret
+/// immediately after a name as targeting it, so the trailing edge counts.
+fn renameable_name_at_offset(components: &[Component], offset: usize, name: &str) -> bool {
+    let hit = |element: &rossi::NamedElement| {
+        element.name == name && element.span.is_some_and(|span| covers(span, offset))
+    };
+    let named = |element_name: &str, span: Option<Span>| {
+        element_name == name && span.is_some_and(|span| covers(span, offset))
+    };
+    components.iter().any(|component| {
+        let declared = match component {
+            Component::Context(c) => {
+                named(&c.name, c.name_span)
+                    || c.sets.iter().any(&hit)
+                    || c.constants.iter().any(&hit)
+            }
+            Component::Machine(m) => {
+                named(&m.name, m.name_span)
+                    || m.variables.iter().any(&hit)
+                    || m.events.iter().any(|event| {
+                        named(&event.name, event.name_span) || event.parameters.iter().any(&hit)
+                    })
+            }
+        };
+        declared
+            || formula_walk::collect_all_occurrences(component)
+                .iter()
+                .any(|occurrence| occurrence.name == name && covers(occurrence.span, offset))
+    })
+}
+
+/// Whether `span` covers `offset`, counting the trailing edge.
+fn covers(span: Span, offset: usize) -> bool {
+    span.contains(offset) || span.end == offset
 }
 
 /// Check if a string is reserved vocabulary that cannot name an identifier:
@@ -612,6 +681,86 @@ END
 
         // Should have 3 edits (declaration + 2 axiom references)
         assert_eq!(text_edits.len(), 3);
+    }
+
+    /// A context whose carrier set, and a machine whose variable, event and
+    /// parameter, are all spelled like structural keywords — exactly what
+    /// EB028 flags and asks the user to rename.
+    const KEYWORD_CONTEXT: &str = "CONTEXT c\nSETS\n    end\nAXIOMS\n    @axm1 end ≠ ∅\nEND\n";
+
+    #[test]
+    fn prepare_rename_allows_a_keyword_spelled_declaration() {
+        // EB028 tells the user to rename a declared name that spells a
+        // keyword; prepare_rename must let them start. The carrier set `end`
+        // is on line 2, columns 4..7.
+        let provider = RenameProvider::new();
+        let params = make_position_params(2, 4, make_uri());
+        assert_eq!(
+            provider.prepare_rename(&params, KEYWORD_CONTEXT),
+            Some(Range::new(Position::new(2, 4), Position::new(2, 7)))
+        );
+
+        // And the rename itself goes through, declaration and use alike.
+        let params = make_rename_params(2, 4, make_uri(), "finish".to_string());
+        let edits = provider
+            .rename(&params, KEYWORD_CONTEXT)
+            .expect("keyword-spelled set rename")
+            .changes
+            .unwrap()
+            .remove(&make_uri())
+            .unwrap();
+        assert_eq!(
+            apply(KEYWORD_CONTEXT, &edits),
+            "CONTEXT c\nSETS\n    finish\nAXIOMS\n    @axm1 finish ≠ ∅\nEND\n"
+        );
+    }
+
+    #[test]
+    fn prepare_rename_allows_a_keyword_spelled_reference() {
+        // The rename may be started from a use, not just the declaration:
+        // `end` inside the axiom on line 4, columns 10..13.
+        let provider = RenameProvider::new();
+        let params = make_position_params(4, 10, make_uri());
+        assert_eq!(
+            provider.prepare_rename(&params, KEYWORD_CONTEXT),
+            Some(Range::new(Position::new(4, 10), Position::new(4, 13)))
+        );
+    }
+
+    #[test]
+    fn prepare_rename_allows_keyword_spelled_machine_names() {
+        // `status` is a legal variable and `then` a legal event name in
+        // rossi; both are refused by the spelling-based `is_keyword`, so the
+        // offset check is what admits them.
+        let source = "MACHINE m\nVARIABLES\n    status\nINVARIANTS\n    @inv1 status ∈ ℕ\nEVENTS\n    EVENT then\n    ANY\n        with\n    WHERE\n        @grd1 with ∈ ℕ\n    THEN\n        @act1 status ≔ with\n    END\nEND\n";
+        let provider = RenameProvider::new();
+        for (line, character, len) in [(2, 4, 6), (6, 10, 4), (8, 8, 4)] {
+            let params = make_position_params(line, character, make_uri());
+            assert_eq!(
+                provider.prepare_rename(&params, source),
+                Some(Range::new(
+                    Position::new(line, character),
+                    Position::new(line, character + len)
+                )),
+                "line {line}"
+            );
+        }
+    }
+
+    #[test]
+    fn prepare_rename_still_refuses_a_real_keyword() {
+        // The offset decides, not the spelling: in the very file that
+        // declares a set named `end`, the SETS header and the closing END
+        // token are keyword tokens with no name behind them.
+        let provider = RenameProvider::new();
+        for (line, character) in [(1, 0), (5, 0)] {
+            let params = make_position_params(line, character, make_uri());
+            assert_eq!(
+                provider.prepare_rename(&params, KEYWORD_CONTEXT),
+                None,
+                "line {line}"
+            );
+        }
     }
 
     #[test]
