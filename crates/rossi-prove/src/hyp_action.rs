@@ -46,7 +46,7 @@ pub enum HypAction {
 impl HypAction {
     /// Applies this action to `seq`. Inapplicable actions return the
     /// sequent unchanged.
-    pub(crate) fn perform(&self, seq: &ProverSequent) -> ProverSequent {
+    pub(crate) fn perform(&self, seq: ProverSequent) -> ProverSequent {
         match self {
             HypAction::Select(hyps) => seq.select_hypotheses(hyps),
             HypAction::Deselect(hyps) => seq.deselect_hypotheses(hyps),

@@ -50,7 +50,7 @@ impl Antecedent {
             Some(new_goal),
         )?;
         for action in &self.hyp_actions {
-            result = action.perform(&result);
+            result = action.perform(result);
         }
         Some(result)
     }
