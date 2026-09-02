@@ -581,7 +581,8 @@ standalone_action = {
 }
 
 labeled_action = {
-    label? ~ action
+    label ~ (action | missing_formula)
+  | action
 }
 
 // Bound the action list with `event_section_kw` (which includes `kw_end`): an
@@ -626,21 +627,55 @@ context_clause_constants = {
 label_text = @{ (!WHITESPACE ~ ANY)+ }
 label = ${ "@" ~ label_text }
 
+// ==========================
+// Error productions
+// ==========================
+//
+// Zero-width markers that match where a clause body or a formula should have
+// been. They exist so the AST builder can report the construct that is wrong —
+// the clause keyword, the label — instead of pest reporting the token it
+// reached next, which for a keyword-permissive `identifier` is a line or two
+// later.
+//
+// Every marker is the last alternative of its choice, so it is reached only
+// where the real production already fails and no accepted input changes
+// meaning. That is why only the clauses holding predicates and actions carry
+// one: a predicate needs an operator and an action an assignment, so neither
+// can swallow the keyword that follows, whereas a bare `identifier` is a
+// complete item of ANY/VARIABLES/SETS/CONSTANTS and a complete VARIANT
+// expression. A declared name there may legitimately spell a keyword, which
+// rule EB028 warns about rather than rejecting; SEES/EXTENDS/REFINES take
+// component *references*, where an empty clause reads the next section
+// keyword as a target name — a separate gap, not one EB028 speaks to.
+//
+// One marker serves all three scopes: a clause body is missing exactly when
+// the keyword opening some section stands where it should be, and which
+// section that keyword belongs to says nothing more.
+section_kw = _{ context_section_kw | machine_section_kw | event_section_kw }
+empty_clause = { &section_kw }
+
+// A labeled predicate or action runs until the next label or the keyword that
+// opens the next section, so that is where its formula is missing.
+missing_formula = { &(label | section_kw | EOI) }
+
 // Accepts both orderings: "@label theorem pred" and "theorem @label pred"
 // as well as "@label pred", "theorem pred", and bare "pred".
+// A label commits the item: once one is written a formula must follow, so a
+// missing one is reported at the label instead of swallowing the next keyword.
 labeled_predicate = {
-    (kw_theorem ~ label | label ~ kw_theorem?)? ~ predicate
+    (kw_theorem ~ label | label ~ kw_theorem?) ~ (predicate | missing_formula)
+  | predicate
 }
 
 context_clause_axioms = {
-    kw_axioms ~ labeled_predicate ~ (!context_section_kw ~ labeled_predicate)*
+    kw_axioms ~ (labeled_predicate ~ (!context_section_kw ~ labeled_predicate)* | empty_clause)
 }
 
 // A THEOREMS section is sugar for theorem-flagged axioms: the parser lowers each
 // member into `Context.axioms` with `is_theorem = true` (Rodin models a theorem as
 // a boolean attribute on an axiom, not as a separate container).
 context_clause_theorems = {
-    kw_theorems ~ labeled_predicate ~ (!context_section_kw ~ labeled_predicate)*
+    kw_theorems ~ (labeled_predicate ~ (!context_section_kw ~ labeled_predicate)* | empty_clause)
 }
 
 context_body = {
@@ -674,14 +709,14 @@ machine_clause_variables = {
 }
 
 machine_clause_invariants = {
-    kw_invariants ~ labeled_predicate ~ (!machine_section_kw ~ labeled_predicate)*
+    kw_invariants ~ (labeled_predicate ~ (!machine_section_kw ~ labeled_predicate)* | empty_clause)
 }
 
 // A THEOREMS section is sugar for theorem-flagged invariants: the parser lowers each
 // member into `Machine.invariants` with `is_theorem = true` (Rodin models a theorem
 // as a boolean attribute on an invariant, not as a separate container).
 machine_clause_theorems = {
-    kw_theorems ~ labeled_predicate ~ (!machine_section_kw ~ labeled_predicate)*
+    kw_theorems ~ (labeled_predicate ~ (!machine_section_kw ~ labeled_predicate)* | empty_clause)
 }
 
 // The first variant may be unlabeled (default label); every further one
@@ -718,19 +753,19 @@ event_any = {
 }
 
 event_where = {
-    (kw_where | kw_when) ~ labeled_predicate ~ (labeled_predicate)*
+    (kw_where | kw_when) ~ (labeled_predicate+ | empty_clause)
 }
 
 event_with = {
-    kw_with ~ labeled_predicate+
+    kw_with ~ (labeled_predicate+ | empty_clause)
 }
 
 event_witness = {
-    kw_witness ~ labeled_predicate+
+    kw_witness ~ (labeled_predicate+ | empty_clause)
 }
 
 event_then = {
-    (kw_then | kw_begin) ~ action_list
+    (kw_then | kw_begin) ~ (action_list | empty_clause)
 }
 
 event_body = {
@@ -755,7 +790,7 @@ event = {
 }
 
 initialisation_event = {
-    kw_event ~ kw_initialisation ~ (kw_extends ~ kw_initialisation)? ~ (kw_then ~ action_list)? ~ kw_end
+    kw_event ~ kw_initialisation ~ (kw_extends ~ kw_initialisation)? ~ (kw_then ~ (action_list | empty_clause))? ~ kw_end
 }
 
 machine_clause_events = {

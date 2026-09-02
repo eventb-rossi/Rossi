@@ -426,6 +426,13 @@ fn expected_class(rule: Rule) -> ExpectedClass {
 /// returning each surviving rule with its term.
 ///
 /// A category word replaces the rules it stands for when they would otherwise
+/// Whether a rule is one of the grammar's error productions — a zero-width
+/// marker that locates a missing clause body or formula. Each matches where
+/// nothing can be written, so neither is ever something the user could type.
+fn is_error_production(rule: Rule) -> bool {
+    matches!(rule, Rule::empty_clause | Rule::missing_formula)
+}
+
 /// flood the list: two or more members of one class, or a composite rule with
 /// no spelling of its own. Everything else — keywords, brackets, separators, a
 /// lone operator — survives as before, because a short concrete list is the
@@ -457,6 +464,9 @@ pub(crate) fn summarize_expected(rules: &mut Vec<Rule>) -> Vec<(Rule, String)> {
 
     let mut terms: Vec<(Rule, String)> = Vec::new();
     rules.retain(|&rule| {
+        if is_error_production(rule) {
+            return false;
+        }
         let class = expected_class(rule);
         let term = match class.word() {
             Some(word) if flooded.contains(&word) => word.to_owned(),
@@ -798,6 +808,56 @@ fn validate_unique_clause(
     Ok(())
 }
 
+/// Reject a clause whose body is missing — `WHERE` with no guards,
+/// `INVARIANTS` with no predicates — locating it at the clause keyword.
+///
+/// The grammar matches a zero-width marker (`empty_event_clause` &c.) where
+/// the body should be, so the clause is named as written: an alias reports its
+/// canonical spelling (`WHEN` → `WHERE`). Without the marker the parser takes
+/// the keyword that follows as the clause's first item (an `identifier` may
+/// spell a keyword) and fails a line or two further on.
+fn reject_empty_clause(pair: &pest::iterators::Pair<Rule>) -> Result<(), ParseError> {
+    let mut previous = None;
+    for child in pair.clone().into_inner() {
+        if child.as_rule() == Rule::empty_clause {
+            // Every marker stands where the clause body should be, so the pair
+            // right before it is that clause's keyword — for INITIALISATION,
+            // the `THEN` rather than the `EVENT`.
+            let keyword: pest::iterators::Pair<Rule> =
+                previous.expect("an empty-clause marker follows its clause keyword");
+            let spelling = rule_to_keyword(keyword.as_rule())
+                .map(crate::keywords::spell)
+                .expect("a clause keyword is in the keyword table");
+            let span = keyword.as_span();
+            let (line, column) = span.start_pos().line_col();
+            return Err(ParseError::EmptyClause {
+                clause: spelling.to_string(),
+                line,
+                column,
+                span: Some(Span::from_pest(span)),
+            });
+        }
+        previous = Some(child);
+    }
+    Ok(())
+}
+
+/// The error for a labeled item whose formula is missing, located at the label.
+fn missing_formula_error(
+    label: &pest::iterators::Pair<Rule>,
+    expected: &'static str,
+) -> ParseError {
+    let span = label.as_span();
+    let (line, column) = span.start_pos().line_col();
+    ParseError::MissingFormula {
+        label: label.as_str().to_string(),
+        expected,
+        line,
+        column,
+        span: Some(Span::from_pest(span)),
+    }
+}
+
 /// A refines target as a named element carrying its source span.
 fn named_target(pair: &pest::iterators::Pair<Rule>) -> NamedElement {
     NamedElement {
@@ -1002,6 +1062,7 @@ fn parse_context(pair: pest::iterators::Pair<Rule>) -> Result<Component, ParseEr
                 &mut seen_clauses,
                 context_clause_keyword,
             )?;
+            reject_empty_clause(&pair)?;
 
             // Record the clause's source region (header keyword through its last
             // member) so structural consumers can fold it without line scanning.
@@ -1094,6 +1155,7 @@ fn parse_machine(pair: pest::iterators::Pair<Rule>) -> Result<Component, ParseEr
                 &mut seen_clauses,
                 machine_clause_keyword,
             )?;
+            reject_empty_clause(&pair)?;
 
             // Record the clause's source region (header keyword through its last
             // member) so structural consumers can fold it without line scanning.
@@ -1184,20 +1246,25 @@ fn parse_labeled_predicate(
 ) -> Result<LabeledPredicate, ParseError> {
     let span = Span::from_pest(pair.as_span());
     let inner = pair.into_inner();
-    let mut label = None;
+    let mut label_pair = None;
     let mut is_theorem = false;
     let mut predicate = None;
 
     for p in inner {
         match p.as_rule() {
             Rule::label => {
-                label = extract_label(p);
+                label_pair = Some(p);
             }
             Rule::kw_theorem => {
                 is_theorem = true;
             }
             Rule::predicate => {
                 predicate = Some(parse_predicate(p)?);
+            }
+            // The label is written but its predicate is not.
+            Rule::missing_formula => {
+                let label = label_pair.as_ref().expect("a marker follows its label");
+                return Err(missing_formula_error(label, "a predicate"));
             }
             _ => {
                 return Err(ParseError::UnexpectedRule {
@@ -1210,7 +1277,7 @@ fn parse_labeled_predicate(
 
     let predicate = predicate.ok_or(ParseError::MissingPredicate)?;
     Ok(LabeledPredicate {
-        label,
+        label: label_pair.and_then(extract_label),
         is_theorem,
         predicate,
         span: Some(span),
@@ -1287,6 +1354,7 @@ fn parse_event(pair: pest::iterators::Pair<Rule>) -> Result<Event, ParseError> {
         };
 
         for pair in pairs_to_process {
+            reject_empty_clause(&pair)?;
             match pair.as_rule() {
                 Rule::event_status => {
                     for status_pair in pair.into_inner() {
@@ -1388,6 +1456,7 @@ fn parse_initialisation_event(
     let mut extended = false;
     let mut name_span = None;
 
+    reject_empty_clause(&pair)?;
     for p in pair.into_inner() {
         match p.as_rule() {
             Rule::action_list => {
@@ -1617,16 +1686,21 @@ fn parse_labeled_action(pair: pest::iterators::Pair<Rule>) -> Result<LabeledActi
 
     let span = Span::from_pest(pair.as_span());
     let inner = pair.into_inner();
-    let mut label = None;
+    let mut label_pair = None;
     let mut action = None;
 
     for p in inner {
         match p.as_rule() {
             Rule::label => {
-                label = extract_label(p);
+                label_pair = Some(p);
             }
             Rule::action => {
                 action = Some(parse_action(p)?);
+            }
+            // The label is written but its action is not.
+            Rule::missing_formula => {
+                let label = label_pair.as_ref().expect("a marker follows its label");
+                return Err(missing_formula_error(label, "an action"));
             }
             _ => {
                 return Err(ParseError::UnexpectedRule {
@@ -1639,7 +1713,7 @@ fn parse_labeled_action(pair: pest::iterators::Pair<Rule>) -> Result<LabeledActi
 
     let action = action.ok_or(ParseError::MissingAction)?;
     Ok(LabeledAction {
-        label,
+        label: label_pair.and_then(extract_label),
         action,
         span: Some(span),
         comment: None,
