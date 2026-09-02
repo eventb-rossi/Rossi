@@ -85,6 +85,40 @@ pub enum ParseError {
         span: Option<Span>,
     },
 
+    /// A clause header (`WHERE`, `INVARIANTS`, `THEN`, …) with nothing under
+    /// it: the next token already opens another section. Reported at the
+    /// keyword, because the clause is what is wrong — the parser would
+    /// otherwise take the following keyword as the clause's first item (an
+    /// `identifier` may spell a keyword) and fail a line or two later.
+    ///
+    /// Only the clauses holding predicates and actions raise this; a clause
+    /// listing bare names cannot tell an empty body from a name that spells a
+    /// keyword, which rule EB028 warns about instead (see `grammar.pest`).
+    /// `clause` is the canonical spelling, so an alias (`WHEN`, `BEGIN`)
+    /// reports as `WHERE`/`THEN`. `line` and `column` are 1-indexed; `span`
+    /// covers the keyword.
+    #[error("`{clause}` clause is empty")]
+    EmptyClause {
+        clause: String,
+        line: usize,
+        column: usize,
+        span: Option<Span>,
+    },
+
+    /// A labeled item whose formula is missing: `@inv1` with no predicate,
+    /// `@act1` with no action. Reported at the label, for the same reason
+    /// [`ParseError::EmptyClause`] is reported at its keyword. `expected`
+    /// names what belongs there ("a predicate", "an action"). `line` and
+    /// `column` are 1-indexed; `span` covers the label.
+    #[error("label `{label}` is missing {expected}")]
+    MissingFormula {
+        label: String,
+        expected: &'static str,
+        line: usize,
+        column: usize,
+        span: Option<Span>,
+    },
+
     #[error("Empty expression")]
     EmptyExpression,
 
@@ -267,6 +301,8 @@ impl ParseError {
 
         match self {
             ParseError::PestError { line, span, .. }
+            | ParseError::EmptyClause { line, span, .. }
+            | ParseError::MissingFormula { line, span, .. }
             | ParseError::ReservedWord { line, span, .. }
             | ParseError::IncompatibleOperators { line, span, .. }
             | ParseError::AssignmentInPredicate { line, span, .. }
@@ -316,6 +352,8 @@ impl ParseError {
     pub fn position(&self) -> Option<(usize, usize)> {
         match self {
             ParseError::PestError { line, column, .. }
+            | ParseError::EmptyClause { line, column, .. }
+            | ParseError::MissingFormula { line, column, .. }
             | ParseError::NestingTooDeep { line, column, .. }
             | ParseError::ReservedWord { line, column, .. }
             | ParseError::IncompatibleOperators { line, column, .. }
@@ -340,6 +378,8 @@ impl ParseError {
     pub fn span(&self) -> Option<Span> {
         match self {
             ParseError::PestError { span, .. }
+            | ParseError::EmptyClause { span, .. }
+            | ParseError::MissingFormula { span, .. }
             | ParseError::ReservedWord { span, .. }
             | ParseError::IncompatibleOperators { span, .. }
             | ParseError::AssignmentInPredicate { span, .. }
