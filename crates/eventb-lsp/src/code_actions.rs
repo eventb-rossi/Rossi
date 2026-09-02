@@ -916,6 +916,17 @@ mod tests {
     }
 
     #[test]
+    fn test_convert_keeps_label_text() {
+        // `@inv1.1` and `@safety-END` are names: the whole-document
+        // conversion must not read their `.` and `-` as operators.
+        let provider = CodeActionProvider::new();
+        assert_eq!(
+            provider.convert_to_unicode("@inv1.1 x : NAT\n@safety-END x - 1 > 0"),
+            "@inv1.1 x ∈ ℕ\n@safety-END x − 1 > 0"
+        );
+    }
+
+    #[test]
     fn test_roundtrip_ascii_unicode_ascii() {
         let provider = CodeActionProvider::new();
         let ascii_text = "x : NAT & x <= 10 => x /= 0";
