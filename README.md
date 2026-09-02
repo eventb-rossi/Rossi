@@ -348,9 +348,11 @@ rossi fmt --check ./project
 rossi fmt project.zip -o normalized.zip
 ```
 
-Editors using the language server format on save with the same engine; `rossi
-fmt` is its command-line and CI counterpart. (Rodin archives must stay Unicode,
-so `--ascii` is rejected for `.zip`/`.buc`/`.bum` inputs.)
+Editors using the language server format on save with the same engine, or
+normalize just the operator spellings on save through the `source.fixAll.rossi`
+code action; `rossi fmt` is their command-line and CI counterpart. (Rodin
+archives must stay Unicode, so `--ascii` is rejected for `.zip`/`.buc`/`.bum`
+inputs.)
 
 ### Build (static check + Rodin checked XML)
 

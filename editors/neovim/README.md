@@ -471,6 +471,16 @@ return {
             buffer = bufnr,
             callback = function()
               vim.lsp.buf.format { async = false }
+              -- Or normalize only the operator spellings, leaving layout alone.
+              -- `vim.lsp.buf.code_action` is asynchronous and would land after
+              -- the write, so request the action synchronously:
+              -- local params = vim.lsp.util.make_range_params(0, client.offset_encoding)
+              -- params.context = { only = { "source.fixAll.rossi" }, diagnostics = {} }
+              -- for _, reply in pairs(vim.lsp.buf_request_sync(bufnr, "textDocument/codeAction", params, 1000) or {}) do
+              --   for _, action in ipairs(reply.result or {}) do
+              --     if action.edit then vim.lsp.util.apply_workspace_edit(action.edit, client.offset_encoding) end
+              --   end
+              -- end
             end,
           })
         end,

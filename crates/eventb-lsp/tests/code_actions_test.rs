@@ -1,6 +1,6 @@
 //! Integration tests for code actions
 
-use eventb_lsp::code_actions::CodeActionProvider;
+use eventb_lsp::code_actions::{CodeActionProvider, FIX_ALL_KIND};
 use eventb_lsp::lsp_types::{
     CodeActionContext, CodeActionKind, CodeActionOrCommand, CodeActionParams, Position, Range,
     TextDocumentIdentifier, Url, WorkDoneProgressParams,
@@ -36,7 +36,7 @@ fn test_convert_selection_to_unicode() {
         },
     );
 
-    let actions = provider.provide_code_actions(&params, text);
+    let actions = provider.provide_code_actions(&params, text, true);
 
     assert!(actions.is_some());
     let actions = actions.unwrap();
@@ -85,7 +85,7 @@ fn test_no_actions_for_plain_text() {
         },
     );
 
-    let actions = provider.provide_code_actions(&params, text);
+    let actions = provider.provide_code_actions(&params, text, true);
 
     // Should have no actions for plain text
     assert!(
@@ -106,20 +106,142 @@ fn test_code_action_kinds() {
         },
     );
 
-    let actions = provider.provide_code_actions(&params, text);
+    let actions = provider.provide_code_actions(&params, text, true);
 
     assert!(actions.is_some());
     let actions = actions.unwrap();
 
-    // Check that all actions have the correct kind (REFACTOR)
+    // Check that all actions have the correct kind (REFACTOR), apart from
+    // the on-save operator normalization, which is a source action
     for action in actions {
         if let CodeActionOrCommand::CodeAction(action) = action {
             assert!(
                 action.kind == Some(CodeActionKind::REFACTOR)
-                    || action.kind == Some(CodeActionKind::REFACTOR_EXTRACT),
-                "Action kind should be REFACTOR or REFACTOR_EXTRACT"
+                    || action.kind == Some(CodeActionKind::REFACTOR_EXTRACT)
+                    || action.kind == Some(FIX_ALL_KIND),
+                "Action kind should be REFACTOR, REFACTOR_EXTRACT, or the fix-all source kind"
             );
         }
+    }
+}
+
+/// The `source.fixAll.rossi` action among `actions`, if offered.
+fn fix_all_action(actions: &[CodeActionOrCommand]) -> Option<&eventb_lsp::lsp_types::CodeAction> {
+    actions.iter().find_map(|a| match a {
+        CodeActionOrCommand::CodeAction(action) if action.kind.as_ref() == Some(&FIX_ALL_KIND) => {
+            Some(action)
+        }
+        _ => None,
+    })
+}
+
+#[test]
+fn fix_all_normalizes_operators_to_the_convention() {
+    // One whole-document edit that rewrites the operator spellings toward
+    // `useUnicode` and nothing else — layout, comment prose, and label text
+    // are untouched.
+    let provider = CodeActionProvider::new();
+    let uri = Url::parse("file:///m.eventb").unwrap();
+    let cases = [
+        (
+            true,
+            "MACHINE m\nINVARIANTS\n  @inv-1 x : NAT & x <= 10 // x <= 10\nEND\n",
+            "Normalize operators to Unicode",
+            "MACHINE m\nINVARIANTS\n  @inv-1 x ∈ ℕ ∧ x ≤ 10 // x <= 10\nEND\n",
+        ),
+        (
+            false,
+            "@inv1 x ∈ ℕ ∧ x ≤ 10",
+            "Normalize operators to ASCII",
+            "@inv1 x : NAT & x <= 10",
+        ),
+    ];
+    for (use_unicode, text, title, normalized) in cases {
+        let params = create_test_params(
+            uri.as_str(),
+            Range {
+                start: Position::new(0, 0),
+                end: Position::new(0, 0),
+            },
+        );
+        let actions = provider
+            .provide_code_actions(&params, text, use_unicode)
+            .unwrap_or_default();
+
+        let action = fix_all_action(&actions).expect("the fix-all source action must be offered");
+        assert_eq!(action.title, title);
+        let edits = &action.edit.as_ref().unwrap().changes.as_ref().unwrap()[&uri];
+        assert_eq!(edits.len(), 1);
+        assert_eq!(edits[0].range.start, Position::new(0, 0));
+        assert_eq!(edits[0].new_text, normalized);
+    }
+}
+
+#[test]
+fn fix_all_not_offered_when_already_in_the_convention() {
+    // Running the action on save must be a no-op for a conforming document:
+    // no action, hence no edit and no dirty buffer. ASCII spellings inside a
+    // comment do not count.
+    let provider = CodeActionProvider::new();
+    let text = "@inv1 x ∈ ℕ ∧ x ≤ 10 // x <= 10";
+    let params = create_test_params(
+        "file:///m.eventb",
+        Range {
+            start: Position::new(0, 0),
+            end: Position::new(0, 0),
+        },
+    );
+    let actions = provider
+        .provide_code_actions(&params, text, true)
+        .unwrap_or_default();
+
+    assert!(
+        fix_all_action(&actions).is_none(),
+        "no fix-all action for a document already in the convention, got {actions:?}"
+    );
+}
+
+#[test]
+fn fix_all_honours_the_only_filter() {
+    // `editor.codeActionsOnSave` requests exactly the configured kind; a
+    // parent kind (`source`, `source.fixAll`) admits it too, while a request
+    // for other kinds — or a kind that merely shares a prefix — does not.
+    // Whatever the filter, nothing outside it comes back: a client that
+    // applies every returned edit on save must get the fix-all alone.
+    let provider = CodeActionProvider::new();
+    let text = "MACHINE m\nVARIABLES x\nINVARIANTS\n  @inv1 x : NAT & x <= 10\nEND\n";
+    let cases = [
+        ("source.fixAll.rossi", true),
+        ("source.fixAll", true),
+        ("source", true),
+        ("quickfix", false),
+        ("source.fixAllElse", false),
+    ];
+    for (only, expected) in cases {
+        let mut params = create_test_params(
+            "file:///m.eventb",
+            Range {
+                start: Position::new(0, 0),
+                end: Position::new(0, 0),
+            },
+        );
+        params.context.only = Some(vec![CodeActionKind::new(only)]);
+        let actions = provider
+            .provide_code_actions(&params, text, true)
+            .unwrap_or_default();
+        assert_eq!(
+            fix_all_action(&actions).is_some(),
+            expected,
+            "only = [{only:?}]"
+        );
+        assert!(
+            actions.iter().all(|a| matches!(
+                a,
+                CodeActionOrCommand::CodeAction(action)
+                    if action.kind.as_ref().is_some_and(|kind| kind.as_str().starts_with(only))
+            )),
+            "only = [{only:?}] must filter the whole response, got {actions:?}"
+        );
     }
 }
 
@@ -137,7 +259,7 @@ fn test_extract_constant_action_numeric_literal() {
         },
     );
 
-    let actions = provider.provide_code_actions(&params, text);
+    let actions = provider.provide_code_actions(&params, text, true);
 
     assert!(actions.is_some());
     let actions = actions.unwrap();
@@ -195,7 +317,7 @@ fn test_operator_detection_offers_conversion_actions() {
             },
         );
         let actions = provider
-            .provide_code_actions(&params, text)
+            .provide_code_actions(&params, text, true)
             .unwrap_or_default();
 
         assert!(
@@ -255,7 +377,7 @@ fn test_clause_and_sort_actions_offered() {
             },
         );
         let actions = provider
-            .provide_code_actions(&params, text)
+            .provide_code_actions(&params, text, true)
             .unwrap_or_default();
 
         for group in title_groups {
@@ -283,7 +405,7 @@ fn test_no_sort_action_when_already_sorted() {
         },
     );
 
-    let actions = provider.provide_code_actions(&params, text);
+    let actions = provider.provide_code_actions(&params, text, true);
 
     if let Some(actions) = actions {
         // Should NOT have action to sort variables (already sorted)
@@ -314,7 +436,7 @@ fn test_rename_event_hint() {
         },
     );
 
-    let actions = provider.provide_code_actions(&params, text);
+    let actions = provider.provide_code_actions(&params, text, true);
 
     assert!(actions.is_some());
     let actions = actions.unwrap();
@@ -363,7 +485,7 @@ fn test_diagnostic_based_action() {
     );
     params.context.diagnostics = vec![diagnostic];
 
-    let actions = provider.provide_code_actions(&params, text);
+    let actions = provider.provide_code_actions(&params, text, true);
 
     assert!(actions.is_some());
     let actions = actions.unwrap();
@@ -400,7 +522,7 @@ fn test_add_missing_end_offered_for_eof_diagnostic() {
     }];
 
     let actions = provider
-        .provide_code_actions(&params, text)
+        .provide_code_actions(&params, text, true)
         .unwrap_or_default();
 
     assert!(
@@ -438,7 +560,7 @@ fn eb026_offers_equality_swap_for_becomes_equal() {
     };
     let params = eb026_params("file:///m.eventb", op);
     let actions = provider
-        .provide_code_actions(&params, text)
+        .provide_code_actions(&params, text, true)
         .unwrap_or_default();
 
     let fix = actions.iter().find_map(|a| match a {
@@ -466,7 +588,7 @@ fn eb026_offers_membership_swap_for_becomes_in() {
     };
     let params = eb026_params("file:///m.eventb", op);
     let actions = provider
-        .provide_code_actions(&params, text)
+        .provide_code_actions(&params, text, true)
         .unwrap_or_default();
 
     assert!(
@@ -490,7 +612,7 @@ fn eb026_offers_no_swap_for_becomes_such_that() {
     };
     let params = eb026_params("file:///m.eventb", op);
     let actions = provider
-        .provide_code_actions(&params, text)
+        .provide_code_actions(&params, text, true)
         .unwrap_or_default();
 
     assert!(
@@ -523,7 +645,7 @@ fn test_add_missing_end_not_offered_when_terminated() {
     }];
 
     let actions = provider
-        .provide_code_actions(&params, text)
+        .provide_code_actions(&params, text, true)
         .unwrap_or_default();
 
     assert!(
@@ -565,7 +687,7 @@ fn test_selection_conversion_preserves_comment_opened_before_selection() {
             end: Position::new(2, 35),
         },
     );
-    let actions = provider.provide_code_actions(&params, text).unwrap();
+    let actions = provider.provide_code_actions(&params, text, true).unwrap();
 
     let edit_text = actions
         .iter()
@@ -604,7 +726,7 @@ fn test_ascii_operators_in_comments_do_not_offer_conversion() {
             end: Position::new(0, 0),
         },
     );
-    let actions = provider.provide_code_actions(&params, text);
+    let actions = provider.provide_code_actions(&params, text, true);
 
     let offers_unicode_conversion = actions.iter().flatten().any(|action| {
         if let CodeActionOrCommand::CodeAction(action) = action {
