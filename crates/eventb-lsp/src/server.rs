@@ -239,6 +239,10 @@ impl Analyzer {
         // The proof-status overlay comes from disk, not the AST, so it is
         // emitted even mid-edit, before the clean-parse gate below.
         diags.extend(self.proof_status_diagnostics(uri, doc));
+        // The operator-convention advisory is textual, so it too runs mid-edit.
+        if self.config_manager.get().format.flags_ascii_operators() {
+            diags.extend(crate::diagnostics::ascii_operator_diagnostics(doc.text()));
+        }
         // Animate findings are anchored by name and resolved via text-scan
         // fallbacks, so they too survive mid-edit breakage.
         diags.extend(crate::animate::diagnostics::animate_diagnostics(
@@ -1293,6 +1297,11 @@ impl LanguageServer for RossiLanguageServer {
                 // watcher, or proof status and model-edit merges keep coming
                 // from the abandoned directory. No-ops when unchanged.
                 self.ensure_rodin_sync_for_existing_workspace();
+
+                // Diagnostics depend on the configuration too (the enabled
+                // switch, the operator-convention advisory), so every open
+                // document is republished under the new settings.
+                self.analyzer.republish_all_diagnostics().await;
 
                 // Hints depend on the configuration (enabled state, label
                 // rendering); ask clients that support it to re-request them

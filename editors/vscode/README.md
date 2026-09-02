@@ -149,6 +149,7 @@ workspace, but only in a trusted one.
 - `rossi.rodin.mirrorProofs`: Bridge proof files (`.bpr`/`.bps`/`.bpo`) between the checkout and the Rodin workspace at `Open in Rodin` session boundaries — seed the project from files next to the sources when the lens runs, mirror the project's files back when Rodin exits (default: `true`)
 - `rossi.format.style`: Formatting style preset — `"camille"` (lowercase keywords, inline declaration lists, 2-space indent) or `"rossi"` (uppercase keywords, one-per-line lists, 4-space indent); empty follows the language server's default preset (default: `""`)
 - `rossi.format.useUnicode`: Use Unicode operators (∧, ∨, ⇒, ∈) instead of ASCII (/\, \/, =>, :) when formatting (default: `true`)
+- `rossi.format.enforceUnicode`: Flag ASCII operator spellings (`/\`, `:`, `NAT`, …) outside comments and labels with an advisory diagnostic and a quick fix, for a project that keeps its sources in Unicode (no effect with `rossi.format.useUnicode` off; the private-use operators `<+`, `<<->`, `<->>`, `<<->>` stay ASCII and are not flagged); pair with the `source.fixAll.rossi` action on save and `rossi fmt --check` in CI (default: `false`)
 - `rossi.format.indentation`: Indentation string (spaces or tabs) to use when formatting; empty follows the style preset (default: `""`)
 - `rossi.format.keywordCase`: Keyword-case override — `"lower"` or `"upper"`; empty follows the style preset (default: `""`)
 - `rossi.format.declLists`: Declaration-list layout override — `"inline"` or `"one-per-line"`; empty follows the style preset (default: `""`)
@@ -258,6 +259,9 @@ END
 
   `rossi fmt --check` is the CI counterpart: it fails on any file the formatter
   would change, operator spellings included.
+- **See the convention while editing**: set `rossi.format.enforceUnicode` to
+  `true` to flag every ASCII operator spelling with an advisory diagnostic and a
+  quick fix before the save rewrites it
 
 ### Symbol Input
 

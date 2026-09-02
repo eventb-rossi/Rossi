@@ -29,6 +29,9 @@
   the `rossi.format.useUnicode` convention and changes nothing else, so
   `"[eventb]": { "editor.codeActionsOnSave": { "source.fixAll.rossi": "explicit" } }`
   keeps a project's operators in line on save without reformatting.
+- A `rossi.format.enforceUnicode` setting (off by default) that flags ASCII
+  operator spellings outside comments and labels with an advisory diagnostic
+  and a quick fix, so a Unicode-only convention is visible before save.
 - Sensible per-language editor defaults for `.eventb` files: semantic
   highlighting is enabled out of the box, and the ambiguous / non-basic-ASCII
   Unicode warnings are silenced so Event-B's math operators (`∀ ∃ ⇒ ∈ ↦ ℕ`) no

@@ -15,6 +15,7 @@ interface RossiConfiguration {
     format: {
         style: string;
         useUnicode: boolean;
+        enforceUnicode: boolean;
         indentation: string;
         keywordCase: string;
         declLists: string;
@@ -52,6 +53,7 @@ function getRossiConfiguration(): RossiConfiguration {
         format: {
             style: config.get<string>('format.style', ''),
             useUnicode: config.get<boolean>('format.useUnicode', true),
+            enforceUnicode: config.get<boolean>('format.enforceUnicode', false),
             indentation: config.get<string>('format.indentation', ''),
             keywordCase: config.get<string>('format.keywordCase', ''),
             declLists: config.get<string>('format.declLists', ''),

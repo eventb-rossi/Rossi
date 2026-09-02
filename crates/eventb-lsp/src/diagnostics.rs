@@ -53,6 +53,47 @@ pub(crate) fn document_diagnostics(doc: &ParsedDocument) -> Vec<Diagnostic> {
     diagnostics
 }
 
+/// The diagnostic code of an ASCII operator spelling flagged under
+/// `rossi.format.enforceUnicode`; the quick-fix provider keys on it. Not an
+/// `EBnnn` rule: it is an editor-side style advisory whose CI counterpart is
+/// `rossi fmt --check`, not a `rossi validate` finding.
+pub const ASCII_OPERATOR_CODE: &str = "ascii-operator";
+
+/// Every ASCII operator spelling in the code of `text` (comments and labels
+/// masked first) as `(range, ASCII spelling, Unicode spelling)`: what
+/// [`ascii_operator_diagnostics`] flags, and what its quick fix checks a
+/// diagnostic against, so the two can never disagree. It is exactly what the
+/// fix-all conversion would rewrite — the private-use operators, which stay
+/// ASCII even in Unicode mode, are not included.
+pub(crate) fn ascii_operators(text: &str) -> Vec<(Range, &str, &'static str)> {
+    let masked = rossi::comments::mask_opaque(text);
+    let index = crate::position::PositionIndex::new(text);
+    rossi::operators::ascii_operator_spans(&masked)
+        .into_iter()
+        .map(|(span, unicode)| {
+            let range = Range::new(index.position(span.start), index.position(span.end));
+            (range, &text[span], unicode)
+        })
+        .collect()
+}
+
+/// One advisory diagnostic per ASCII operator spelling in `text` (see
+/// [`ascii_operators`]), naming the Unicode spelling it should be. Textual,
+/// so it runs mid-edit like the proof overlay.
+pub(crate) fn ascii_operator_diagnostics(text: &str) -> Vec<Diagnostic> {
+    ascii_operators(text)
+        .into_iter()
+        .map(|(range, ascii, unicode)| {
+            lsp_diagnostic(
+                range,
+                DiagnosticSeverity::INFORMATION,
+                Some(NumberOrString::String(ASCII_OPERATOR_CODE.to_string())),
+                format!("use `{unicode}` instead of ASCII `{ascii}`"),
+            )
+        })
+        .collect()
+}
+
 /// One informational line per component header with undischarged or broken
 /// proofs, from the shared Rodin workspace's proof-status overlay (kept
 /// fresh by the rodin sync watcher). Derived from disk state, not the AST,
@@ -434,13 +475,45 @@ pub(crate) fn duplicate_component_diagnostics(
 #[cfg(test)]
 mod tests {
     use super::{
-        cross_reference_diagnostics, cycle_diagnostics, document_diagnostics,
-        duplicate_component_diagnostics, lint_diagnostics, parse_error_to_diagnostic,
-        proof_status_diagnostics,
+        ascii_operator_diagnostics, cross_reference_diagnostics, cycle_diagnostics,
+        document_diagnostics, duplicate_component_diagnostics, lint_diagnostics,
+        parse_error_to_diagnostic, proof_status_diagnostics,
     };
     use crate::document::ParsedDocument;
     use crate::lsp_types::{Diagnostic, DiagnosticSeverity, NumberOrString, Position};
     use rossi::deps::{ComponentKind, Cycle, EdgeKind};
+
+    #[test]
+    fn ascii_operator_diagnostics_flag_code_spellings_only() {
+        // `@inv-1` is a label, `// x <= 1` a comment, and `<+` the
+        // private-use override that stays ASCII in Unicode mode: none is
+        // flagged. The three ASCII spellings in code are, each on its own
+        // token with its Unicode form.
+        let text = "@inv-1 x : NAT & x <+ y // x <= 1\n";
+        let diagnostics = ascii_operator_diagnostics(text);
+        let flagged: Vec<(u32, u32, &str)> = diagnostics
+            .iter()
+            .map(|d| {
+                (
+                    d.range.start.character,
+                    d.range.end.character,
+                    d.message.as_str(),
+                )
+            })
+            .collect();
+        assert_eq!(
+            flagged,
+            [
+                (9, 10, "use `∈` instead of ASCII `:`"),
+                (11, 14, "use `ℕ` instead of ASCII `NAT`"),
+                (15, 16, "use `∧` instead of ASCII `&`"),
+            ]
+        );
+        assert!(diagnostics.iter().all(|d| {
+            d.code == Some(NumberOrString::String("ascii-operator".to_string()))
+                && d.severity == Some(DiagnosticSeverity::INFORMATION)
+        }));
+    }
 
     #[test]
     fn duplicate_clause_diagnostic_stays_on_one_line() {

@@ -1,6 +1,7 @@
 //! Integration tests for code actions
 
 use eventb_lsp::code_actions::{CodeActionProvider, FIX_ALL_KIND};
+use eventb_lsp::diagnostics::ASCII_OPERATOR_CODE;
 use eventb_lsp::lsp_types::{
     CodeActionContext, CodeActionKind, CodeActionOrCommand, CodeActionParams, Position, Range,
     TextDocumentIdentifier, Url, WorkDoneProgressParams,
@@ -534,19 +535,28 @@ fn test_add_missing_end_offered_for_eof_diagnostic() {
     );
 }
 
-/// Build a CodeActionParams carrying a single EB026 diagnostic whose range is
-/// `op_range` (the becomes operator), the shape the diagnostics provider emits.
-fn eb026_params(uri: &str, op_range: Range) -> CodeActionParams {
-    use eventb_lsp::lsp_types::{Diagnostic, DiagnosticSeverity, NumberOrString};
+/// Build a CodeActionParams carrying a single diagnostic with rule `code`
+/// whose range is `op_range` (the operator it underlines), the shape the
+/// diagnostics provider emits; the quick fixes read only the range and code.
+fn diagnostic_params(uri: &str, op_range: Range, code: &str) -> CodeActionParams {
+    use eventb_lsp::lsp_types::{Diagnostic, NumberOrString};
     let mut params = create_test_params(uri, op_range);
     params.context.diagnostics = vec![Diagnostic {
         range: op_range,
-        severity: Some(DiagnosticSeverity::ERROR),
-        code: Some(NumberOrString::String("EB026".to_string())),
-        message: "assignment operator `:=` used where a predicate is required".to_string(),
+        code: Some(NumberOrString::String(code.to_string())),
         ..Default::default()
     }];
     params
+}
+
+/// The `Replace …` quick fix among `actions`, if offered.
+fn replace_fix(actions: &[CodeActionOrCommand]) -> Option<&eventb_lsp::lsp_types::CodeAction> {
+    actions.iter().find_map(|a| match a {
+        CodeActionOrCommand::CodeAction(action) if action.title.starts_with("Replace") => {
+            Some(action)
+        }
+        _ => None,
+    })
 }
 
 #[test]
@@ -558,16 +568,12 @@ fn eb026_offers_equality_swap_for_becomes_equal() {
         start: Position::new(4, 12),
         end: Position::new(4, 14),
     };
-    let params = eb026_params("file:///m.eventb", op);
+    let params = diagnostic_params("file:///m.eventb", op, "EB026");
     let actions = provider
         .provide_code_actions(&params, text, true)
         .unwrap_or_default();
 
-    let fix = actions.iter().find_map(|a| match a {
-        CodeActionOrCommand::CodeAction(action) if action.title.contains("Replace") => Some(action),
-        _ => None,
-    });
-    let fix = fix.expect("a Replace quick fix must be offered for EB026");
+    let fix = replace_fix(&actions).expect("a Replace quick fix must be offered for EB026");
     assert_eq!(fix.title, "Replace `:=` with `=`");
     assert_eq!(fix.kind, Some(CodeActionKind::QUICKFIX));
     assert!(fix.diagnostics.is_some(), "fix attaches to the diagnostic");
@@ -586,7 +592,7 @@ fn eb026_offers_membership_swap_for_becomes_in() {
         start: Position::new(4, 12),
         end: Position::new(4, 14),
     };
-    let params = eb026_params("file:///m.eventb", op);
+    let params = diagnostic_params("file:///m.eventb", op, "EB026");
     let actions = provider
         .provide_code_actions(&params, text, true)
         .unwrap_or_default();
@@ -610,17 +616,61 @@ fn eb026_offers_no_swap_for_becomes_such_that() {
         start: Position::new(4, 12),
         end: Position::new(4, 14),
     };
-    let params = eb026_params("file:///m.eventb", op);
+    let params = diagnostic_params("file:///m.eventb", op, "EB026");
     let actions = provider
         .provide_code_actions(&params, text, true)
         .unwrap_or_default();
 
     assert!(
-        !actions.iter().any(|a| matches!(
-            a,
-            CodeActionOrCommand::CodeAction(action) if action.title.starts_with("Replace")
-        )),
+        replace_fix(&actions).is_none(),
         "no Replace quick fix for `:|`, got {actions:?}"
+    );
+}
+
+#[test]
+fn ascii_operator_advisory_offers_the_unicode_spelling() {
+    // A `rossi.format.enforceUnicode` advisory on `&` → a quick fix replacing
+    // exactly that token with `∧`, attached to the diagnostic.
+    let provider = CodeActionProvider::new();
+    let text = "MACHINE m\nINVARIANTS\n    @inv1 x : NAT & x <= 10\nEND\n";
+    let op = Range {
+        start: Position::new(2, 18),
+        end: Position::new(2, 19),
+    };
+    let params = diagnostic_params("file:///m.eventb", op, ASCII_OPERATOR_CODE);
+    let actions = provider
+        .provide_code_actions(&params, text, true)
+        .unwrap_or_default();
+
+    let fix = replace_fix(&actions).expect("a Replace quick fix must be offered for the advisory");
+    assert_eq!(fix.title, "Replace `&` with `∧`");
+    assert_eq!(fix.kind, Some(CodeActionKind::QUICKFIX));
+    assert!(fix.diagnostics.is_some(), "fix attaches to the diagnostic");
+    let edit = &fix.edit.as_ref().unwrap().changes.as_ref().unwrap()
+        [&Url::parse("file:///m.eventb").unwrap()][0];
+    assert_eq!(edit.new_text, "∧");
+    assert_eq!(edit.range, op, "edit replaces exactly the operator");
+}
+
+#[test]
+fn ascii_operator_advisory_offers_nothing_for_a_stale_range() {
+    // A diagnostic range the client carried across an edit may no longer
+    // cover one operator token; the quick fix must not rewrite whatever it
+    // covers now (here code plus comment prose).
+    let provider = CodeActionProvider::new();
+    let text = "@inv1 x : NAT // a <= b\n";
+    let stale = Range {
+        start: Position::new(0, 6),
+        end: Position::new(0, 23),
+    };
+    let params = diagnostic_params("file:///m.eventb", stale, ASCII_OPERATOR_CODE);
+    let actions = provider
+        .provide_code_actions(&params, text, true)
+        .unwrap_or_default();
+
+    assert!(
+        replace_fix(&actions).is_none(),
+        "no Replace quick fix for a range that is not one operator token, got {actions:?}"
     );
 }
 

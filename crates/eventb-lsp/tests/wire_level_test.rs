@@ -25,6 +25,23 @@ async fn next_message(
     None
 }
 
+/// The next published diagnostics batch, as the raw `diagnostics` array.
+async fn next_published_diagnostics(
+    messages: &mut (impl futures::StreamExt<Item = Request> + Unpin),
+) -> Vec<Value> {
+    let params = next_message(
+        messages,
+        "textDocument/publishDiagnostics",
+        std::time::Duration::from_secs(5),
+    )
+    .await
+    .expect("the server must publish diagnostics");
+    params["diagnostics"]
+        .as_array()
+        .expect("diagnostics must be an array")
+        .clone()
+}
+
 /// Read server-to-client messages until the next `window/showMessage`.
 async fn next_show_message(
     messages: &mut (impl futures::StreamExt<Item = Request> + Unpin),
@@ -793,6 +810,124 @@ mod inlay_hints {
     }
 }
 
+mod operator_convention {
+    //! Wire-level test for the `rossi.format.enforceUnicode` advisory: on
+    //! under the initialization options, its diagnostics are published when
+    //! the document opens; switching to the ASCII convention or turning it
+    //! off through `workspace/didChangeConfiguration` republishes the
+    //! document without them, with no edit in between.
+
+    use super::{next_published_diagnostics, notification};
+    use eventb_lsp::server::RossiLanguageServer;
+    use futures::StreamExt;
+    use serde_json::json;
+    use tower::{Service, ServiceExt};
+    use tower_lsp::LspService;
+    use tower_lsp::jsonrpc::Request;
+
+    const SOURCE: &str = "MACHINE m\nVARIABLES x\nINVARIANTS\n    @inv1 x : NAT\nEND\n";
+
+    /// The `(code, message)` pairs of the next published diagnostics batch.
+    async fn next_diagnostics(
+        messages: &mut (impl StreamExt<Item = Request> + Unpin),
+    ) -> Vec<(String, String)> {
+        next_published_diagnostics(messages)
+            .await
+            .iter()
+            .map(|diagnostic| {
+                (
+                    diagnostic["code"].as_str().unwrap_or_default().to_string(),
+                    diagnostic["message"]
+                        .as_str()
+                        .unwrap_or_default()
+                        .to_string(),
+                )
+            })
+            .collect()
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn ascii_operators_are_flagged_until_the_setting_is_turned_off() {
+        let (mut service, mut socket) = LspService::build(RossiLanguageServer::new).finish();
+        let (sender, mut messages) = futures::channel::mpsc::unbounded();
+        tokio::spawn(async move {
+            while let Some(request) = socket.next().await {
+                if sender.unbounded_send(request).is_err() {
+                    break;
+                }
+            }
+        });
+
+        let init = Request::build("initialize")
+            .id(1)
+            .params(json!({
+                "capabilities": {},
+                "initializationOptions": { "format": { "enforceUnicode": true } }
+            }))
+            .finish();
+        service.ready().await.unwrap().call(init).await.unwrap();
+
+        let open = notification(
+            "textDocument/didOpen",
+            json!({
+                "textDocument": {
+                    "uri": "file:///convention.eventb",
+                    "languageId": "eventb",
+                    "version": 1,
+                    "text": SOURCE
+                }
+            }),
+        );
+        service.ready().await.unwrap().call(open).await.unwrap();
+
+        assert_eq!(
+            next_diagnostics(&mut messages).await,
+            [
+                (
+                    "ascii-operator".to_string(),
+                    "use `∈` instead of ASCII `:`".to_string()
+                ),
+                (
+                    "ascii-operator".to_string(),
+                    "use `ℕ` instead of ASCII `NAT`".to_string()
+                ),
+            ]
+        );
+
+        let ascii_convention = notification(
+            "workspace/didChangeConfiguration",
+            json!({
+                "settings": { "rossi": { "format": { "useUnicode": false, "enforceUnicode": true } } }
+            }),
+        );
+        service
+            .ready()
+            .await
+            .unwrap()
+            .call(ascii_convention)
+            .await
+            .unwrap();
+
+        assert!(
+            next_diagnostics(&mut messages).await.is_empty(),
+            "the advisory must not fire under the ASCII convention, whose fix-all would revert its fixes"
+        );
+
+        let disable = notification(
+            "workspace/didChangeConfiguration",
+            json!({
+                "settings": { "rossi": { "format": { "enforceUnicode": false } } }
+            }),
+        );
+        service.ready().await.unwrap().call(disable).await.unwrap();
+
+        assert!(
+            next_diagnostics(&mut messages).await.is_empty(),
+            "turning the advisory off must republish the document without it"
+        );
+    }
+}
+
 mod animate_lens {
     //! Wire-level tests for the eventb-animate executeCommand surface: the
     //! spawned flow must fail fast with a message naming the
@@ -979,13 +1114,12 @@ mod watched_files {
     //! outside the editor moves the workspace graph an open document's
     //! cross-file diagnostics are checked against.
 
-    use super::{TempWorkspace, next_message, notification};
+    use super::{TempWorkspace, next_published_diagnostics, notification};
     use eventb_lsp::lsp_types::Url;
     use eventb_lsp::server::RossiLanguageServer;
     use futures::{SinkExt, StreamExt};
     use serde_json::{Value, json};
     use std::path::Path;
-    use std::time::Duration;
     use tower::{Service, ServiceExt};
     use tower_lsp::LspService;
     use tower_lsp::jsonrpc::{Request, Response};
@@ -998,16 +1132,8 @@ mod watched_files {
     async fn next_diagnostic_codes(
         messages: &mut (impl StreamExt<Item = Request> + Unpin),
     ) -> Vec<String> {
-        let params = next_message(
-            messages,
-            "textDocument/publishDiagnostics",
-            Duration::from_secs(5),
-        )
-        .await
-        .expect("the server must publish diagnostics");
-        params["diagnostics"]
-            .as_array()
-            .expect("diagnostics must be an array")
+        next_published_diagnostics(messages)
+            .await
             .iter()
             .map(|diagnostic| diagnostic["code"].as_str().unwrap_or_default().to_string())
             .collect()
