@@ -32,12 +32,23 @@ struct DocumentSymbols {
     open: Option<Vec<SymbolEntry>>,
 }
 
+impl DocumentSymbols {
+    /// The symbols this document answers with: its open buffer's if it has
+    /// one, otherwise what is saved. An empty open overlay is meaningful and
+    /// deliberately shadows the saved symbols — the same rule the
+    /// cross-reference index states on `DocumentComponents::effective`.
+    fn effective(&self) -> &[SymbolEntry] {
+        self.open.as_deref().unwrap_or(&self.disk)
+    }
+}
+
 /// Provider for workspace-wide symbol search
 pub struct WorkspaceSymbolProvider {
     /// Disk symbols and open-document overlays keyed by document URI.
     symbol_index: DashMap<String, DocumentSymbols>,
-    /// Raw client/scan URI spellings mapped to one canonical file identity.
-    document_uris: crate::uri_identity::DocumentUris,
+    /// Raw client/scan URI spellings mapped to one canonical file identity,
+    /// shared with the cross-reference index.
+    document_uris: std::sync::Arc<crate::uri_identity::DocumentUris>,
 }
 
 impl Default for WorkspaceSymbolProvider {
@@ -49,9 +60,18 @@ impl Default for WorkspaceSymbolProvider {
 impl WorkspaceSymbolProvider {
     /// Create a new workspace symbol provider
     pub fn new() -> Self {
+        Self::with_uris(std::sync::Arc::default())
+    }
+
+    /// Build a provider sharing `document_uris` with the cross-reference
+    /// index, so a file resolves to one identity across both and is
+    /// canonicalized once rather than once per index.
+    pub(crate) fn with_uris(
+        document_uris: std::sync::Arc<crate::uri_identity::DocumentUris>,
+    ) -> Self {
         Self {
             symbol_index: DashMap::new(),
-            document_uris: crate::uri_identity::DocumentUris::default(),
+            document_uris,
         }
     }
 
@@ -77,7 +97,7 @@ impl WorkspaceSymbolProvider {
         debug!("Updating workspace symbols for: {}", uri);
         let symbols = self.extract_symbols(components, &uri, text);
         self.symbol_index
-            .entry(self.document_key(&uri))
+            .entry(self.document_uris.key(&uri))
             .or_default()
             .open = Some(symbols);
     }
@@ -88,7 +108,7 @@ impl WorkspaceSymbolProvider {
         self.register_document_uri(&uri);
         let symbols = self.extract_symbols(components, &uri, text);
         self.symbol_index
-            .entry(self.document_key(&uri))
+            .entry(self.document_uris.key(&uri))
             .or_default()
             .disk = symbols;
     }
@@ -99,38 +119,13 @@ impl WorkspaceSymbolProvider {
         self.document_uris.register(uri);
     }
 
-    /// Refresh the disk layer from the file now on disk. A file that is gone
-    /// drops its saved symbols instead of erroring, mirroring
-    /// [`crate::cross_references::CrossReferenceManager::refresh_document_from_disk`]:
-    /// a save only races a delete by accident, but a watched-file event
-    /// reports deletions as a matter of course.
-    pub(crate) fn refresh_document_from_disk(&self, uri: &Url) -> std::io::Result<()> {
-        let path = uri.to_file_path().map_err(|()| {
-            std::io::Error::new(
-                std::io::ErrorKind::InvalidInput,
-                format!("{uri} is not a file URI"),
-            )
-        })?;
-        let text = match std::fs::read_to_string(path) {
-            Ok(text) => text,
-            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
-                self.remove_disk_document(uri.as_str());
-                return Ok(());
-            }
-            Err(error) => return Err(error),
-        };
-        let components = crate::component_util::parse_all(&text);
-        self.index_disk_components(uri.to_string(), &components, &text);
-        Ok(())
-    }
-
     /// Remove a deleted file's saved symbols, keeping any open overlay: the
     /// buffer outlives the file until the editor closes it. The mirror image
     /// of [`Self::remove_document`].
-    fn remove_disk_document(&self, uri: &str) {
+    pub(crate) fn remove_disk_document(&self, uri: &str) {
         debug!("Removing disk workspace symbols for: {}", uri);
         self.symbol_index
-            .remove_if_mut(&self.document_key(uri), |_, document| {
+            .remove_if_mut(&self.document_uris.key(uri), |_, document| {
                 document.disk.clear();
                 document.open.is_none()
             });
@@ -140,7 +135,7 @@ impl WorkspaceSymbolProvider {
     pub fn remove_document(&self, uri: &str) {
         debug!("Removing open workspace symbols for: {}", uri);
         self.symbol_index
-            .remove_if_mut(&self.document_key(uri), |_, document| {
+            .remove_if_mut(&self.document_uris.key(uri), |_, document| {
                 document.open = None;
                 document.disk.is_empty()
             });
@@ -157,7 +152,7 @@ impl WorkspaceSymbolProvider {
         // Search through all indexed documents
         for entry in self.symbol_index.iter() {
             let document = entry.value();
-            let symbols = document.open.as_ref().unwrap_or(&document.disk);
+            let symbols = document.effective();
             for symbol in symbols {
                 // Match against symbol name (case-insensitive substring match)
                 if symbol.folded_name.contains(&query_lower) {
@@ -195,10 +190,6 @@ impl WorkspaceSymbolProvider {
             .iter()
             .flat_map(|component| self.extract_symbols_from_component(component, &uri, &positions))
             .collect()
-    }
-
-    fn document_key(&self, uri: &str) -> String {
-        self.document_uris.key(uri)
     }
 
     /// Extract all symbols from a component, locating each at the span the
@@ -285,7 +276,6 @@ impl WorkspaceSymbolProvider {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::test_util::TempDir as TempWorkspace;
 
     #[test]
     fn test_workspace_symbols_context() {
@@ -548,40 +538,36 @@ END
 
     #[test]
     fn a_deleted_file_drops_its_disk_symbols() {
-        let root = TempWorkspace::new("eventb-lsp-symbol-delete-test");
-        let path = root.join("model.eventb");
-        std::fs::write(&path, "CONTEXT disk\nCONSTANTS\n    disk_value\nEND\n").unwrap();
-        let uri = Url::from_file_path(&path).unwrap();
+        let uri = "file:///model.eventb".to_string();
+        let source = "CONTEXT disk\nCONSTANTS\n    disk_value\nEND\n";
         let provider = WorkspaceSymbolProvider::new();
 
-        provider.refresh_document_from_disk(&uri).unwrap();
+        let components = crate::component_util::parse_all(source);
+        provider.index_disk_components(uri.clone(), &components, source);
         assert_eq!(provider.search("disk_value").len(), 1);
 
-        std::fs::remove_file(&path).unwrap();
-        provider.refresh_document_from_disk(&uri).unwrap();
+        provider.remove_disk_document(&uri);
         assert!(provider.search("disk_value").is_empty());
     }
 
     #[test]
     fn a_deleted_file_keeps_its_open_overlay() {
-        let root = TempWorkspace::new("eventb-lsp-symbol-delete-open-test");
-        let path = root.join("model.eventb");
-        std::fs::write(&path, "CONTEXT disk\nCONSTANTS\n    disk_value\nEND\n").unwrap();
-        let uri = Url::from_file_path(&path).unwrap();
+        let uri = "file:///model.eventb".to_string();
+        let source = "CONTEXT disk\nCONSTANTS\n    disk_value\nEND\n";
         let provider = WorkspaceSymbolProvider::new();
-        provider.refresh_document_from_disk(&uri).unwrap();
+        let components = crate::component_util::parse_all(source);
+        provider.index_disk_components(uri.clone(), &components, source);
         provider.update_symbols(
-            uri.to_string(),
+            uri.clone(),
             "CONTEXT open\nCONSTANTS\n    open_value\nEND\n",
         );
 
-        std::fs::remove_file(&path).unwrap();
-        provider.refresh_document_from_disk(&uri).unwrap();
+        provider.remove_disk_document(&uri);
 
         // The buffer outlives the file; only the saved snapshot is gone, so
         // closing the document later reveals nothing rather than stale symbols.
         assert_eq!(provider.search("open_value").len(), 1);
-        provider.remove_document(uri.as_str());
+        provider.remove_document(&uri);
         assert!(provider.search("open_value").is_empty());
         assert!(provider.search("disk_value").is_empty());
     }

@@ -495,16 +495,23 @@ pub fn component_files(dir: &Path) -> Result<Vec<PathBuf>> {
             files.push(entry.path());
         }
     }
-    if files.iter().any(|p| file_name_is(p, is_xml_input)) {
-        files.retain(|p| file_name_is(p, is_xml_input));
+    if files.iter().any(|path| is_xml_component(path)) {
+        files.retain(|path| is_xml_component(path));
     } else {
-        files.retain(|p| crate::walk::is_source_file(p));
+        files.retain(|path| crate::walk::is_source_file(path));
     }
     Ok(files)
 }
 
 fn file_name_is(path: &Path, pred: fn(&str) -> bool) -> bool {
     path.file_name().and_then(|n| n.to_str()).is_some_and(pred)
+}
+
+/// Whether `path` names a Rodin XML component file. The path-shaped
+/// counterpart of [`is_xml_input`], to sit beside [`crate::walk::is_source_file`]
+/// wherever the two kinds are chosen between.
+pub fn is_xml_component(path: &Path) -> bool {
+    file_name_is(path, is_xml_input)
 }
 
 /// A Rodin XML component file (`.buc` context / `.bum` machine).

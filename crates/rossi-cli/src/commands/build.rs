@@ -109,11 +109,9 @@ fn build_one(input: &Path) -> Result<BuildOutcome, Box<dyn std::error::Error>> {
         // `sub/M.bum`, that `Project::from_directory` then read as zero
         // components — an empty project, built in silence.
         let components = rossi_build::project::component_files(input)?;
-        let is_rodin_project = components.iter().any(|path| {
-            path.file_name()
-                .and_then(|name| name.to_str())
-                .is_some_and(rossi_build::project::is_xml_input)
-        });
+        let is_rodin_project = components
+            .iter()
+            .any(|path| rossi_build::project::is_xml_component(path));
         if is_rodin_project {
             let project = Project::from_directory(input)?;
             let result = build(&project);

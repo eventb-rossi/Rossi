@@ -27,8 +27,10 @@ pub(crate) fn is_text_ext(ext: &str) -> bool {
 ///
 /// Unlike [`is_text_ext`], this excludes the generic `.txt` — used where a file
 /// must be treated as a definite Event-B component (e.g. deciding a directory's
-/// project layout), mirroring `rossi-build`'s "a `README.txt` is not a
-/// component" convention.
+/// project layout), the same reasoning as
+/// [`rossi_build::walk::is_source_file`], which decides what the workspace
+/// index and the Rodin build see. This one stays case-insensitive because it
+/// answers about a path a user handed us, not about the indexed tree.
 pub(crate) fn is_eventb_ext(ext: &str) -> bool {
     ext.eq_ignore_ascii_case("eventb")
 }

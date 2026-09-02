@@ -52,6 +52,35 @@ impl WorkspaceScanState {
     }
 }
 
+/// Refresh both indexes' saved layers for one file, reading and parsing it
+/// once. A file that is gone drops its saved layer in each; any other read
+/// error leaves both alone, so the two cannot disagree about what is on disk.
+fn refresh_saved_layers(
+    xrefs: &CrossReferenceManager,
+    symbols: &WorkspaceSymbolProvider,
+    uri: &Url,
+) {
+    let text = match uri.to_file_path().map(std::fs::read_to_string) {
+        Ok(Ok(text)) => text,
+        Ok(Err(error)) if error.kind() == std::io::ErrorKind::NotFound => {
+            xrefs.remove_disk_document(uri.as_str());
+            symbols.remove_disk_document(uri.as_str());
+            return;
+        }
+        Ok(Err(error)) => {
+            info!("Failed to read {uri}: {error}");
+            return;
+        }
+        Err(()) => {
+            info!("Not a file URI, so nothing to read: {uri}");
+            return;
+        }
+    };
+    let components = crate::component_util::parse_all(&text);
+    xrefs.index_disk_components(uri.to_string(), &components);
+    symbols.index_disk_components(uri.to_string(), &components, &text);
+}
+
 /// Run blocking filesystem or parsing work away from Tokio's async workers.
 async fn run_blocking<F, T>(task: F) -> Result<T>
 where
@@ -612,7 +641,11 @@ impl RossiLanguageServer {
         // demand — so it is a request-handler field only, not fanned out to.
         let config_manager = Arc::new(ConfigManager::new());
         let definition_provider = Arc::new(definition_provider);
-        let workspace_symbol_provider = Arc::new(WorkspaceSymbolProvider::new());
+        // One identity table across both indexes: a file resolves to the same
+        // key in each, and is canonicalized once rather than once per index.
+        let workspace_symbol_provider = Arc::new(WorkspaceSymbolProvider::with_uris(Arc::clone(
+            cross_reference_manager.document_uris(),
+        )));
         let workspace_scan_state = WorkspaceScanState::new();
         let analyzer = Analyzer {
             document_manager: Arc::clone(&document_manager),
@@ -1395,12 +1428,18 @@ impl LanguageServer for RossiLanguageServer {
         // memoised-parse) analysis.
         if self.document_manager.version(&uri).is_some() {
             self.analyzer.analyze(uri.clone()).await;
+            // Both saved layers, not just the symbol one: a client without
+            // dynamic registration sends no watched-file event, and this is
+            // then the only moment either index learns the file changed.
+            // Under the still-open buffer neither changes what the index
+            // answers with, so this costs a read and a parse and no more.
+            let xrefs = Arc::clone(&self.cross_reference_manager);
             let symbols = Arc::clone(&self.workspace_symbol_provider);
             let save_uri = uri.clone();
-            match run_blocking(move || symbols.refresh_document_from_disk(&save_uri)).await {
-                Ok(Ok(())) => {}
-                Ok(Err(error)) => info!("Failed to refresh saved symbols for {uri}: {error}"),
-                Err(error) => info!("Failed to refresh saved symbols for {uri}: {error}"),
+            if let Err(error) =
+                run_blocking(move || refresh_saved_layers(&xrefs, &symbols, &save_uri)).await
+            {
+                info!("Failed to refresh saved layers for {uri}: {error}");
             }
         }
 
@@ -1426,18 +1465,19 @@ impl LanguageServer for RossiLanguageServer {
         // missing one as a removal. One uniform path is shorter than three and
         // cannot be desynchronised by a client's bookkeeping.
         // Events are filtered through the workspace scan's own two rules, and
-        // deduplicated: a client may report one path twice in a batch (a
-        // create plus a change), and re-reading it would be pure waste since
-        // each refresh below reads from disk anyway.
-        let mut seen = std::collections::HashSet::new();
-        let changed: Vec<Url> = params
+        // collected into a set: a client may report one path twice in a batch
+        // (a create plus a change), and re-reading it would be pure waste
+        // since the refresh below reads from disk anyway. Order does not
+        // matter for the same reason.
+        let changed: std::collections::HashSet<Url> = params
             .changes
             .into_iter()
-            .filter_map(|change| {
-                let path = change.uri.to_file_path().ok()?;
-                let indexed = rossi_build::walk::is_source_file(&path)
-                    && rossi_build::walk::is_within_source_walk(&root, &path);
-                (indexed && seen.insert(change.uri.clone())).then_some(change.uri)
+            .map(|change| change.uri)
+            .filter(|uri| {
+                uri.to_file_path().is_ok_and(|path| {
+                    rossi_build::walk::is_source_file(&path)
+                        && rossi_build::walk::is_within_source_walk(&root, &path)
+                })
             })
             .collect();
         if changed.is_empty() {
@@ -1445,26 +1485,21 @@ impl LanguageServer for RossiLanguageServer {
         }
         debug!("Refreshing {} watched file(s)", changed.len());
 
-        // One blocking hop for the whole batch: a branch switch delivers
-        // hundreds of events at once.
-        // Both indexes keep their disk and open layers apart, so each file is
-        // refreshed the same way whether or not the editor holds it open: an
-        // open buffer keeps answering for its file, and a file deleted while
-        // open still loses what was saved for it.
+        // One blocking hop for the whole batch, and one read and parse per
+        // file within it — a branch switch delivers hundreds of events, and
+        // both indexes take the same parse. Their disk and open layers are
+        // kept apart, so a file is refreshed the same way whether or not the
+        // editor holds it open: an open buffer keeps answering for its file,
+        // and a file deleted while open still loses what was saved for it.
         let xrefs = Arc::clone(&self.cross_reference_manager);
         let symbols = Arc::clone(&self.workspace_symbol_provider);
-        if let Err(error) = run_blocking(move || {
+        let refreshed = run_blocking(move || {
             for uri in changed {
-                if let Err(error) = symbols.refresh_document_from_disk(&uri) {
-                    info!("Failed to refresh saved symbols for {uri}: {error}");
-                }
-                if let Err(error) = xrefs.refresh_document_from_disk(&uri) {
-                    info!("Failed to refresh cross-references for {uri}: {error}");
-                }
+                refresh_saved_layers(&xrefs, &symbols, &uri);
             }
         })
-        .await
-        {
+        .await;
+        if let Err(error) = refreshed {
             info!("Failed to refresh watched files: {error}");
         }
 
