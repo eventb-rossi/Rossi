@@ -353,6 +353,116 @@ pub fn is_keyword(word: &str) -> bool {
     lookup(word).is_some()
 }
 
+/// Where a declared name is written back in `.eventb` text. The grammar
+/// guards each name list only against its own section's follow-set
+/// (`context_section_kw`, `machine_section_kw`, `event_section_kw` and
+/// `event_refines_follow_kw` in `grammar.pest`), so which keywords re-lex a
+/// name depends on the site.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DeclSite {
+    /// A context name: listed under `EXTENDS` and `SEES`.
+    ContextName,
+    /// A machine name: only ever the sole `REFINES` target, which the grammar
+    /// never guards, so it collides with nothing here (only with Camille's
+    /// tokens, see [`camille_reserved_keyword`]).
+    MachineName,
+    /// A carrier set or constant: listed under `SETS` / `CONSTANTS`.
+    ContextItem,
+    /// A variable: listed under `VARIABLES`.
+    Variable,
+    /// An event name: listed as an event's `REFINES` target; also
+    /// `INITIALISATION`, which the event header captures as the init event.
+    EventName,
+    /// An event parameter: listed under `ANY`.
+    Parameter,
+}
+
+// The inline keywords re-lex a name wherever it is *used*: `theorem` in any
+// labeled predicate, so every identifier site collides with it; `skip` only
+// as an action's target, so only variables do (`x ≔ skip + 1` parses).
+const INLINE: &[KeywordId] = &[Theorem];
+const INLINE_VARIABLE: &[KeywordId] = &[Theorem, Skip];
+const CONTEXT_SECTION: &[KeywordId] = &[Extends, Sets, Constants, Axioms, Theorems, End];
+const MACHINE_SECTION: &[KeywordId] = &[
+    Refines, Sees, Variables, Invariants, Theorems, Variant, Events, End,
+];
+const EVENT_SECTION: &[KeywordId] = &[Where, With, Witness, Then, End];
+const EVENT_REFINES_FOLLOW: &[KeywordId] = &[Status, Any];
+// Not a follow-set: the event header's ordered choice
+// (`initialisation_event | event`) captures a name spelled this way as the
+// INITIALISATION event.
+const EVENT_HEADER: &[KeywordId] = &[Initialisation];
+
+/// The spelling of the structural keyword rossi's own grammar takes a
+/// declared name spelled `word` for when written at `site`, if any
+/// (case-insensitive, like the tokens; an alias such as `begin` reports
+/// `BEGIN`, not `THEN`). Only the keywords that terminate the site's list
+/// (or, for identifiers, re-lex a use) collide: a variable named `status`
+/// survives every rossi round trip and is not reported here. Stock Camille's
+/// stricter lexicon is [`camille_reserved_keyword`].
+pub fn colliding_keyword(word: &str, site: DeclSite) -> Option<&'static str> {
+    let sets: &[&[KeywordId]] = match site {
+        DeclSite::ContextName => &[CONTEXT_SECTION, MACHINE_SECTION],
+        DeclSite::MachineName => &[],
+        DeclSite::ContextItem => &[CONTEXT_SECTION, INLINE],
+        DeclSite::Variable => &[MACHINE_SECTION, INLINE_VARIABLE],
+        DeclSite::EventName => &[EVENT_SECTION, EVENT_REFINES_FOLLOW, EVENT_HEADER],
+        DeclSite::Parameter => &[EVENT_SECTION, INLINE],
+    };
+    spelling_among(word, sets)
+}
+
+/// The spelling of `word` in the table, if it is (case-insensitively) a
+/// spelling of a keyword in one of `sets`.
+fn spelling_among(word: &str, sets: &[&[KeywordId]]) -> Option<&'static str> {
+    lookup(word)
+        .filter(|k| sets.iter().any(|s| s.contains(&k.id)))?
+        .spellings
+        .iter()
+        .copied()
+        .find(|s| s.eq_ignore_ascii_case(word))
+}
+
+// Stock Camille (Rodin's text editor, `EventBParser.scc`) lexes these as
+// tokens in their lowercase spelling only, ahead of `identifier_literal`; it
+// has no `INITIALISATION`, `STATUS`, `WITNESS`, `skip` or `THEOREMS` tokens.
+const CAMILLE: &[KeywordId] = &[
+    Context,
+    Machine,
+    End,
+    Extends,
+    Sets,
+    Constants,
+    Axioms,
+    Refines,
+    Sees,
+    Variables,
+    Invariants,
+    Variant,
+    Events,
+    Event,
+    Any,
+    Where,
+    With,
+    Then,
+    Ordinary,
+    Convergent,
+    Anticipated,
+    Theorem,
+];
+
+/// The spelling of the structural keyword stock Camille lexes a declared
+/// name spelled `word` as, wherever it is written, if any. Camille's tokens
+/// are lowercase and case-sensitive, so only an all-lowercase `word`
+/// collides: `machine` cannot be read as a name anywhere in a Camille file,
+/// `Machine` can.
+pub fn camille_reserved_keyword(word: &str) -> Option<&'static str> {
+    if word.bytes().any(|b| b.is_ascii_uppercase()) {
+        return None;
+    }
+    spelling_among(word, &[CAMILLE])
+}
+
 /// Keywords offered in the given completion scope (a bitmask of [`scope`] flags).
 pub fn iter_completion_scope(scope_mask: u8) -> impl Iterator<Item = &'static Keyword> {
     KEYWORDS
@@ -526,6 +636,141 @@ mod tests {
         assert_eq!(lookup("BEGIN").map(|k| k.id), Some(Then));
         assert_eq!(spell(Where), "WHERE");
         assert_eq!(spell(Then), "THEN");
+    }
+
+    #[test]
+    fn colliding_keyword_follows_the_site_terminators() {
+        use DeclSite::*;
+        // `END` terminates every list; the rest depend on the site.
+        for site in [ContextName, ContextItem, Variable, EventName, Parameter] {
+            for s in ["end", "End", "END"] {
+                assert_eq!(colliding_keyword(s, site), Some("END"), "{site:?}");
+            }
+            assert!(colliding_keyword("price", site).is_none());
+            // Header/status words never end a name list.
+            assert!(colliding_keyword("machine", site).is_none(), "{site:?}");
+            assert!(colliding_keyword("ordinary", site).is_none(), "{site:?}");
+        }
+        // A machine name is only ever the sole REFINES target: unguarded.
+        assert!(colliding_keyword("end", MachineName).is_none());
+        assert_eq!(colliding_keyword("Sets", ContextItem), Some("SETS"));
+        assert!(colliding_keyword("sets", Variable).is_none());
+        assert_eq!(colliding_keyword("variables", Variable), Some("VARIABLES"));
+        assert!(colliding_keyword("variables", Parameter).is_none());
+        assert_eq!(colliding_keyword("Begin", Parameter), Some("BEGIN"));
+        assert_eq!(colliding_keyword("when", EventName), Some("WHEN"));
+        // A context name is listed under both EXTENDS and SEES.
+        assert_eq!(colliding_keyword("sees", ContextName), Some("SEES"));
+        assert_eq!(colliding_keyword("axioms", ContextName), Some("AXIOMS"));
+        // STATUS / INITIALISATION break only in the event header.
+        assert_eq!(colliding_keyword("status", EventName), Some("STATUS"));
+        assert_eq!(
+            colliding_keyword("Initialisation", EventName),
+            Some("INITIALISATION")
+        );
+        assert!(colliding_keyword("status", Variable).is_none());
+        // Inline keywords re-lex any *use*, so identifiers collide anywhere.
+        assert_eq!(colliding_keyword("skip", Variable), Some("skip"));
+        assert!(colliding_keyword("skip", ContextItem).is_none());
+        assert!(colliding_keyword("skip", Parameter).is_none());
+        assert_eq!(colliding_keyword("theorem", ContextItem), Some("theorem"));
+        assert!(colliding_keyword("skip", EventName).is_none());
+    }
+
+    #[test]
+    fn site_terminators_match_grammar() {
+        // The per-site terminator sets mirror the grammar's follow-set rules
+        // (`x = _{ kw_a | kw_b | ... }`, one per line); a keyword added to or
+        // dropped from one of those rules must be mirrored here, or EB028
+        // drifts from what the parser actually re-lexes.
+        let grammar = include_str!("grammar.pest");
+        let rule_words = |rule: &str| -> HashSet<String> {
+            let line = grammar
+                .lines()
+                .find(|l| l.starts_with(&format!("{rule} =")))
+                .unwrap_or_else(|| panic!("{rule} missing from grammar.pest"));
+            line.split_whitespace()
+                .filter_map(|w| w.strip_prefix("kw_"))
+                .map(str::to_string)
+                .collect()
+        };
+        let table_words = |ids: &[KeywordId]| -> HashSet<String> {
+            ids.iter()
+                .flat_map(|id| keyword(*id).spellings.iter())
+                .map(|s| s.to_ascii_lowercase())
+                .collect()
+        };
+        assert_eq!(
+            rule_words("context_section_kw"),
+            table_words(CONTEXT_SECTION)
+        );
+        assert_eq!(
+            rule_words("machine_section_kw"),
+            table_words(MACHINE_SECTION)
+        );
+        assert_eq!(rule_words("event_section_kw"), table_words(EVENT_SECTION));
+        // `event_refines_follow_kw` also names `event_section_kw` (checked
+        // above), which the scraper skips as it carries no `kw_` prefix.
+        assert_eq!(
+            rule_words("event_refines_follow_kw"),
+            table_words(EVENT_REFINES_FOLLOW)
+        );
+    }
+
+    #[test]
+    fn camille_reserved_keyword_is_lowercase_only() {
+        // EventBParser.scc (probparsers/eventbstruct): the structural tokens,
+        // all lowercase; `where`/`when` and `then`/`begin` share a token.
+        let expected: HashSet<&str> = HashSet::from([
+            "ordinary",
+            "convergent",
+            "anticipated",
+            "machine",
+            "refines",
+            "sees",
+            "variables",
+            "invariants",
+            "theorem",
+            "events",
+            "variant",
+            "end",
+            "context",
+            "extends",
+            "sets",
+            "constants",
+            "axioms",
+            "event",
+            "any",
+            "where",
+            "when",
+            "with",
+            "then",
+            "begin",
+        ]);
+        for w in &expected {
+            assert_eq!(
+                camille_reserved_keyword(w).map(str::to_ascii_lowercase),
+                Some(w.to_string())
+            );
+        }
+        for k in KEYWORDS {
+            for s in k.spellings {
+                let lower = s.to_ascii_lowercase();
+                assert_eq!(
+                    camille_reserved_keyword(&lower).is_some(),
+                    expected.contains(lower.as_str()),
+                    "{lower}"
+                );
+                // Camille's tokens are case-sensitive: any other case is a name.
+                assert!(
+                    camille_reserved_keyword(&s.to_ascii_uppercase()).is_none(),
+                    "{s}"
+                );
+            }
+        }
+        assert_eq!(camille_reserved_keyword("machine"), Some("MACHINE"));
+        assert_eq!(camille_reserved_keyword("begin"), Some("BEGIN"));
+        assert!(camille_reserved_keyword("Machine").is_none());
     }
 
     #[test]

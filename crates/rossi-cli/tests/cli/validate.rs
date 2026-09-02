@@ -863,6 +863,49 @@ fn validate_deny_warnings_fails_on_advisory_lints() {
 }
 
 #[test]
+fn validate_flags_structural_keyword_names() {
+    // A carrier set named `end` is legal in Rodin's object model but no
+    // textual notation can represent it: rossi used to accept it silently and
+    // `fmt` wrote a file no text tool could read back. EB028 is advisory, so
+    // it exits 0 (`--deny-warnings` gating is rule-independent and covered by
+    // `validate_deny_warnings_fails_on_advisory_lints`). The `--no-lints`
+    // run is the only loose-file exercise of that gate: the zip toggle test
+    // goes through the project path.
+    let tmp = tempdir_unique("rossi-cli-keyword-name");
+    let file = tmp.join("set_end.eventb");
+    std::fs::write(
+        &file,
+        "context c\nsets end\nconstants k\naxioms\n  @axm1 k ∈ ℕ\nend\n",
+    )
+    .unwrap();
+    let path = file.to_str().unwrap();
+
+    let lenient = rossi_command()
+        .args(["validate", path])
+        .output()
+        .expect("Failed to execute command");
+    assert!(lenient.status.success(), "EB028 is advisory");
+    let stdout = String::from_utf8_lossy(&lenient.stdout);
+    assert!(
+        stdout.contains("[EB028]"),
+        "expected EB028 in stdout: {stdout}"
+    );
+
+    let silenced = rossi_command()
+        .args(["validate", "--no-lints", path])
+        .output()
+        .expect("Failed to execute command");
+    assert!(silenced.status.success());
+    let stdout = String::from_utf8_lossy(&silenced.stdout);
+    assert!(
+        !stdout.contains("EB028"),
+        "EB028 should be suppressed under --no-lints: {stdout}"
+    );
+
+    std::fs::remove_dir_all(&tmp).ok();
+}
+
+#[test]
 fn validate_deny_warnings_still_reports_the_rows_it_fails_on() {
     // `--quiet` keeps only what matters, and under `--deny-warnings` the
     // advisory rows are exactly what fails the run — suppressing them would

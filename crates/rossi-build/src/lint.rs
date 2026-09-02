@@ -16,6 +16,8 @@
 //! - **EB023** shadowed name     — declared name re-lexes as a textual token
 //! - **EB024** new event assigns inherited variable — a non-refining event
 //!   modifies state inherited from an abstract machine
+//! - **EB028** keyword name      — declared name spells a structural keyword
+//!   that no textual notation can represent
 //!
 //! EB019 (duplicate component names) and EB021/EB022 (duplicate
 //! identifiers / labels) are project- and component-integrity failures,
@@ -29,9 +31,10 @@ use std::collections::{BTreeSet, HashMap};
 
 use rossi::ast::Span;
 use rossi::formula::tag::{AssocPredOp, RelationalOp};
+use rossi::keywords::DeclSite;
 use rossi::{
-    Component, ComponentId, Context, DependencyGraph, Event, ExpressionKind, InitialisationEvent,
-    Machine, Predicate, PredicateKind,
+    Component, ComponentId, DependencyGraph, Event, ExpressionKind, InitialisationEvent, Machine,
+    Predicate, PredicateKind,
 };
 
 use crate::ast_util::lhs_variables;
@@ -89,9 +92,9 @@ pub fn run(project: &Project) -> Vec<Diagnostic> {
 /// EXTENDS parents are usually absent, so the reference-based lints would
 /// false-positive); these local passes are safe to run anywhere.
 ///
-/// Today that is EB023 (shadowed names) alone: EB021/EB022 (duplicate
-/// identifiers / labels) are semantic errors checked by the SC build via
-/// [`crate::duplicates`], not advisories.
+/// Today that is EB023 (shadowed names) and EB028 (keyword names):
+/// EB021/EB022 (duplicate identifiers / labels) are semantic errors checked
+/// by the SC build via [`crate::duplicates`], not advisories.
 ///
 /// The two component-local check categories — advisory lints (this
 /// function) and semantic duplicate-name errors
@@ -101,9 +104,75 @@ pub fn run(project: &Project) -> Vec<Diagnostic> {
 /// ungated). A new component-local check must be wired into both callers.
 #[must_use]
 pub fn run_component(component: &Component) -> Vec<Diagnostic> {
+    let mut diags = Vec::new();
+    for_each_declared_name(component, |origin, kind, name, site, span| {
+        // EB023 concerns names used in formulas, where the mathematical
+        // grammar re-lexes them; component and event names never are.
+        if matches!(
+            site,
+            DeclSite::ContextItem | DeclSite::Variable | DeclSite::Parameter
+        ) {
+            diags.extend(shadowed_name_diag(origin, kind, name, span));
+        }
+        diags.extend(keyword_name_diag(origin, kind, name, site, span));
+    });
+    diags
+}
+
+/// Visit every declared name of `component`: the diagnostic origin prefix
+/// (`Component`, or `Component.event` for a parameter), the kind of
+/// declaration, the name, where it is written back in text, and its span.
+fn for_each_declared_name(
+    component: &Component,
+    mut visit: impl FnMut(&str, &str, &str, DeclSite, Option<Span>),
+) {
     match component {
-        Component::Machine(m) => lint_shadowed_names_machine(m),
-        Component::Context(c) => lint_shadowed_names_context(c),
+        Component::Context(c) => {
+            visit(
+                &c.name,
+                "context",
+                &c.name,
+                DeclSite::ContextName,
+                c.name_span,
+            );
+            for set in &c.sets {
+                visit(
+                    &c.name,
+                    "carrier set",
+                    &set.name,
+                    DeclSite::ContextItem,
+                    set.span,
+                );
+            }
+            for k in &c.constants {
+                visit(&c.name, "constant", &k.name, DeclSite::ContextItem, k.span);
+            }
+        }
+        Component::Machine(m) => {
+            visit(
+                &m.name,
+                "machine",
+                &m.name,
+                DeclSite::MachineName,
+                m.name_span,
+            );
+            for v in &m.variables {
+                visit(&m.name, "variable", &v.name, DeclSite::Variable, v.span);
+            }
+            for event in &m.events {
+                visit(
+                    &m.name,
+                    "event",
+                    &event.name,
+                    DeclSite::EventName,
+                    event.name_span,
+                );
+                let origin = format!("{}.{}", m.name, event.name);
+                for p in &event.parameters {
+                    visit(&origin, "parameter", &p.name, DeclSite::Parameter, p.span);
+                }
+            }
+        }
     }
 }
 
@@ -328,38 +397,41 @@ fn shadowed_name_diag(
     })
 }
 
-fn lint_shadowed_names_context(c: &Context) -> Vec<Diagnostic> {
-    let mut diags = Vec::new();
-    for set in &c.sets {
-        diags.extend(shadowed_name_diag(
-            &c.name,
-            "carrier set",
-            &set.name,
-            set.span,
-        ));
-    }
-    for k in &c.constants {
-        diags.extend(shadowed_name_diag(&c.name, "constant", &k.name, k.span));
-    }
-    diags
-}
-
-fn lint_shadowed_names_machine(m: &Machine) -> Vec<Diagnostic> {
-    let mut diags = Vec::new();
-    for v in &m.variables {
-        diags.extend(shadowed_name_diag(&m.name, "variable", &v.name, v.span));
-    }
-    for event in &m.events {
-        for p in &event.parameters {
-            diags.extend(shadowed_name_diag(
-                &format!("{}.{}", m.name, event.name),
-                "parameter",
-                &p.name,
-                p.span,
-            ));
-        }
-    }
-    diags
+/// EB028: a declared name spelled like a structural keyword that textual
+/// notation cannot read back as a name. Rodin's object model allows it (its
+/// identifier check is lexical over the mathematical grammar only), so
+/// imports must keep loading such models; which keywords break which site,
+/// and for which reader, is [`rossi::keywords::colliding_keyword`] and
+/// [`rossi::keywords::camille_reserved_keyword`]'s business. Warn at the
+/// declaration, naming the reader that breaks.
+fn keyword_name_diag(
+    component: &str,
+    kind: &str,
+    name: &str,
+    site: DeclSite,
+    span: Option<Span>,
+) -> Option<Diagnostic> {
+    let (keyword, why) = match rossi::keywords::colliding_keyword(name, site) {
+        Some(keyword) => (
+            keyword,
+            "which rossi's grammar takes for the keyword where this name is \
+             written, so the model does not round-trip through `.eventb` text",
+        ),
+        None => (
+            rossi::keywords::camille_reserved_keyword(name)?,
+            "which stock Camille reserves in that lowercase spelling, so \
+             Rodin's text editor cannot read the model",
+        ),
+    };
+    Some(Diagnostic {
+        severity: RuleId::KeywordName.default_severity(),
+        origin: format!("{component}.{name}"),
+        message: format!(
+            "{kind} `{name}` spells the structural keyword `{keyword}`, {why} — rename it"
+        ),
+        rule_id: Some(RuleId::KeywordName),
+        span,
+    })
 }
 
 // ---------- reference collection -------------------------------------------
@@ -1041,6 +1113,123 @@ mod tests {
         assert_eq!(shadowed.len(), 2, "{shadowed:?}");
         assert!(shadowed.iter().any(|d| d.origin == "M.or"));
         assert!(shadowed.iter().any(|d| d.origin == "M.evt.circ"));
+    }
+
+    #[test]
+    fn keyword_names_are_flagged() {
+        // `end` and `Axioms` end the SETS / CONSTANTS lists (case-
+        // insensitively, like the tokens) and warn with the rossi reason;
+        // `machine` never terminates a context list but is a Camille token in
+        // that lowercase spelling, so it warns with the Camille reason;
+        // `Machine`, `Sees` and `status` survive every textual round trip;
+        // `price` is ordinary. The diagnostic anchors on the declaration's
+        // span and names the keyword as spelled in the table.
+        let set_span = Span { start: 11, end: 14 };
+        let const_span = Span { start: 30, end: 36 };
+        let mut c = Context::new("C".into());
+        c.sets = vec![rossi::NamedElement::with_span("end".into(), set_span)];
+        c.constants = vec![
+            rossi::NamedElement::with_span("Axioms".into(), const_span),
+            nv("machine"),
+            nv("Machine"),
+            nv("status"),
+            nv("Sees"),
+            nv("price"),
+        ];
+
+        let diags = run_component(&Component::Context(c));
+        let keyword: Vec<_> = diags
+            .iter()
+            .filter(|d| d.rule_id == Some(RuleId::KeywordName))
+            .collect();
+        let origins: Vec<_> = keyword.iter().map(|d| d.origin.as_str()).collect();
+        assert_eq!(origins, ["C.end", "C.Axioms", "C.machine"], "{keyword:?}");
+        assert_eq!(keyword[0].span, Some(set_span));
+        assert!(
+            keyword[0].message.contains("`END`"),
+            "{}",
+            keyword[0].message
+        );
+        assert!(
+            keyword[0].message.contains("rossi's grammar"),
+            "{}",
+            keyword[0].message
+        );
+        assert_eq!(keyword[1].span, Some(const_span));
+        assert!(
+            keyword[2].message.contains("`MACHINE`"),
+            "{}",
+            keyword[2].message
+        );
+        assert!(
+            keyword[2].message.contains("Camille"),
+            "{}",
+            keyword[2].message
+        );
+    }
+
+    #[test]
+    fn keyword_component_names_are_flagged() {
+        // A context is listed under EXTENDS and SEES, so its own name must
+        // not spell a keyword ending either list: `machine m sees c end`
+        // cannot be read back. A machine name is only ever the sole REFINES
+        // target, which rossi's grammar never guards, so only Camille's
+        // lowercase tokens collide with it.
+        let name_span = Span { start: 8, end: 12 };
+        let mut c = Context::new("sees".into());
+        c.name_span = Some(name_span);
+        let diags = run_component(&Component::Context(c));
+        assert_eq!(diags.len(), 1, "{diags:?}");
+        assert_eq!(diags[0].rule_id, Some(RuleId::KeywordName));
+        assert_eq!(diags[0].span, Some(name_span));
+
+        let m = Machine::new("End".into());
+        assert!(run_component(&Component::Machine(m)).is_empty());
+        let m = Machine::new("end".into());
+        let diags = run_component(&Component::Machine(m));
+        assert_eq!(diags.len(), 1, "{diags:?}");
+        assert_eq!(diags[0].origin, "end.end");
+    }
+
+    #[test]
+    fn keyword_machine_names_are_flagged() {
+        // Variables, event names, and event parameters are all declaration
+        // sites, each guarded by its own list's terminators: `when` ends an
+        // ANY list but not VARIABLES (the variable is flagged only because
+        // it is a Camille token), `status` ends an event's REFINES targets
+        // but is a fine variable, and `skip` re-lexes any action on a
+        // variable. The event diagnostic anchors on the name token, not the
+        // whole event.
+        let name_span = Span { start: 40, end: 44 };
+        let mut m = Machine::new("M".into());
+        m.variables = vec![nv("when"), nv("status"), nv("skip"), nv("count")];
+        let mut e = Event::new("then".into());
+        e.name_span = Some(name_span);
+        e.parameters = vec![nv("Begin"), nv("variables"), nv("p")];
+        let mut status = Event::new("status".into());
+        status.parameters = vec![nv("Initialisation")];
+        m.events = vec![e, status, Event::new("initialisation".into())];
+
+        let diags = run(&proj(vec![pc("M.bum", Component::Machine(m))]));
+        let keyword: Vec<_> = diags
+            .iter()
+            .filter(|d| d.rule_id == Some(RuleId::KeywordName))
+            .collect();
+        let origins: Vec<_> = keyword.iter().map(|d| d.origin.as_str()).collect();
+        assert_eq!(
+            origins,
+            [
+                "M.when",
+                "M.skip",
+                "M.then",
+                "M.then.Begin",
+                "M.then.variables",
+                "M.status",
+                "M.initialisation"
+            ],
+            "{keyword:?}"
+        );
+        assert_eq!(keyword[2].span, Some(name_span));
     }
 
     #[test]

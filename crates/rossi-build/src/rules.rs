@@ -9,11 +9,11 @@ use crate::Severity;
 
 /// Validation rule identifiers exposed in `Diagnostic.rule_id`.
 ///
-/// Codes use the stable `EBnnn` scheme (`"EB001"`..`"EB026"`); gaps are
+/// Codes use the stable `EBnnn` scheme (`"EB001"`..`"EB028"`); gaps are
 /// rules not yet implemented in rossi (EB020 unknown
 /// type) or removed as valueless (EB013 dead
-/// constant — every hit was already an EB006 typing Error). EB023 and
-/// EB024 are rossi-only extensions; EB025 is a refinement static-check
+/// constant — every hit was already an EB006 typing Error). EB023, EB024
+/// and EB028 are rossi-only extensions; EB025 is a refinement static-check
 /// emitted by `crate::build`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum RuleId {
@@ -81,10 +81,14 @@ pub enum RuleId {
     /// do not coincide, a shared abstract parameter name has conflicting
     /// types, or an extended event declares several targets.
     EventMergeMismatch,
+    /// EB028 — Declared name spells a structural keyword (`END`, `SETS`,
+    /// `THEN`, …) that rossi or Camille re-lexes where the name is written.
+    /// (rossi-only.)
+    KeywordName,
 }
 
 impl RuleId {
-    /// Stable string code (`"EB001"`..`"EB026"`).
+    /// Stable string code (`"EB001"`..`"EB028"`).
     #[must_use]
     pub fn code(self) -> &'static str {
         match self {
@@ -113,6 +117,7 @@ impl RuleId {
             RuleId::DisappearedVariable => "EB025",
             RuleId::AssignmentInPredicate => "EB026",
             RuleId::EventMergeMismatch => "EB027",
+            RuleId::KeywordName => "EB028",
         }
     }
 
@@ -145,6 +150,7 @@ impl RuleId {
             RuleId::DisappearedVariable => "Disappeared variable assigned",
             RuleId::AssignmentInPredicate => "Assignment operator in predicate",
             RuleId::EventMergeMismatch => "Merged abstract events mismatch",
+            RuleId::KeywordName => "Structural keyword as identifier",
         }
     }
 
@@ -223,6 +229,9 @@ impl RuleId {
             RuleId::EventMergeMismatch => {
                 "An event that merges several abstract events must merge compatible ones: the abstract events' actions must be identical with coinciding labels, an abstract parameter name shared between them must have one type, and an extended event cannot merge at all."
             }
+            RuleId::KeywordName => {
+                "A declared name (context, machine, carrier set, constant, variable, event, or event parameter) is spelled like a structural keyword that textual notation cannot read back as a name: rossi's grammar recognises the keyword where the name is written (the keyword that ends its list, as in `sets a end`, or `INITIALISATION` as an event name), or stock Camille reserves that lowercase spelling outright (`machine`). Rodin's object model allows the name, but the model cannot round-trip through `.eventb` text."
+            }
         }
     }
 
@@ -255,7 +264,8 @@ impl RuleId {
             | RuleId::UndischargedProof
             | RuleId::BrokenProof
             | RuleId::ProofFileParseError
-            | RuleId::ShadowedName => Severity::Warning,
+            | RuleId::ShadowedName
+            | RuleId::KeywordName => Severity::Warning,
         }
     }
 
@@ -289,6 +299,7 @@ impl RuleId {
             RuleId::DisappearedVariable,
             RuleId::AssignmentInPredicate,
             RuleId::EventMergeMismatch,
+            RuleId::KeywordName,
         ]
     }
 }
@@ -336,6 +347,7 @@ mod tests {
         assert_eq!(RuleId::NewEventAssignsInheritedVariable.code(), "EB024");
         assert_eq!(RuleId::DisappearedVariable.code(), "EB025");
         assert_eq!(RuleId::AssignmentInPredicate.code(), "EB026");
+        assert_eq!(RuleId::KeywordName.code(), "EB028");
     }
 
     #[test]
