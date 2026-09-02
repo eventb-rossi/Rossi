@@ -393,6 +393,19 @@ const EVENT_REFINES_FOLLOW: &[KeywordId] = &[Status, Any];
 // INITIALISATION event.
 const EVENT_HEADER: &[KeywordId] = &[Initialisation];
 
+/// The keywords that end an event clause opened by `after`: the suffix of
+/// [`EVENT_SECTION`] past that clause, mirroring the grammar's event-body
+/// clause order (`event_body` in `grammar.pest`). `STATUS`, `REFINES` and
+/// `ANY` open the body before any of those keywords, so they are bounded by
+/// the whole list. Keeps the parser's error recovery on the one follow-set
+/// `site_terminators_match_grammar` pins to the grammar.
+pub(crate) fn event_clause_boundary(after: KeywordId) -> &'static [KeywordId] {
+    match EVENT_SECTION.iter().position(|&k| k == after) {
+        Some(index) => &EVENT_SECTION[index + 1..],
+        None => EVENT_SECTION,
+    }
+}
+
 /// The spelling of the structural keyword rossi's own grammar takes a
 /// declared name spelled `word` for when written at `site`, if any
 /// (case-insensitive, like the tokens; an alias such as `begin` reports
@@ -715,6 +728,27 @@ mod tests {
             rule_words("event_refines_follow_kw"),
             table_words(EVENT_REFINES_FOLLOW)
         );
+    }
+
+    #[test]
+    fn event_clause_boundary_is_the_suffix_after_each_clause() {
+        // Each event clause is bounded by the clauses that may still follow
+        // it, which is exactly the tail of EVENT_SECTION past itself. The
+        // parser's recovery reads its boundary sets from here, so this also
+        // pins those to the grammar via `site_terminators_match_grammar`.
+        assert_eq!(
+            event_clause_boundary(Where),
+            [With, Witness, Then, End].as_slice()
+        );
+        assert_eq!(event_clause_boundary(With), [Witness, Then, End].as_slice());
+        assert_eq!(event_clause_boundary(Witness), [Then, End].as_slice());
+        assert_eq!(event_clause_boundary(Then), [End].as_slice());
+        assert_eq!(event_clause_boundary(End), [].as_slice());
+        // STATUS / REFINES / ANY open the body before the list starts, so
+        // every one of its keywords still bounds them.
+        for before in [Status, Refines, Any] {
+            assert_eq!(event_clause_boundary(before), EVENT_SECTION, "{before:?}");
+        }
     }
 
     #[test]

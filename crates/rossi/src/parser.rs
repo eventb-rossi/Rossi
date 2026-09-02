@@ -4523,7 +4523,7 @@ fn recover_common_event_clauses(
     if let Some((content_start, content_end)) = clause_content_range(
         positions,
         KeywordId::With,
-        &[KeywordId::Witness, KeywordId::Then, KeywordId::End],
+        crate::keywords::event_clause_boundary(KeywordId::With),
         body_end,
     ) {
         *with =
@@ -4532,15 +4532,18 @@ fn recover_common_event_clauses(
     if let Some((content_start, content_end)) = clause_content_range(
         positions,
         KeywordId::Witness,
-        &[KeywordId::Then, KeywordId::End],
+        crate::keywords::event_clause_boundary(KeywordId::Witness),
         body_end,
     ) {
         *witnesses =
             recover_predicates_in_range(text, content_start, content_end, "witness", errors);
     }
-    if let Some((content_start, content_end)) =
-        clause_content_range(positions, KeywordId::Then, &[KeywordId::End], body_end)
-    {
+    if let Some((content_start, content_end)) = clause_content_range(
+        positions,
+        KeywordId::Then,
+        crate::keywords::event_clause_boundary(KeywordId::Then),
+        body_end,
+    ) {
         *actions = recover_actions_in_range(text, content_start, content_end, errors);
     }
 }
@@ -4628,9 +4631,12 @@ fn recover_events(
             // forbids WITH/WITNESS here and the strict parser always leaves
             // those empty, so recover just the actions rather than synthesizing
             // clauses a valid parse could never produce.
-            if let Some((content_start, content_end)) =
-                clause_content_range(&positions, KeywordId::Then, &[KeywordId::End], body_end)
-            {
+            if let Some((content_start, content_end)) = clause_content_range(
+                &positions,
+                KeywordId::Then,
+                crate::keywords::event_clause_boundary(KeywordId::Then),
+                body_end,
+            ) {
                 init.actions = recover_actions_in_range(text, content_start, content_end, errors);
             }
             initialisation = Some(init);
@@ -4638,13 +4644,7 @@ fn recover_events(
             let any_range = clause_content_range(
                 &positions,
                 KeywordId::Any,
-                &[
-                    KeywordId::Where,
-                    KeywordId::With,
-                    KeywordId::Witness,
-                    KeywordId::Then,
-                    KeywordId::End,
-                ],
+                crate::keywords::event_clause_boundary(KeywordId::Any),
                 body_end,
             );
             let (name, name_span) =
@@ -4679,12 +4679,7 @@ fn recover_events(
             if let Some((content_start, content_end)) = clause_content_range(
                 &positions,
                 KeywordId::Where,
-                &[
-                    KeywordId::With,
-                    KeywordId::Witness,
-                    KeywordId::Then,
-                    KeywordId::End,
-                ],
+                crate::keywords::event_clause_boundary(KeywordId::Where),
                 body_end,
             ) {
                 event.guards =
