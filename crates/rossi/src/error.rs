@@ -105,6 +105,22 @@ pub enum ParseError {
         span: Option<Span>,
     },
 
+    /// An event clause written after one it must precede — a `WITH` block
+    /// below `THEN`, say. Rodin fixes the clause order (`ANY`, `WHERE`,
+    /// `WITH`, `WITNESS`, `THEN`), so this is a misordering rather than an
+    /// unexpected keyword: `clause` is the one to move and `before` the
+    /// earliest clause it must precede, both canonically spelled. `line` and
+    /// `column` are 1-indexed; `span` covers the whole clause, so a consumer
+    /// knows what has to move.
+    #[error("`{clause}` clause must come before `{before}`")]
+    ClauseOutOfOrder {
+        clause: String,
+        before: String,
+        line: usize,
+        column: usize,
+        span: Option<Span>,
+    },
+
     /// A labeled item whose formula is missing: `@inv1` with no predicate,
     /// `@act1` with no action. Reported at the label, for the same reason
     /// [`ParseError::EmptyClause`] is reported at its keyword. `expected`
@@ -303,6 +319,7 @@ impl ParseError {
             ParseError::PestError { line, span, .. }
             | ParseError::EmptyClause { line, span, .. }
             | ParseError::MissingFormula { line, span, .. }
+            | ParseError::ClauseOutOfOrder { line, span, .. }
             | ParseError::ReservedWord { line, span, .. }
             | ParseError::IncompatibleOperators { line, span, .. }
             | ParseError::AssignmentInPredicate { line, span, .. }
@@ -354,6 +371,7 @@ impl ParseError {
             ParseError::PestError { line, column, .. }
             | ParseError::EmptyClause { line, column, .. }
             | ParseError::MissingFormula { line, column, .. }
+            | ParseError::ClauseOutOfOrder { line, column, .. }
             | ParseError::NestingTooDeep { line, column, .. }
             | ParseError::ReservedWord { line, column, .. }
             | ParseError::IncompatibleOperators { line, column, .. }
@@ -380,6 +398,7 @@ impl ParseError {
             ParseError::PestError { span, .. }
             | ParseError::EmptyClause { span, .. }
             | ParseError::MissingFormula { span, .. }
+            | ParseError::ClauseOutOfOrder { span, .. }
             | ParseError::ReservedWord { span, .. }
             | ParseError::IncompatibleOperators { span, .. }
             | ParseError::AssignmentInPredicate { span, .. }

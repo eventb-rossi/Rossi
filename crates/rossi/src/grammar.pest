@@ -768,6 +768,15 @@ event_then = {
     (kw_then | kw_begin) ~ (action_list | empty_clause)
 }
 
+// A clause written after one it must precede, or a second copy of one, is
+// matched here so the AST builder can name both clauses. Without it the
+// keyword lands in the middle of the preceding clause's last formula and is
+// reported as unexpected there. This is an error path only: a well-ordered
+// body consumes every clause above, leaving nothing for it to match.
+misplaced_event_clause = {
+    event_any | event_where | event_with | event_witness | event_then
+}
+
 event_body = {
     event_status?
   ~ event_refines?
@@ -776,6 +785,10 @@ event_body = {
   ~ event_with?
   ~ event_witness?
   ~ event_then?
+  // `END` closes every well-formed event, so let it short-circuit the search
+  // for a misplaced clause: a negative lookahead costs one keyword compare,
+  // where the choice below would try all five clauses and their keywords.
+  ~ (!kw_end ~ misplaced_event_clause)*
 }
 
 // Inline status (before event keyword): "convergent event foo ..."

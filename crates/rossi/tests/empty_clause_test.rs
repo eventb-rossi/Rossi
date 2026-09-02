@@ -181,3 +181,63 @@ fn the_error_productions_never_leak_into_an_expected_list() {
         }
     }
 }
+
+#[test]
+fn an_event_clause_written_out_of_order_names_both_clauses() {
+    for (body, clause, before, line) in [
+        (
+            "    THEN\n        @act1 x ≔ 1\n    WITH\n        @w y = 1\n",
+            "WITH",
+            "THEN",
+            8,
+        ),
+        (
+            "    WITNESS\n        @w y = 1\n    ANY\n        p\n    THEN\n        @act1 x ≔ 1\n",
+            "ANY",
+            "WITNESS",
+            8,
+        ),
+        (
+            "    THEN\n        @act1 x ≔ 1\n    WHERE\n        @grd1 x > 0\n",
+            "WHERE",
+            "THEN",
+            8,
+        ),
+    ] {
+        let source = machine_with_event_body(body);
+        let error = error_of(&source);
+        let ParseError::ClauseOutOfOrder {
+            clause: reported,
+            before: reported_before,
+            ..
+        } = &error
+        else {
+            panic!("expected a ClauseOutOfOrder for {clause}, got: {error:?}");
+        };
+        assert_eq!(
+            (reported.as_str(), reported_before.as_str()),
+            (clause, before),
+            "in:\n{source}"
+        );
+        assert_eq!(error.position(), Some((line, 5)), "in:\n{source}");
+    }
+}
+
+#[test]
+fn a_repeated_event_clause_is_reported_as_a_duplicate() {
+    let source = machine_with_event_body(
+        "    WHERE\n        @grd1 x > 0\n    THEN\n        @act1 x ≔ 1\n    WHERE\n        @grd2 x > 1\n",
+    );
+    let error = error_of(&source);
+    let ParseError::ClauseError {
+        clause_type,
+        line,
+        message,
+        ..
+    } = &error
+    else {
+        panic!("expected a ClauseError, got: {error:?}");
+    };
+    assert_eq!((clause_type.as_str(), *line), ("WHERE", 10));
+    assert_eq!(message, "Duplicate WHERE clause");
+}
