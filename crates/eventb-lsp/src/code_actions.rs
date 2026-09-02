@@ -15,6 +15,52 @@ use rossi::keywords::KeywordId;
 use rossi::operators;
 use std::collections::HashMap;
 
+/// The source action that normalizes every operator to the configured
+/// convention (`rossi.format.useUnicode`) and changes nothing else. A
+/// `source.fixAll.*` kind so editors can run it on save — VS Code's
+/// `editor.codeActionsOnSave` only triggers `source.*` kinds — without
+/// reformatting the document the way `textDocument/formatting` would.
+pub const FIX_ALL_KIND: CodeActionKind = CodeActionKind::new("source.fixAll.rossi");
+
+/// The operator style a conversion direction targets, as spelled in titles.
+fn style_name(to_unicode: bool) -> &'static str {
+    if to_unicode { "Unicode" } else { "ASCII" }
+}
+
+/// Whether the client's `only` filter admits `kind`: no filter, or an entry
+/// equal to `kind` or a dot-delimited prefix of it (`source` and
+/// `source.fixAll` both admit `source.fixAll.rossi`).
+fn kind_requested(params: &CodeActionParams, kind: &CodeActionKind) -> bool {
+    params.context.only.as_ref().is_none_or(|only| {
+        only.iter().any(|requested| {
+            kind.as_str()
+                .strip_prefix(requested.as_str())
+                .is_some_and(|rest| rest.is_empty() || rest.starts_with('.'))
+        })
+    })
+}
+
+/// A workspace edit replacing `range` of the document at `uri` with `new_text`.
+fn single_edit(uri: &Url, range: Range, new_text: String) -> WorkspaceEdit {
+    WorkspaceEdit {
+        changes: Some(HashMap::from([(
+            uri.clone(),
+            vec![TextEdit { range, new_text }],
+        )])),
+        document_changes: None,
+        change_annotations: None,
+    }
+}
+
+/// A workspace edit replacing the whole of `text` (at `uri`) with `new_text`.
+fn full_document_edit(uri: &Url, text: &str, new_text: String) -> WorkspaceEdit {
+    let range = Range {
+        start: Position::new(0, 0),
+        end: document_end_position(text),
+    };
+    single_edit(uri, range, new_text)
+}
+
 /// LSP end position of `text` (last line index, UTF-16 length of the last line),
 /// computed in a single pass over the lines.
 fn document_end_position(text: &str) -> Position {
@@ -51,33 +97,48 @@ impl CodeActionProvider {
         Self
     }
 
-    /// Provide code actions for a given document position/range
+    /// Provide code actions for a given document position/range.
+    /// `use_unicode` is the operator convention (`rossi.format.useUnicode`)
+    /// the fix-all source action normalizes to.
     pub fn provide_code_actions(
         &self,
         params: &CodeActionParams,
         text: &str,
+        use_unicode: bool,
     ) -> Option<CodeActionResponse> {
+        // Each group is computed only when the client's `only` filter admits
+        // its kind, so an on-save request for the fix-all neither pays for
+        // nor receives the refactors and quick fixes it would discard.
+        let requested = |kind: &CodeActionKind| kind_requested(params, kind);
         let mut actions = Vec::new();
 
-        // Add operator conversion actions
-        actions.extend(self.provide_operator_conversion_actions(params, text));
-
-        // Add diagnostic-based quick fixes (from diagnostics in context)
-        actions.extend(self.provide_diagnostic_based_actions(params, text));
-
-        // Add missing clause actions
-        actions.extend(self.provide_add_missing_clause_actions(params, text));
-
-        // Add sort clauses action
-        actions.extend(self.provide_sort_clauses_actions(params, text));
-
-        // Add extract constant action if a literal is selected
-        if let Some(action) = self.provide_extract_constant_action(params, text) {
-            actions.push(action);
+        // Add operator conversion actions, including the on-save normalization
+        if requested(&CodeActionKind::REFACTOR) || requested(&FIX_ALL_KIND) {
+            actions.extend(self.provide_operator_conversion_actions(params, text, use_unicode));
         }
 
-        // Add rename event action if cursor is on an event name
-        if let Some(action) = self.provide_rename_event_action(params, text) {
+        if requested(&CodeActionKind::QUICKFIX) {
+            // Add diagnostic-based quick fixes (from diagnostics in context)
+            actions.extend(self.provide_diagnostic_based_actions(params, text));
+
+            // Add missing clause actions
+            actions.extend(self.provide_add_missing_clause_actions(params, text));
+        }
+
+        if requested(&CodeActionKind::REFACTOR) {
+            // Add sort clauses action
+            actions.extend(self.provide_sort_clauses_actions(params, text));
+
+            // Add rename event action if cursor is on an event name
+            if let Some(action) = self.provide_rename_event_action(params, text) {
+                actions.push(action);
+            }
+        }
+
+        // Add extract constant action if a literal is selected
+        if requested(&CodeActionKind::REFACTOR_EXTRACT)
+            && let Some(action) = self.provide_extract_constant_action(params, text)
+        {
             actions.push(action);
         }
 
@@ -88,42 +149,65 @@ impl CodeActionProvider {
         }
     }
 
-    /// Provide actions to convert operators between ASCII and Unicode
+    /// Provide actions to convert operators between ASCII and Unicode: the
+    /// whole document each way — the direction of the configured convention
+    /// doubling as the [`FIX_ALL_KIND`] on-save action, sharing its edit —
+    /// and the selection.
     fn provide_operator_conversion_actions(
         &self,
         params: &CodeActionParams,
         text: &str,
+        use_unicode: bool,
     ) -> Vec<CodeActionOrCommand> {
+        let uri = &params.text_document.uri;
+        let refactor = kind_requested(params, &CodeActionKind::REFACTOR);
+        let fix_all = kind_requested(params, &FIX_ALL_KIND);
+        // Operator detection sees the code only — comments masked, positions
+        // preserved — so prose neither triggers a conversion nor gets
+        // rewritten by one.
+        let masked = rossi::comments::mask_comments(text);
         let mut actions = Vec::new();
 
-        // Check if we can convert the entire document to Unicode
-        if self.has_ascii_operators(text)
-            && let Some(action) =
-                self.create_convert_to_unicode_action(&params.text_document.uri, text)
-        {
-            actions.push(CodeActionOrCommand::CodeAction(action));
-        }
-
-        // Check if we can convert the entire document to ASCII
-        if self.has_unicode_operators(text)
-            && let Some(action) =
-                self.create_convert_to_ascii_action(&params.text_document.uri, text)
-        {
-            actions.push(CodeActionOrCommand::CodeAction(action));
+        for to_unicode in [true, false] {
+            let present = if to_unicode {
+                operators::has_ascii_operators(&masked)
+            } else {
+                operators::has_unicode_operators(&masked)
+            };
+            // The fix-all normalizes toward the convention; it is offered only
+            // when it would change something, so running it on save is a
+            // no-op for a document already there.
+            let normalizes = fix_all && to_unicode == use_unicode;
+            if !present || !(refactor || normalizes) {
+                continue;
+            }
+            let Some(action) = self.create_convert_all_action(uri, text, to_unicode) else {
+                continue;
+            };
+            if normalizes {
+                actions.push(CodeActionOrCommand::CodeAction(CodeAction {
+                    title: format!("Normalize operators to {}", style_name(to_unicode)),
+                    kind: Some(FIX_ALL_KIND),
+                    ..action.clone()
+                }));
+            }
+            if refactor {
+                actions.push(CodeActionOrCommand::CodeAction(action));
+            }
         }
 
         // Check if we can convert just the selection. Operator detection and
         // conversion use the FULL document's comment spans (via byte offsets),
         // so a selection that opens inside a `/* */` or `//` comment keeps its
         // prose intact instead of having operator spellings rewritten.
-        if params.range.start != params.range.end
+        if refactor
+            && params.range.start != params.range.end
             && let (Some(start), Some(end)) = (
                 crate::identifier_utils::position_to_offset(text, params.range.start),
                 crate::identifier_utils::position_to_offset(text, params.range.end),
             )
             && start < end
         {
-            let masked = rossi::comments::mask_comments(text);
             let selected = &text[start..end];
 
             let conversions = [
@@ -143,7 +227,7 @@ impl CodeActionProvider {
                     let converted =
                         rossi::comments::map_code_segments_in_range(text, start, end, convert);
                     if let Some(action) = self.create_convert_selection_action(
-                        &params.text_document.uri,
+                        uri,
                         title,
                         converted,
                         selected,
@@ -158,16 +242,6 @@ impl CodeActionProvider {
         actions
     }
 
-    /// Check if the code (comments excluded) contains ASCII operators
-    fn has_ascii_operators(&self, text: &str) -> bool {
-        operators::has_ascii_operators(&rossi::comments::mask_comments(text))
-    }
-
-    /// Check if the code (comments excluded) contains Unicode operators
-    fn has_unicode_operators(&self, text: &str) -> bool {
-        operators::has_unicode_operators(&rossi::comments::mask_comments(text))
-    }
-
     /// Convert ASCII operators to Unicode in the given text.
     /// Comment text is never rewritten — `<=` in prose stays `<=`.
     pub fn convert_to_unicode(&self, text: &str) -> String {
@@ -180,69 +254,28 @@ impl CodeActionProvider {
         rossi::comments::map_code_segments(text, operators::convert_to_ascii)
     }
 
-    /// Create action to convert entire document to Unicode
-    fn create_convert_to_unicode_action(&self, uri: &Url, text: &str) -> Option<CodeAction> {
-        let converted = self.convert_to_unicode(text);
+    /// The whole-document refactor toward `to_unicode`'s spelling, or `None`
+    /// when the document is already there.
+    fn create_convert_all_action(
+        &self,
+        uri: &Url,
+        text: &str,
+        to_unicode: bool,
+    ) -> Option<CodeAction> {
+        let converted = if to_unicode {
+            self.convert_to_unicode(text)
+        } else {
+            self.convert_to_ascii(text)
+        };
         if converted == text {
             return None;
         }
 
-        let mut changes = HashMap::new();
-        changes.insert(
-            uri.clone(),
-            vec![TextEdit {
-                range: Range {
-                    start: Position::new(0, 0),
-                    end: document_end_position(text),
-                },
-                new_text: converted,
-            }],
-        );
-
         Some(CodeAction {
-            title: "Convert all operators to Unicode".to_string(),
+            title: format!("Convert all operators to {}", style_name(to_unicode)),
             kind: Some(CodeActionKind::REFACTOR),
             diagnostics: None,
-            edit: Some(WorkspaceEdit {
-                changes: Some(changes),
-                document_changes: None,
-                change_annotations: None,
-            }),
-            command: None,
-            is_preferred: Some(false),
-            disabled: None,
-            data: None,
-        })
-    }
-
-    /// Create action to convert entire document to ASCII
-    fn create_convert_to_ascii_action(&self, uri: &Url, text: &str) -> Option<CodeAction> {
-        let converted = self.convert_to_ascii(text);
-        if converted == text {
-            return None;
-        }
-
-        let mut changes = HashMap::new();
-        changes.insert(
-            uri.clone(),
-            vec![TextEdit {
-                range: Range {
-                    start: Position::new(0, 0),
-                    end: document_end_position(text),
-                },
-                new_text: converted,
-            }],
-        );
-
-        Some(CodeAction {
-            title: "Convert all operators to ASCII".to_string(),
-            kind: Some(CodeActionKind::REFACTOR),
-            diagnostics: None,
-            edit: Some(WorkspaceEdit {
-                changes: Some(changes),
-                document_changes: None,
-                change_annotations: None,
-            }),
+            edit: Some(full_document_edit(uri, text, converted)),
             command: None,
             is_preferred: Some(false),
             disabled: None,
@@ -836,25 +869,23 @@ mod tests {
 
     #[test]
     fn test_has_ascii_operators() {
-        let provider = CodeActionProvider::new();
-        assert!(provider.has_ascii_operators("x & y"));
-        assert!(provider.has_ascii_operators("x => y"));
-        assert!(!provider.has_ascii_operators("x + y"));
+        assert!(operators::has_ascii_operators("x & y"));
+        assert!(operators::has_ascii_operators("x => y"));
+        assert!(!operators::has_ascii_operators("x + y"));
         // Alphabetic operators with word-boundary matching
-        assert!(provider.has_ascii_operators("not x"));
-        assert!(provider.has_ascii_operators("f circ g"));
-        assert!(provider.has_ascii_operators("UNION(x, S, E)"));
-        assert!(provider.has_ascii_operators("INTER(x, S, E)"));
+        assert!(operators::has_ascii_operators("not x"));
+        assert!(operators::has_ascii_operators("f circ g"));
+        assert!(operators::has_ascii_operators("UNION(x, S, E)"));
+        assert!(operators::has_ascii_operators("INTER(x, S, E)"));
         // "not" inside identifier should NOT match
-        assert!(!provider.has_ascii_operators("notation"));
+        assert!(!operators::has_ascii_operators("notation"));
     }
 
     #[test]
     fn test_has_unicode_operators() {
-        let provider = CodeActionProvider::new();
-        assert!(provider.has_unicode_operators("x ∧ y"));
-        assert!(provider.has_unicode_operators("x ⇒ y"));
-        assert!(!provider.has_unicode_operators("x + y"));
+        assert!(operators::has_unicode_operators("x ∧ y"));
+        assert!(operators::has_unicode_operators("x ⇒ y"));
+        assert!(!operators::has_unicode_operators("x + y"));
     }
 
     #[test]

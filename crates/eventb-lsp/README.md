@@ -192,6 +192,26 @@ Configuration options:
 }
 ```
 
+### Operator Convention
+
+`rossi.format.useUnicode` names the project's operator convention, and
+formatting normalizes to it along with everything else. To keep only the
+operators in line without reformatting, the server offers a
+`source.fixAll.rossi` code action that rewrites every operator spelling to the
+convention and changes nothing else: layout, comments, and labels stay as they
+are. Being a `source.*` kind, editors can run it on save — in VS Code:
+
+```json
+{
+  "[eventb]": {
+    "editor.codeActionsOnSave": { "source.fixAll.rossi": "explicit" }
+  }
+}
+```
+
+The CI counterpart is `rossi fmt --check`, which fails on any file the
+formatter would change, operator spellings included.
+
 ### Completion and Hover
 
 Completion includes Event-B keywords, operators, snippets, built-ins, local
@@ -226,6 +246,8 @@ Implemented code actions include:
 
 - Convert ASCII operators to Unicode and Unicode operators to ASCII
 - Convert only the current selection between operator styles
+- Normalize every operator to the configured convention and nothing else
+  (`source.fixAll.rossi`, for editors' run-on-save hooks)
 - Add a missing `END` keyword when diagnostics indicate that shape
 - Add common missing clauses for contexts and machines
 - Sort `VARIABLES` and `CONSTANTS` clauses alphabetically

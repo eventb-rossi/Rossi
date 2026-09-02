@@ -56,7 +56,7 @@ setup, verification, and troubleshooting.
 - Auto-format documents with consistent style
 - Choose between Unicode or ASCII operators
 - Configurable indentation
-- Format on save support
+- Format on save support, or normalize only the operators on save
 - Keyboard shortcuts:
   - Format Document: `Shift+Alt+F` (Windows/Linux) or `Shift+Option+F` (Mac)
 
@@ -243,6 +243,21 @@ END
 - **Format entire document**: `Shift+Alt+F` (Windows/Linux) or `Shift+Option+F` (Mac)
 - **Format on save**: Enable `"editor.formatOnSave": true` in settings
 - **Choose operator style**: Set `rossi.format.useUnicode` to `true` (Unicode) or `false` (ASCII)
+- **Normalize operators on save** without reformatting: the `source.fixAll.rossi`
+  code action rewrites every operator spelling to `rossi.format.useUnicode` and
+  leaves layout, comments, and labels alone. Enable it per language in the
+  project's `.vscode/settings.json`:
+
+  ```json
+  {
+    "[eventb]": {
+      "editor.codeActionsOnSave": { "source.fixAll.rossi": "explicit" }
+    }
+  }
+  ```
+
+  `rossi fmt --check` is the CI counterpart: it fails on any file the formatter
+  would change, operator spellings included.
 
 ### Symbol Input
 

@@ -1206,6 +1206,7 @@ impl LanguageServer for RossiLanguageServer {
                             CodeActionKind::REFACTOR,
                             CodeActionKind::REFACTOR_EXTRACT,
                             CodeActionKind::QUICKFIX,
+                            crate::code_actions::FIX_ALL_KIND,
                         ]),
                         work_done_progress_options: WorkDoneProgressOptions::default(),
                         resolve_provider: Some(false),
@@ -1897,9 +1898,10 @@ impl LanguageServer for RossiLanguageServer {
         };
 
         // Get code actions
+        let use_unicode = self.config_manager.get().format.use_unicode;
         let response = self
             .code_actions_provider
-            .provide_code_actions(&params, &text);
+            .provide_code_actions(&params, &text, use_unicode);
 
         debug!(
             "Code actions returned: {}",

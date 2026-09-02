@@ -77,7 +77,7 @@ impl LexicalSpans {
 
     /// The comment and label spans merged into one sorted, disjoint list:
     /// every byte a code rewrite must copy through untouched.
-    fn opaque_spans(&self) -> Vec<Span> {
+    pub fn opaque_spans(&self) -> Vec<Span> {
         let mut spans: Vec<Span> = self.comments.iter().chain(&self.labels).copied().collect();
         spans.sort_by_key(|s| s.start);
         spans
