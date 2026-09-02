@@ -422,17 +422,21 @@ fn expected_class(rule: Rule) -> ExpectedClass {
     }
 }
 
+/// Whether a rule is one of the grammar's error productions — a zero-width
+/// marker that locates a missing clause body or formula, or the wrapper around
+/// a clause written out of order. Each matches where nothing can be written,
+/// so none is ever something the user could type.
+fn is_error_production(rule: Rule) -> bool {
+    matches!(
+        rule,
+        Rule::empty_clause | Rule::missing_formula | Rule::misplaced_event_clause
+    )
+}
+
 /// Rewrite one of a parsing error's rule lists into the terms a reader sees,
 /// returning each surviving rule with its term.
 ///
 /// A category word replaces the rules it stands for when they would otherwise
-/// Whether a rule is one of the grammar's error productions — a zero-width
-/// marker that locates a missing clause body or formula. Each matches where
-/// nothing can be written, so neither is ever something the user could type.
-fn is_error_production(rule: Rule) -> bool {
-    matches!(rule, Rule::empty_clause | Rule::missing_formula)
-}
-
 /// flood the list: two or more members of one class, or a composite rule with
 /// no spelling of its own. Everything else — keywords, brackets, separators, a
 /// lone operator — survives as before, because a short concrete list is the
@@ -522,6 +526,23 @@ fn rule_to_operator_id(rule: Rule) -> Option<crate::operators::OperatorId> {
     })
 }
 
+/// An event clause rule's [`KeywordId`], mirroring `context_clause_keyword` /
+/// `machine_clause_keyword` for the event body. `kw_end` closes the body, so it
+/// resolves here too.
+fn event_clause_keyword(rule: Rule) -> Option<KeywordId> {
+    Some(match rule {
+        Rule::event_status => KeywordId::Status,
+        Rule::event_refines => KeywordId::Refines,
+        Rule::event_any => KeywordId::Any,
+        Rule::event_where => KeywordId::Where,
+        Rule::event_with => KeywordId::With,
+        Rule::event_witness => KeywordId::Witness,
+        Rule::event_then => KeywordId::Then,
+        Rule::kw_end => KeywordId::End,
+        _ => return None,
+    })
+}
+
 /// Bridge a keyword-headed [`Rule`] to its [`KeywordId`], so a diagnostic names
 /// the construct by its keyword (`EVENT`, `WHERE`, …) rather than the raw rule.
 /// The token form (`kw_event`) and the clause form (`event`, `event_where`, …)
@@ -531,6 +552,12 @@ fn rule_to_operator_id(rule: Rule) -> Option<crate::operators::OperatorId> {
 fn rule_to_keyword(rule: Rule) -> Option<KeywordId> {
     // Section rules reuse the clause→keyword maps maintained for parsing.
     if let Some(id) = machine_clause_keyword(rule).or_else(|| context_clause_keyword(rule)) {
+        return Some(id);
+    }
+    // The event clauses, likewise as a plain match: the AST builder resolves
+    // every clause of every event through here on a successful parse, and the
+    // name-based path below allocates a String per call.
+    if let Some(id) = event_clause_keyword(rule) {
         return Some(id);
     }
     // The whole-event rules carry no keyword spelling in their name.
@@ -852,6 +879,36 @@ fn missing_formula_error(
     ParseError::MissingFormula {
         label: label.as_str().to_string(),
         expected,
+        line,
+        column,
+        span: Some(Span::from_pest(span)),
+    }
+}
+
+/// The error for an event clause written after one it must precede.
+///
+/// `seen` is the clauses already read, in source order, so the first of them
+/// this clause should have preceded is the one to name. The order itself comes
+/// from [`crate::keywords::event_clause_boundary`], the same follow-set the
+/// grammar and error recovery use.
+fn clause_out_of_order_error(
+    clause: &pest::iterators::Pair<Rule>,
+    seen: &[KeywordId],
+) -> ParseError {
+    let keyword = rule_to_keyword(clause.as_rule()).expect("an event clause is keyword-headed");
+    let follows = crate::keywords::event_clause_boundary(keyword);
+    // A misplaced clause is only reached past every clause it may follow, so
+    // one of them is always in `seen`; END closes the event either way.
+    let before = seen
+        .iter()
+        .find(|k| follows.contains(k))
+        .copied()
+        .unwrap_or(KeywordId::End);
+    let span = clause.as_span();
+    let (line, column) = span.start_pos().line_col();
+    ParseError::ClauseOutOfOrder {
+        clause: crate::keywords::spell(keyword).to_string(),
+        before: crate::keywords::spell(before).to_string(),
         line,
         column,
         span: Some(Span::from_pest(span)),
@@ -1346,6 +1403,7 @@ fn parse_event(pair: pest::iterators::Pair<Rule>) -> Result<Event, ParseError> {
     }
 
     // Parse event body - flatten if wrapped
+    let mut seen_clauses: Vec<KeywordId> = Vec::new();
     for pair in inner {
         let pairs_to_process = if pair.as_rule() == Rule::event_body {
             pair.into_inner().collect::<Vec<_>>()
@@ -1355,6 +1413,12 @@ fn parse_event(pair: pest::iterators::Pair<Rule>) -> Result<Event, ParseError> {
 
         for pair in pairs_to_process {
             reject_empty_clause(&pair)?;
+            validate_unique_clause(
+                pair.as_rule(),
+                pair.as_span(),
+                &mut seen_clauses,
+                rule_to_keyword,
+            )?;
             match pair.as_rule() {
                 Rule::event_status => {
                     for status_pair in pair.into_inner() {
@@ -1431,6 +1495,24 @@ fn parse_event(pair: pest::iterators::Pair<Rule>) -> Result<Event, ParseError> {
                             }
                         }
                     }
+                }
+                // A clause the grammar could only match past the one it
+                // must precede, or a second copy of a clause already read.
+                Rule::misplaced_event_clause => {
+                    let clause = pair
+                        .into_inner()
+                        .next()
+                        .expect("a misplaced clause wraps exactly one clause");
+                    reject_empty_clause(&clause)?;
+                    let out_of_order = clause_out_of_order_error(&clause, &seen_clauses);
+                    // A repeat is a duplicate clause, not a misordering.
+                    validate_unique_clause(
+                        clause.as_rule(),
+                        clause.as_span(),
+                        &mut seen_clauses,
+                        rule_to_keyword,
+                    )?;
+                    return Err(out_of_order);
                 }
                 Rule::kw_end => break,
                 _ => {

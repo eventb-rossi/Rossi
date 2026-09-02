@@ -731,6 +731,41 @@ mod tests {
     }
 
     #[test]
+    fn event_clause_order_matches_the_grammar() {
+        // `event_clause_boundary` and rule EB030's "must come before" message
+        // read the clause ORDER off EVENT_SECTION, while `event_body` in the
+        // grammar decides it. `site_terminators_match_grammar` above compares
+        // the two as sets, which a reordering would survive — so compare the
+        // sequence too.
+        let grammar = include_str!("grammar.pest");
+        let body = grammar
+            .split("event_body = {")
+            .nth(1)
+            .and_then(|rest| rest.split('}').next())
+            .expect("event_body missing from grammar.pest");
+        let order: Vec<String> = body
+            .lines()
+            .filter(|line| !line.trim_start().starts_with("//"))
+            .flat_map(|line| line.split_whitespace())
+            .filter_map(|word| word.strip_prefix("event_"))
+            .map(|clause| {
+                clause
+                    .trim_end_matches(['?', '*', ')'])
+                    .to_ascii_lowercase()
+            })
+            // STATUS and REFINES open the body before the clause list starts,
+            // and the misplaced-clause wrapper is an error path.
+            .filter(|clause| !matches!(clause.as_str(), "status" | "refines" | "clause"))
+            .collect();
+        let expected: Vec<String> = [Any]
+            .iter()
+            .chain(EVENT_SECTION.iter().filter(|id| **id != End))
+            .map(|id| spell(*id).to_ascii_lowercase())
+            .collect();
+        assert_eq!(order, expected);
+    }
+
+    #[test]
     fn event_clause_boundary_is_the_suffix_after_each_clause() {
         // Each event clause is bounded by the clauses that may still follow
         // it, which is exactly the tail of EVENT_SECTION past itself. The
