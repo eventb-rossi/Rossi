@@ -942,10 +942,8 @@ fn test_machine_rejects_clause_after_events() {
 /// coupling — e.g. matching "VARIANT" must not hit the "VARIANT" inside
 /// "INVARIANTS", and the source-snippet lines must not be scanned.
 fn expected_tokens(message: &str) -> Vec<String> {
-    message
-        .lines()
-        .map(str::trim_start)
-        .find_map(|l| l.strip_prefix("= expected "))
+    expected_line(message)
+        .strip_prefix("expected ")
         .unwrap_or("")
         .split([',', ' '])
         .map(str::trim)
@@ -1033,6 +1031,145 @@ fn parse_error_names_keywords_and_dedups_issue_76() {
         "EVENT named exactly once (kw_event + event collapsed): {tokens:?}"
     );
     assert!(tokens.iter().any(|t| t == "END"), "names END: {tokens:?}");
+}
+
+/// The `= …` payload of a pest error message — the one line the LSP surfaces —
+/// without the location header and the source snippet.
+fn expected_line(message: &str) -> &str {
+    message
+        .lines()
+        .map(str::trim_start)
+        .find_map(|l| l.strip_prefix("= "))
+        .unwrap_or("")
+}
+
+fn pest_message(source: &str) -> String {
+    match parse(source).expect_err("must fail") {
+        ParseError::PestError { message, .. } => message,
+        other => panic!("expected a PestError, got: {other:?}"),
+    }
+}
+
+fn machine_with_invariant(formula: &str) -> String {
+    format!("MACHINE m\nVARIABLES\n    x\nINVARIANTS\n    @inv1 {formula}\nEND\n")
+}
+
+fn machine_with_action(action: &str) -> String {
+    format!(
+        "MACHINE m\nVARIABLES\n    x\nEVENTS\n    EVENT e\n    THEN\n        @act1 {action}\n    END\nEND\n"
+    )
+}
+
+#[test]
+fn expected_set_names_a_category_instead_of_every_formula_token() {
+    // A formula position offers dozens of tokens at once — every operator after
+    // an operand, every operand after an operator — and pest enumerates them
+    // all (43 operators after `@inv1 x`). One category word says the same
+    // thing; structural tokens (keywords, closers, separators) stay listed, and
+    // a rule pest reports as a whole (`expression`, `negation_predicate`,
+    // `labeled_action`) is named by its category rather than its grammar name.
+    for (source, expected) in [
+        (
+            machine_with_invariant("x\n    @inv2 x ∈ S"),
+            "expected an operator",
+        ),
+        (machine_with_invariant("(x ∈ S"), "expected an operator or )"),
+        (machine_with_invariant("x ∈ )"), "expected an expression"),
+        (machine_with_invariant("x ∈ S ∧ )"), "expected a predicate"),
+        (machine_with_invariant("∀ x · )"), "expected a predicate"),
+        (
+            machine_with_invariant("x ∈ { ∈ }"),
+            "expected an expression or }",
+        ),
+        (machine_with_invariant("λ )"), "expected identifier"),
+        // After a complete formula at clause level: a section keyword, a
+        // continuation of the formula, or another labeled predicate.
+        (
+            machine_with_invariant("x ∈ dom )"),
+            "expected THEOREMS, END, REFINES, SEES, VARIABLES, INVARIANTS, VARIANT, EVENTS, an operator, or a predicate",
+        ),
+        (machine_with_action("x := )"), "expected an expression"),
+        (
+            "MACHINE m\nVARIABLES\n    x\nEVENTS\n    EVENT e\n    THEN\n        @act1 x := 1\n"
+                .to_string(),
+            "expected END, an operator, ,, or an action",
+        ),
+        (
+            "MACHINE m\nVARIABLES\n    x\nEVENTS\n    EVENT e\n    WHERE\n        @grd1 := 3\n    THEN\n        @act1 x := 1\n    END\nEND\n"
+                .to_string(),
+            "expected theorem or a predicate",
+        ),
+        ("junk\n".to_string(), "expected CONTEXT or MACHINE"),
+    ] {
+        let message = pest_message(&source);
+        assert_eq!(
+            expected_line(&message),
+            expected,
+            "for source:\n{source}\nfull message:\n{message}"
+        );
+    }
+}
+
+/// No expected list may name a grammar rule.
+///
+/// Every term is a symbol the user types or a category word; a pest rule name
+/// is neither, and the summarizer's classification keys on those names, so a
+/// rule the classification misses shows up here as `exponent_operand` rather
+/// than as `an expression`. Underscore is the tell — no spelling contains one.
+#[test]
+fn no_expected_term_is_a_rule_name() {
+    let sources = [
+        machine_with_invariant("x ^ )"),
+        machine_with_invariant("x ∈ )"),
+        machine_with_invariant("x ∈ S ∧ )"),
+        machine_with_invariant("∀ x · )"),
+        machine_with_invariant("∀ x⦂ )"),
+        machine_with_invariant("λ )"),
+        machine_with_invariant("{ x ∣ )"),
+        machine_with_invariant("bool( )"),
+        machine_with_invariant("dom( )"),
+        machine_with_invariant("f{ )"),
+        machine_with_invariant("x ∈ dom )"),
+        machine_with_invariant("x\n    @inv2 x ∈ S"),
+        machine_with_action("x := )"),
+        machine_with_action("x :∣ )"),
+        machine_with_action("x, )"),
+        "junk\n".to_string(),
+        "MACHINE m\nVARIABLES\n    x >\nEND\n".to_string(),
+        "MACHINE m\nVARIABLES\n    x\nEVENTS\n    EVENT e\n    THEN\n        @act1 x ≔ 1\n"
+            .to_string(),
+    ];
+    for source in sources {
+        let message = pest_message(&source);
+        let line = expected_line(&message);
+        assert!(
+            !line.contains('_'),
+            "a rule name reached the user in {line:?}\nfor source:\n{source}"
+        );
+    }
+}
+
+#[test]
+fn short_structural_expected_sets_are_listed_as_before() {
+    // A short list of concrete tokens is the most useful message there is;
+    // summarizing applies only to formula positions.
+    for (source, expected) in [
+        (machine_with_invariant("∀ x )"), "expected ⦂, ·, or ,"),
+        (machine_with_action("x, )"), "expected identifier"),
+        (machine_with_action("x )"), "expected ≔, :∈, :∣, ,, or ("),
+        (
+            "MACHINE m\nVARIABLES\n    x\nEVENTS\n    EVENT e\n    THEN\n        @act1 x := 1\n    END\n"
+                .to_string(),
+            "expected END or EVENT",
+        ),
+    ] {
+        let message = pest_message(&source);
+        assert_eq!(
+            expected_line(&message),
+            expected,
+            "for source:\n{source}\nfull message:\n{message}"
+        );
+    }
 }
 
 #[test]

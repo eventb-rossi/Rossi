@@ -564,22 +564,29 @@ mod tests {
 
     #[test]
     fn pest_diagnostic_lists_symbols_not_rule_names() {
-        // The expected-token list is rendered with the Event-B symbols a user
-        // types, not pest's internal rule names (`op_in, op_notin, …` used to
-        // leak straight into the diagnostic).
-        let text = "CONTEXT c\nAXIOMS\n    @a S sdfsdf T\nEND\n";
-        let error = rossi::parse(text).expect_err("`sdfsdf` where an operator is expected fails");
-        let diagnostic = parse_error_to_diagnostic(&error, text);
-        assert!(
-            diagnostic.message.contains('∈'),
-            "expected-list should use symbols, got: {}",
-            diagnostic.message
-        );
-        assert!(
-            !diagnostic.message.contains("op_in"),
-            "internal rule names must not leak, got: {}",
-            diagnostic.message
-        );
+        // The expected list is rendered for a reader: pest's internal rule
+        // names (`op_in, op_notin, …` used to leak straight into the
+        // diagnostic) become the Event-B symbols a user types, and a whole
+        // class of them becomes the category it stands for.
+        for (text, expected) in [
+            (
+                "CONTEXT c\nAXIOMS\n    @a S sdfsdf T\nEND\n",
+                "Syntax error: expected an operator",
+            ),
+            (
+                "MACHINE m\nVARIABLES\n    x\nEVENTS\n    EVENT e\n    THEN\n        @act1 x\n    END\nEND\n",
+                "Syntax error: expected ≔, :∈, :∣, ,, or (",
+            ),
+        ] {
+            let error = rossi::parse(text).expect_err("must fail strict parsing");
+            let diagnostic = parse_error_to_diagnostic(&error, text);
+            assert_eq!(diagnostic.message, expected);
+            assert!(
+                !diagnostic.message.contains("op_"),
+                "internal rule names must not leak, got: {}",
+                diagnostic.message
+            );
+        }
     }
 
     #[test]

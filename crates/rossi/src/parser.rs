@@ -308,9 +308,169 @@ pub(crate) fn friendly_rule_name(rule: Rule) -> Option<&'static str> {
 /// [`friendly_rule_name`] glyph when there is one, else the debug name. Never
 /// fails, so callers that name an operator in an error can rely on it.
 pub(crate) fn display_rule(rule: Rule) -> String {
-    friendly_rule_name(rule)
-        .map(str::to_owned)
-        .unwrap_or_else(|| format!("{rule:?}"))
+    rule_spelling(rule).unwrap_or_else(|| format!("{rule:?}"))
+}
+
+/// The spelling a rule shows in an `expected …` list, when it has one.
+///
+/// Three sources, in order: the glyph/keyword table ([`friendly_rule_name`]);
+/// the whole-input rules, which stand for the two component keywords; and the
+/// rules whose grammar name already reads as a spelling (`identifier`,
+/// `label`, …). `None` means the rule is a *composite* — a grammar level such
+/// as `expression` or `negation_predicate`, whose name is meaningless to a
+/// user — so [`summarize_expected`] names its category instead.
+fn rule_spelling(rule: Rule) -> Option<String> {
+    if let Some(name) = friendly_rule_name(rule) {
+        return Some(name.to_owned());
+    }
+    match rule {
+        // A file starts with one of the two component keywords; the wrapper
+        // rule's own name says nothing.
+        Rule::component | Rule::components => Some(format!(
+            "{} or {}",
+            crate::keywords::spell(KeywordId::Context),
+            crate::keywords::spell(KeywordId::Machine)
+        )),
+        Rule::identifier | Rule::label | Rule::component_name | Rule::EOI => {
+            Some(format!("{rule:?}"))
+        }
+        // A lambda's maplet pattern is still written starting with a name.
+        Rule::ident_pattern_atom => Some(format!("{:?}", Rule::identifier)),
+        _ => None,
+    }
+}
+
+/// How a rule reads in an `expected …` list.
+///
+/// A formula position accepts dozens of tokens at once — every operator after
+/// an operand, every operand after an operator — so pest's list is unreadable
+/// there. Naming the category once says the same thing.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ExpectedClass {
+    /// Keywords, brackets, separators and the assignment operators: few enough
+    /// at any one position to list, and each says something different.
+    Token,
+    Expression,
+    Predicate,
+    Action,
+    Operator,
+    /// Both an operand starter and a continuation (`(`, `{`, `[`, `−`), so it
+    /// belongs to whichever category the rest of the list forms; listed only
+    /// when nothing was summarized.
+    Neutral,
+}
+
+impl ExpectedClass {
+    /// The word that stands for the whole category, for the classes that have
+    /// one. [`Token`](Self::Token) members always list individually.
+    fn word(self) -> Option<&'static str> {
+        match self {
+            ExpectedClass::Expression => Some("an expression"),
+            ExpectedClass::Predicate => Some("a predicate"),
+            ExpectedClass::Action => Some("an action"),
+            ExpectedClass::Operator => Some("an operator"),
+            ExpectedClass::Token | ExpectedClass::Neutral => None,
+        }
+    }
+}
+
+/// Classify a rule for [`summarize_expected`].
+///
+/// pest reports the *parent* rule whenever a choice tried more than one
+/// alternative (`ParserState::track`), so a formula position surfaces as
+/// `expression` or `negation_predicate` rather than as the dozens of tokens
+/// that open one. The name-based tail below is therefore what does the work —
+/// the grammar names every formula level `*_predicate`, `*_expr(ession)` or
+/// `*action*` — and only the rules pest reports on their own need an arm.
+///
+/// The infix operators come from the same `rule_to_*_op` bridges the AST
+/// builder uses, so the class tracks the grammar.
+fn expected_class(rule: Rule) -> ExpectedClass {
+    match rule {
+        // Both a formula starter and a continuation, so it belongs to
+        // whichever category the rest of the list forms.
+        Rule::lparen | Rule::lbrace | Rule::lbracket | Rule::op_minus => ExpectedClass::Neutral,
+        // Attempted alone where a clause lists names, so pest reports it.
+        Rule::identifier => ExpectedClass::Expression,
+        // The right operand of `^`, whose name breaks the `*_expr` pattern.
+        Rule::exponent_operand => ExpectedClass::Expression,
+        // Only three, and each names a different action form: worth listing.
+        Rule::op_becomes_equal | Rule::op_becomes_in | Rule::op_becomes_such => {
+            ExpectedClass::Token
+        }
+        // Postfix inverse: an operator the infix bridges do not know.
+        Rule::op_inverse => ExpectedClass::Operator,
+        _ => {
+            if rule_to_binary_op(rule).is_some()
+                || rule_to_comparison_op(rule).is_some()
+                || rule_to_logical_op(rule).is_some()
+            {
+                return ExpectedClass::Operator;
+            }
+            let name = format!("{rule:?}");
+            let name = name.strip_suffix("_no_semi").unwrap_or(&name);
+            if name.ends_with("predicate") {
+                ExpectedClass::Predicate
+            } else if name.ends_with("expr") || name.ends_with("expression") {
+                ExpectedClass::Expression
+            } else if name.ends_with("action") {
+                ExpectedClass::Action
+            } else {
+                ExpectedClass::Token
+            }
+        }
+    }
+}
+
+/// Rewrite one of a parsing error's rule lists into the terms a reader sees,
+/// returning each surviving rule with its term.
+///
+/// A category word replaces the rules it stands for when they would otherwise
+/// flood the list: two or more members of one class, or a composite rule with
+/// no spelling of its own. Everything else — keywords, brackets, separators, a
+/// lone operator — survives as before, because a short concrete list is the
+/// most useful message there is. Rules that render the same collapse to the
+/// first of them (`kw_event` and `event` both spell `EVENT`), and the error
+/// productions drop out entirely.
+///
+/// The caller feeds the terms back through [`pest::error::Error::renamed_rules`],
+/// so pest still writes the `unexpected …; expected …` sentence and its
+/// enumeration.
+pub(crate) fn summarize_expected(rules: &mut Vec<Rule>) -> Vec<(Rule, String)> {
+    // A class floods the list when it has two or more members, or when one of
+    // them cannot be spelled at all.
+    let mut flooded: Vec<&'static str> = Vec::new();
+    for &rule in rules.iter() {
+        let Some(word) = expected_class(rule).word() else {
+            continue;
+        };
+        if flooded.contains(&word) {
+            continue;
+        }
+        let members = rules
+            .iter()
+            .filter(|&&other| expected_class(other).word() == Some(word));
+        if members.clone().count() > 1 || members.clone().any(|&r| rule_spelling(r).is_none()) {
+            flooded.push(word);
+        }
+    }
+
+    let mut terms: Vec<(Rule, String)> = Vec::new();
+    rules.retain(|&rule| {
+        let class = expected_class(rule);
+        let term = match class.word() {
+            Some(word) if flooded.contains(&word) => word.to_owned(),
+            // Redundant once a category covers the position it opens.
+            None if class == ExpectedClass::Neutral && !flooded.is_empty() => return false,
+            _ => display_rule(rule),
+        };
+        if terms.iter().any(|(_, seen)| *seen == term) {
+            return false;
+        }
+        terms.push((rule, term));
+        true
+    });
+    terms
 }
 
 /// Bridge a grammar [`Rule`] to its canonical [`OperatorId`], reusing the maps
