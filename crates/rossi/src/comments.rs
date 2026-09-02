@@ -38,17 +38,15 @@ impl LexicalSpans {
     /// input: any byte offset or (line, column) position computed on the
     /// masked text is valid in the original.
     pub fn mask_comments(&self, source: &str) -> String {
-        let mut bytes = source.as_bytes().to_vec();
-        for span in &self.comments {
-            for b in &mut bytes[span.start..span.end] {
-                if *b != b'\n' && *b != b'\r' {
-                    *b = b' ';
-                }
-            }
-        }
-        // Comment delimiters are ASCII, so spans cover whole UTF-8 sequences
-        // and blanking them cannot split a multi-byte character.
-        String::from_utf8(bytes).expect("masking comments preserves UTF-8 validity")
+        mask_spans(source, &self.comments)
+    }
+
+    /// Position-preserving copy of `source` with every comment **and label**
+    /// byte replaced by a space: the code-only view for operator scans, in
+    /// which a label's `-` or `.` is name text rather than an operator. Same
+    /// byte-length and line-layout guarantees as [`Self::mask_comments`].
+    pub fn mask_opaque(&self, source: &str) -> String {
+        mask_spans(source, &self.opaque_spans())
     }
 
     /// Position-preserving copy of `source` with every comment **char**
@@ -77,11 +75,29 @@ impl LexicalSpans {
 
     /// The comment and label spans merged into one sorted, disjoint list:
     /// every byte a code rewrite must copy through untouched.
-    pub fn opaque_spans(&self) -> Vec<Span> {
+    fn opaque_spans(&self) -> Vec<Span> {
         let mut spans: Vec<Span> = self.comments.iter().chain(&self.labels).copied().collect();
         spans.sort_by_key(|s| s.start);
         spans
     }
+}
+
+/// Position-preserving copy of `source` with every byte of `spans` replaced
+/// by a space, newlines (and carriage returns) kept, so byte offsets and line
+/// layout computed on the result are valid in the original.
+fn mask_spans(source: &str, spans: &[Span]) -> String {
+    let mut bytes = source.as_bytes().to_vec();
+    for span in spans {
+        for b in &mut bytes[span.start..span.end] {
+            if *b != b'\n' && *b != b'\r' {
+                *b = b' ';
+            }
+        }
+    }
+    // Comment delimiters and the whitespace ending a label are ASCII, so
+    // spans cover whole UTF-8 sequences and blanking them cannot split a
+    // multi-byte character.
+    String::from_utf8(bytes).expect("masking spans preserves UTF-8 validity")
 }
 
 /// Lexically scan `source` for comments and labels.
@@ -146,6 +162,12 @@ pub fn mask_comments(source: &str) -> String {
 /// by a space. See [`LexicalSpans::mask_comments_chars`].
 pub fn mask_comments_chars(source: &str) -> String {
     lexical_spans(source).mask_comments_chars(source)
+}
+
+/// Position-preserving copy of `source` with every comment and label byte
+/// replaced by a space. See [`LexicalSpans::mask_opaque`].
+pub fn mask_opaque(source: &str) -> String {
+    lexical_spans(source).mask_opaque(source)
 }
 
 /// The span in `spans` (sorted and disjoint) containing byte `offset`,
@@ -275,6 +297,14 @@ mod tests {
         assert_eq!(lines[0].trim_end(), "a");
         assert_eq!(lines[1].trim_start(), "b");
         assert!(!masked.contains("note") && !masked.contains("*/"));
+    }
+
+    #[test]
+    fn opaque_mask_blanks_labels_and_comments() {
+        let src = "@inv-1 x - 1 // a - b\n";
+        let masked = mask_opaque(src);
+        assert_eq!(masked.len(), src.len());
+        assert_eq!(masked, format!("{:6} x - 1 {:8}\n", "", ""));
     }
 
     #[test]

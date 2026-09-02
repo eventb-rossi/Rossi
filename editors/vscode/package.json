@@ -307,6 +307,11 @@
           "default": true,
           "description": "Use Unicode operators (∧, ∨, ⇒, ∈) instead of ASCII (/\\, \\/, =>, :) when formatting."
         },
+        "rossi.format.enforceUnicode": {
+          "type": "boolean",
+          "default": false,
+          "description": "Flag ASCII operator spellings (/\\, :, NAT, …) outside comments and labels with an advisory diagnostic and a quick fix, for a project that keeps its sources in Unicode (no effect with rossi.format.useUnicode off). Pair with the source.fixAll.rossi code action on save and rossi fmt --check in CI."
+        },
         "rossi.format.indentation": {
           "type": "string",
           "default": "",

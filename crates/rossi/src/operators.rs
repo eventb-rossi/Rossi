@@ -1201,73 +1201,121 @@ static DIFFERING_SPELLINGS: std::sync::LazyLock<Vec<&'static OperatorSpelling>> 
             .collect()
     });
 
-/// ASCII spellings to recognize during ASCII → Unicode conversion, each paired
-/// with the operator it spells. Covers every differing operator's canonical
-/// `ascii` plus the [`ASCII_INPUT_ALIASES`] (e.g. `,,` → maplet). Sorted by
-/// descending ASCII length so longer spellings match before their prefixes.
-static ASCII_TO_UNICODE: std::sync::LazyLock<Vec<(&'static str, &'static OperatorSpelling)>> =
-    std::sync::LazyLock::new(|| {
-        let mut entries: Vec<(&'static str, &'static OperatorSpelling)> = DIFFERING_SPELLINGS
-            .iter()
-            .map(|entry| (entry.ascii, *entry))
-            .chain(ASCII_INPUT_ALIASES.iter().copied())
-            .collect();
-        entries.sort_by_key(|(ascii, _)| std::cmp::Reverse(ascii.len()));
-        entries
-    });
+/// Operator spellings bucketed by their first byte, longest first: the
+/// candidates a maximal-munch scan tries at a position, so a byte that starts
+/// no spelling (most letters, digits, whitespace) costs one table lookup.
+struct SpellingIndex(Vec<Vec<(&'static str, &'static OperatorSpelling)>>);
 
-/// Differing operators sorted by descending Unicode length so longer spellings
-/// replace before their prefixes during Unicode → ASCII conversion.
-static UNICODE_TO_ASCII: std::sync::LazyLock<Vec<&'static OperatorSpelling>> =
-    std::sync::LazyLock::new(|| {
-        let mut entries = DIFFERING_SPELLINGS.clone();
-        entries.sort_by_key(|entry| std::cmp::Reverse(entry.unicode.len()));
-        entries
-    });
-
-pub fn convert_to_unicode(text: &str) -> String {
-    let mut result = String::with_capacity(text.len());
-    let mut byte_pos = 0;
-    while byte_pos < text.len() {
-        let rest = &text[byte_pos..];
-        let mut matched = None;
-
-        for &(ascii, entry) in ASCII_TO_UNICODE.iter() {
-            if rest.starts_with(ascii)
-                && (!is_alphabetic_op(ascii)
-                    || (is_word_boundary(text, byte_pos)
-                        && is_word_boundary_end(text, byte_pos + ascii.len())))
-            {
-                matched = Some((ascii, entry));
-                break;
-            }
+impl SpellingIndex {
+    fn new(entries: impl IntoIterator<Item = (&'static str, &'static OperatorSpelling)>) -> Self {
+        let mut buckets = vec![Vec::new(); 256];
+        for (spelling, entry) in entries {
+            buckets[spelling.as_bytes()[0] as usize].push((spelling, entry));
         }
-
-        if let Some((ascii, entry)) = matched {
-            // `emit_text` leaves the four private-use operators in ASCII (their
-            // glyph would not render) while consuming the full ASCII match, so a
-            // spelling like `<<->` is kept whole rather than partly rewritten
-            // into the shorter `<->` (`↔`).
-            result.push_str(entry.emit_text(true));
-            byte_pos += ascii.len();
-        } else if let Some(ch) = rest.chars().next() {
-            result.push(ch);
-            byte_pos += ch.len_utf8();
-        } else {
-            break;
+        for bucket in &mut buckets {
+            bucket.sort_by_key(|(spelling, _)| std::cmp::Reverse(spelling.len()));
         }
+        Self(buckets)
     }
 
+    /// The spellings that may start at a byte equal to `first`.
+    fn candidates(&self, first: u8) -> &[(&'static str, &'static OperatorSpelling)] {
+        &self.0[first as usize]
+    }
+}
+
+/// ASCII spellings to recognize during ASCII → Unicode conversion, each paired
+/// with the operator it spells: every differing operator's canonical `ascii`
+/// plus the [`ASCII_INPUT_ALIASES`] (e.g. `,,` → maplet).
+static ASCII_TO_UNICODE: std::sync::LazyLock<SpellingIndex> = std::sync::LazyLock::new(|| {
+    SpellingIndex::new(
+        DIFFERING_SPELLINGS
+            .iter()
+            .map(|entry| (entry.ascii, *entry))
+            .chain(ASCII_INPUT_ALIASES.iter().copied()),
+    )
+});
+
+/// Unicode spellings to recognize during Unicode → ASCII conversion.
+static UNICODE_TO_ASCII: std::sync::LazyLock<SpellingIndex> = std::sync::LazyLock::new(|| {
+    SpellingIndex::new(
+        DIFFERING_SPELLINGS
+            .iter()
+            .map(|entry| (entry.unicode, *entry)),
+    )
+});
+
+/// Maximal-munch scan of `text` for the spellings in `index`: every match
+/// whose emitted spelling (for `use_unicode`) differs from the matched text,
+/// as `(byte range, emitted spelling)` in text order. Each match is consumed
+/// whole, so `<<->` is never partly rewritten into the shorter `<->` (`↔`);
+/// alphabetic spellings (`NAT`, `or`) match only between word boundaries.
+fn operator_spans(
+    text: &str,
+    index: &SpellingIndex,
+    use_unicode: bool,
+) -> Vec<(std::ops::Range<usize>, &'static str)> {
+    let mut spans = Vec::new();
+    let mut skip_until = 0;
+    for (byte_pos, _) in text.char_indices() {
+        if byte_pos < skip_until {
+            continue;
+        }
+        let rest = &text[byte_pos..];
+        let matched =
+            index
+                .candidates(rest.as_bytes()[0])
+                .iter()
+                .copied()
+                .find(|&(spelling, _)| {
+                    rest.starts_with(spelling)
+                        && (!is_alphabetic_op(spelling)
+                            || (is_word_boundary(text, byte_pos)
+                                && is_word_boundary_end(text, byte_pos + spelling.len())))
+                });
+        let Some((spelling, entry)) = matched else {
+            continue;
+        };
+        let emitted = entry.emit_text(use_unicode);
+        if emitted != spelling {
+            spans.push((byte_pos..byte_pos + spelling.len(), emitted));
+        }
+        skip_until = byte_pos + spelling.len();
+    }
+    spans
+}
+
+/// `text` with each span's replacement spliced in, everything else copied.
+fn splice(text: &str, spans: Vec<(std::ops::Range<usize>, &str)>) -> String {
+    let mut result = String::with_capacity(text.len());
+    let mut pos = 0;
+    for (range, replacement) in spans {
+        result.push_str(&text[pos..range.start]);
+        result.push_str(replacement);
+        pos = range.end;
+    }
+    result.push_str(&text[pos..]);
     result
 }
 
-pub fn convert_to_ascii(text: &str) -> String {
-    let mut result = text.to_string();
-    for entry in UNICODE_TO_ASCII.iter() {
-        result = result.replace(entry.unicode, entry.ascii);
-    }
+/// Every ASCII operator spelling in `text` whose Unicode form differs, as
+/// `(byte range, emitted Unicode spelling)` in text order — the rewrites of
+/// [`convert_to_unicode`]. `emit_text` leaves the four private-use operators
+/// in ASCII (their glyph would not render), so those are consumed but not
+/// reported. `text` is scanned as code — callers mask comments and labels
+/// first.
+pub fn ascii_operator_spans(text: &str) -> Vec<(std::ops::Range<usize>, &'static str)> {
+    operator_spans(text, &ASCII_TO_UNICODE, true)
+}
 
-    result
+/// `text` with every ASCII operator spelling rewritten to Unicode.
+pub fn convert_to_unicode(text: &str) -> String {
+    splice(text, ascii_operator_spans(text))
+}
+
+/// `text` with every Unicode operator spelling rewritten to ASCII.
+pub fn convert_to_ascii(text: &str) -> String {
+    splice(text, operator_spans(text, &UNICODE_TO_ASCII, false))
 }
 
 pub fn has_ascii_operators(text: &str) -> bool {
@@ -1646,6 +1694,21 @@ mod tests {
             assert_eq!(operator_at("a <=> b", pos), Some(("<=>", 2..5)));
         }
         assert_eq!(operator_at("x /= y", 2), Some(("/=", 2..4)));
+    }
+
+    #[test]
+    fn ascii_operator_spans_report_what_conversion_rewrites() {
+        // The conversion's own matches: longest spelling first, word
+        // boundaries for alphabetic operators (`notation` is not `not`),
+        // input aliases included (`,,`), and the private-use `<+` — emitted
+        // as ASCII even in Unicode mode — never reported.
+        let text = "x : NAT & f <+ g ,, notation";
+        let spans: Vec<(&str, &str)> = ascii_operator_spans(text)
+            .into_iter()
+            .map(|(range, unicode)| (&text[range], unicode))
+            .collect();
+        assert_eq!(spans, [(":", "∈"), ("NAT", "ℕ"), ("&", "∧"), (",,", "↦")]);
+        assert!(ascii_operator_spans("x ∈ ℕ ∧ y").is_empty());
     }
 
     #[test]

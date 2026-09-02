@@ -162,10 +162,10 @@ impl CodeActionProvider {
         let uri = &params.text_document.uri;
         let refactor = kind_requested(params, &CodeActionKind::REFACTOR);
         let fix_all = kind_requested(params, &FIX_ALL_KIND);
-        // Operator detection sees the code only — comments masked, positions
-        // preserved — so prose neither triggers a conversion nor gets
-        // rewritten by one.
-        let masked = rossi::comments::mask_comments(text);
+        // Operator detection sees the code only — comments and labels masked,
+        // positions preserved — so prose and label names neither trigger a
+        // conversion nor get rewritten by one.
+        let masked = rossi::comments::mask_opaque(text);
         let mut actions = Vec::new();
 
         for to_unicode in [true, false] {
@@ -427,7 +427,56 @@ impl CodeActionProvider {
             }
         }
 
+        // Rewrite an ASCII operator spelling flagged under
+        // rossi.format.enforceUnicode to its Unicode form — for a diagnostic
+        // that is still current, i.e. whose range is one of the operators the
+        // advisory flags right now. A range the client carried across an edit
+        // may cover anything by then.
+        let advisories: Vec<_> = params
+            .context
+            .diagnostics
+            .iter()
+            .filter(|d| diagnostic_code_is(d, crate::diagnostics::ASCII_OPERATOR_CODE))
+            .collect();
+        if !advisories.is_empty() {
+            let current = crate::diagnostics::ascii_operators(text);
+            for diagnostic in advisories {
+                if let Some((_, ascii, unicode)) = current
+                    .iter()
+                    .find(|(range, _, _)| *range == diagnostic.range)
+                {
+                    actions.push(CodeActionOrCommand::CodeAction(self.replace_operator_fix(
+                        &params.text_document.uri,
+                        diagnostic,
+                        ascii,
+                        unicode,
+                    )));
+                }
+            }
+        }
+
         actions
+    }
+
+    /// A quick fix replacing the operator `diagnostic` underlines with
+    /// `replacement`, attached to that diagnostic.
+    fn replace_operator_fix(
+        &self,
+        uri: &Url,
+        diagnostic: &crate::lsp_types::Diagnostic,
+        operator: &str,
+        replacement: &str,
+    ) -> CodeAction {
+        CodeAction {
+            title: format!("Replace `{operator}` with `{replacement}`"),
+            kind: Some(CodeActionKind::QUICKFIX),
+            diagnostics: Some(vec![diagnostic.clone()]),
+            edit: Some(single_edit(uri, diagnostic.range, replacement.to_string())),
+            command: None,
+            is_preferred: Some(true),
+            disabled: None,
+            data: None,
+        }
     }
 
     /// Quick fix for EB026 (assignment operator in a predicate). The diagnostic
@@ -450,30 +499,7 @@ impl CodeActionProvider {
             ":∈" | "::" => "∈",
             _ => return None,
         };
-
-        let mut changes = HashMap::new();
-        changes.insert(
-            uri.clone(),
-            vec![TextEdit {
-                range: diagnostic.range,
-                new_text: replacement.to_string(),
-            }],
-        );
-
-        Some(CodeAction {
-            title: format!("Replace `{operator}` with `{replacement}`"),
-            kind: Some(CodeActionKind::QUICKFIX),
-            diagnostics: Some(vec![diagnostic.clone()]),
-            edit: Some(WorkspaceEdit {
-                changes: Some(changes),
-                document_changes: None,
-                change_annotations: None,
-            }),
-            command: None,
-            is_preferred: Some(true),
-            disabled: None,
-            data: None,
-        })
+        Some(self.replace_operator_fix(uri, diagnostic, operator, replacement))
     }
 
     /// Create action to add missing END keyword

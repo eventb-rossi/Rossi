@@ -70,6 +70,13 @@ pub struct FormatConfig {
     #[serde(default = "default_use_unicode")]
     pub use_unicode: bool,
 
+    /// Flag ASCII operator spellings with an advisory diagnostic, for a
+    /// project that keeps its sources in Unicode (`rossi fmt --check` being
+    /// its CI gate). Off by default: ASCII is accepted input everywhere.
+    /// Has no effect unless `use_unicode` is on.
+    #[serde(default)]
+    pub enforce_unicode: bool,
+
     /// Indentation string (e.g., "  " or "    "); empty follows the style
     /// preset (2 spaces camille, 4 spaces rossi)
     #[serde(default)]
@@ -99,6 +106,14 @@ pub struct FormatConfig {
 }
 
 impl FormatConfig {
+    /// Whether ASCII operator spellings get the advisory diagnostic: opted in
+    /// through `enforce_unicode`, and only under the Unicode convention —
+    /// with `use_unicode` off, the fix-all action and the formatter would
+    /// rewrite back to ASCII whatever a quick fix converted.
+    pub fn flags_ascii_operators(&self) -> bool {
+        self.enforce_unicode && self.use_unicode
+    }
+
     /// The pretty-printer this configuration denotes — the single mapping
     /// used everywhere the server renders Event-B text into a user's file
     /// (`textDocument/formatting` and the Rodin model-edit sync), so the two
@@ -142,6 +157,7 @@ impl Default for FormatConfig {
         Self {
             style: String::new(),
             use_unicode: default_use_unicode(),
+            enforce_unicode: false,
             indentation: String::new(),
             keyword_case: String::new(),
             decl_lists: String::new(),
@@ -549,6 +565,7 @@ mod tests {
         let json = r#"{
             "format": {
                 "useUnicode": false,
+                "enforceUnicode": true,
                 "indentation": "  "
             },
             "diagnostics": {
@@ -563,6 +580,7 @@ mod tests {
         let config: RossiConfig = serde_json::from_str(json).unwrap();
 
         assert!(!config.format.use_unicode);
+        assert!(config.format.enforce_unicode);
         assert_eq!(config.format.indentation, "  ");
 
         assert!(!config.diagnostics.enabled);
@@ -586,6 +604,7 @@ mod tests {
 
         // Default values ("" = follow the style preset)
         assert_eq!(config.format.indentation, "");
+        assert!(!config.format.enforce_unicode);
         assert!(config.diagnostics.enabled);
         assert!(config.rodin.mirror_proofs);
     }

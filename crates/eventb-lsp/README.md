@@ -209,6 +209,16 @@ are. Being a `source.*` kind, editors can run it on save — in VS Code:
 }
 ```
 
+To see deviations before saving, set `rossi.format.enforceUnicode`: every
+ASCII operator spelling in code (comments and labels excluded) gets an advisory
+diagnostic, code `ascii-operator`, naming its Unicode form, with a quick fix
+for that one token; the fix-all action clears them all at once. The four
+operators whose only Unicode glyph is a Rodin private-use character (`<+`,
+`<<->`, `<->>`, `<<->>`) stay ASCII under either convention and are never
+flagged. It is an opt-in for projects that keep their sources in Unicode and
+has no effect with `rossi.format.useUnicode` off, where formatting and the
+fix-all action would reintroduce what it flags.
+
 The CI counterpart is `rossi fmt --check`, which fails on any file the
 formatter would change, operator spellings included.
 
@@ -431,6 +441,7 @@ The server supports the following configuration options (passed via LSP `workspa
 interface RossiConfig {
   format: {
     useUnicode: boolean;      // Use Unicode operators (default: true)
+    enforceUnicode: boolean;  // Flag ASCII operator spellings (default: false)
     indentation: string;      // Indentation string (default: "    ")
   };
   diagnostics: {
