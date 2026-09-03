@@ -9,20 +9,20 @@ INVARIANTS
 EVENTS
     EVENT INITIALISATION
     THEN
-        count := 0
+        @act1 count := 0
     END
 
     EVENT increment
     WHERE
         @grd1 count < max_value
     THEN
-        count := count + 1
+        @act1 count := count + 1
     END
 
     EVENT decrement
     WHERE
         @grd1 count > 0
     THEN
-        count := count - 1
+        @act1 count := count - 1
     END
 END

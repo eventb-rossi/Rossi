@@ -1,6 +1,7 @@
-//! A clause header with nothing under it, and a label with nothing after it,
-//! are reported where the mistake is — at the keyword or the label — rather
-//! than at whatever token the parser reached next.
+//! A clause header with nothing under it, a label with nothing after it, and
+//! an item with no label at all are reported where the mistake is — at the
+//! keyword, at the label, or at the item — rather than at whatever token the
+//! parser reached next.
 
 use rossi::{ParseError, parse};
 
@@ -154,6 +155,92 @@ fn a_label_with_no_formula_is_reported_at_the_label() {
         );
         assert_eq!(error.position(), Some((line, column)), "in:\n{source}");
     }
+}
+
+#[test]
+fn an_item_with_no_label_is_reported_at_the_item() {
+    // Rodin's textual grammar makes the label mandatory everywhere an item
+    // carries one, and its static checker reports a missing one as an error.
+    // The item, not the clause keyword, is where the label has to be written.
+    for (source, expected, line, column) in [
+        (
+            "MACHINE m\nVARIABLES\n    x\nINVARIANTS\n    x ∈ ℕ\nEND\n",
+            "a predicate",
+            5,
+            5,
+        ),
+        (
+            "CONTEXT c\nCONSTANTS\n    c\nAXIOMS\n    c = 1\n    c = 2\nEND\n",
+            "a predicate",
+            5,
+            5,
+        ),
+        (
+            "CONTEXT c\nCONSTANTS\n    c\nTHEOREMS\n    c = 1\nEND\n",
+            "a predicate",
+            5,
+            5,
+        ),
+        (
+            &machine_with_event_body("    WHERE\n        x > 0\n    THEN\n        @act1 x ≔ 1\n"),
+            "a predicate",
+            7,
+            9,
+        ),
+        (
+            &machine_with_event_body(
+                "    WHERE\n        @grd1 x > 0\n    WITH\n        y = 1\n    THEN\n        @act1 x ≔ 1\n",
+            ),
+            "a predicate",
+            9,
+            9,
+        ),
+        (
+            &machine_with_event_body("    THEN\n        x ≔ 1\n"),
+            "an action",
+            7,
+            9,
+        ),
+        (
+            &machine_with_event_body("    THEN\n        @act1 x ≔ 1\n        x ≔ 2\n"),
+            "an action",
+            8,
+            9,
+        ),
+    ] {
+        let error = error_of(source);
+        let ParseError::MissingLabel {
+            expected: reported, ..
+        } = &error
+        else {
+            panic!("expected a MissingLabel, got: {error:?}\nin:\n{source}");
+        };
+        assert_eq!(*reported, expected, "in:\n{source}");
+        assert_eq!(error.position(), Some((line, column)), "in:\n{source}");
+    }
+}
+
+#[test]
+fn an_unlabeled_item_no_longer_swallows_the_next_clause_keyword() {
+    // An unlabeled predicate may open with a keyword-permissive identifier, so
+    // `WITNESS (p) = 0` used to be read as the guard `witness(p) = 0` and the
+    // WITNESS clause vanished without a word. Requiring the label turns that
+    // silent loss into an error on the item.
+    let source = machine_with_event_body(
+        "    ANY\n        p\n    WHERE\n        @grd1 x > 0\n    WITNESS\n        (p) = 0\n    THEN\n        @act1 x ≔ 1\n",
+    );
+    let error = error_of(&source);
+    assert!(
+        matches!(error, ParseError::MissingLabel { .. }),
+        "expected a MissingLabel, got: {error:?}"
+    );
+}
+
+#[test]
+fn the_first_variant_still_needs_no_label() {
+    // Rodin's own `IVariant` reads a missing label as its default (`vrn`), so
+    // the first variant is the one item the text grammar leaves unlabeled.
+    parse("MACHINE m\nVARIABLES\n    x\nVARIANT\n    x\nEND\n").expect("must parse");
 }
 
 #[test]

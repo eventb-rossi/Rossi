@@ -91,14 +91,14 @@ fn test_tokens_never_land_inside_comments() {
     let cases = [
         Case {
             case: "variable mentioned in a comment before its declaration",
-            text: "MACHINE m\nVARIABLES\n    // state: x is the counter\n    x\nINVARIANTS\n    @inv1 x >= 0\nEVENTS\n    EVENT INITIALISATION\n    THEN\n        x := 0\n    END\nEND\n",
+            text: "MACHINE m\nVARIABLES\n    // state: x is the counter\n    x\nINVARIANTS\n    @inv1 x >= 0\nEVENTS\n    EVENT INITIALISATION\n    THEN\n        @act1 x := 0\n    END\nEND\n",
             token_type: "variable",
             comment_line: 2,
             real_positions: &[(3, 4)],
         },
         Case {
             case: "label mentioned in a comment before the real @inv1",
-            text: "MACHINE m\nVARIABLES\n    x\nINVARIANTS\n    // inv1: x stays a natural\n    @inv1 x >= 0\nEVENTS\n    EVENT INITIALISATION\n    THEN\n        x := 0\n    END\nEND\n",
+            text: "MACHINE m\nVARIABLES\n    x\nINVARIANTS\n    // inv1: x stays a natural\n    @inv1 x >= 0\nEVENTS\n    EVENT INITIALISATION\n    THEN\n        @act1 x := 0\n    END\nEND\n",
             token_type: "macro", // labels use the MACRO slot
             comment_line: 4,
             real_positions: &[(5, 5)],
@@ -164,7 +164,7 @@ fn test_comment_tokens_emitted() {
 fn test_keyword_not_matched_inside_identifier() {
     // `extended` contains "end"; the END keyword tokens must sit on the
     // real END lines, never inside the identifier.
-    let text = "MACHINE m\nVARIABLES\n    extended\nINVARIANTS\n    @inv1 extended >= 0\nEVENTS\n    EVENT INITIALISATION\n    THEN\n        extended := 0\n    END\nEND\n";
+    let text = "MACHINE m\nVARIABLES\n    extended\nINVARIANTS\n    @inv1 extended >= 0\nEVENTS\n    EVENT INITIALISATION\n    THEN\n        @act1 extended := 0\n    END\nEND\n";
 
     let tokens = decode_tokens(text);
 
@@ -189,7 +189,7 @@ fn test_hyphenated_name_not_split_into_keyword() {
     // the structural word boundary (where `-` is part of a word), so the `end`
     // of `end-update` is never a whole keyword; the name itself is emitted from
     // its AST span rather than text-searched.
-    let text = "MACHINE m\nVARIABLES\n    x\nEVENTS\n    EVENT INITIALISATION\n    THEN\n        x := 0\n    END\n    EVENT end-update\n    THEN\n        x := 1\n    END\nEND\n";
+    let text = "MACHINE m\nVARIABLES\n    x\nEVENTS\n    EVENT INITIALISATION\n    THEN\n        @act1 x := 0\n    END\n    EVENT end-update\n    THEN\n        @act1 x := 1\n    END\nEND\n";
     assert!(rossi::parse(text).is_ok(), "fixture must be strictly valid");
 
     let tokens = decode_tokens(text);
@@ -213,7 +213,7 @@ fn test_token_columns_are_chars_not_bytes() {
     // `∈` and `ℕ` are 3 UTF-8 bytes but 1 character (and 1 UTF-16 unit)
     // each; a comment after them must be positioned and sized in characters,
     // or clients paint it shifted right with an inflated length.
-    let text = "MACHINE m\nVARIABLES\n    x\nINVARIANTS\n    @inv1 x ∈ ℕ // typing: ℕ\nEVENTS\n    EVENT INITIALISATION\n    THEN\n        x := 0\n    END\nEND\n";
+    let text = "MACHINE m\nVARIABLES\n    x\nINVARIANTS\n    @inv1 x ∈ ℕ // typing: ℕ\nEVENTS\n    EVENT INITIALISATION\n    THEN\n        @act1 x := 0\n    END\nEND\n";
 
     let tokens = decode_tokens(text);
 
@@ -233,13 +233,14 @@ fn test_token_columns_are_chars_not_bytes() {
 fn test_comment_markers_inside_label_do_not_split_tokens() {
     // `label_text` is atomic: `@inv//1` is one label, so the label token
     // must cover it whole and no COMMENT token may overlap it.
-    let text = "MACHINE m\nVARIABLES\n    x\nINVARIANTS\n    @inv//1 x >= 0\nEVENTS\n    EVENT INITIALISATION\n    THEN\n        x := 0\n    END\nEND\n";
+    let text = "MACHINE m\nVARIABLES\n    x\nINVARIANTS\n    @inv//1 x >= 0\nEVENTS\n    EVENT INITIALISATION\n    THEN\n        @act1 x := 0\n    END\nEND\n";
     assert!(rossi::parse(text).is_ok(), "fixture must be strictly valid");
 
     let tokens = decode_tokens(text);
 
     let label = token_type_index("macro");
-    let labels: Vec<_> = tokens.iter().filter(|t| t.3 == label).collect();
+    // The invariant's line only: the action carries a label token of its own.
+    let labels: Vec<_> = tokens.iter().filter(|t| t.3 == label && t.0 == 4).collect();
     assert_eq!(
         labels,
         [&(4, 5, 6, label)],
@@ -257,7 +258,7 @@ fn test_quote_in_label_does_not_hide_real_comment() {
     // A Rodin-imported label like `SAF5"` must not open string mode and
     // swallow the real trailing comment (grammar: any non-whitespace after
     // `@` is label text).
-    let text = "MACHINE m\nVARIABLES\n    x\nINVARIANTS\n    @SAF5\" x >= 0 // note: real\nEVENTS\n    EVENT INITIALISATION\n    THEN\n        x := 0\n    END\nEND\n";
+    let text = "MACHINE m\nVARIABLES\n    x\nINVARIANTS\n    @SAF5\" x >= 0 // note: real\nEVENTS\n    EVENT INITIALISATION\n    THEN\n        @act1 x := 0\n    END\nEND\n";
     assert!(rossi::parse(text).is_ok(), "fixture must be strictly valid");
 
     let tokens = decode_tokens(text);
@@ -375,7 +376,7 @@ fn event_clause_keywords_coloured_when_guard_parse_fails() {
     // A broken guard (`∖` missing → `Union CurrUnion`) causes error recovery to
     // leave event.guards empty.  WHERE and THEN must still receive keyword
     // tokens so the event body doesn't appear completely unhighlighted.
-    let text = "MACHINE m\nVARIABLES\n    v\nEVENTS\n    EVENT step\n    WHERE\n        @grd1 v ∈ ℕ  ℕ\n    THEN\n        v := 0\n    END\nEND\n";
+    let text = "MACHINE m\nVARIABLES\n    v\nEVENTS\n    EVENT step\n    WHERE\n        @grd1 v ∈ ℕ  ℕ\n    THEN\n        @act1 v := 0\n    END\nEND\n";
     assert!(rossi::parse(text).is_err(), "fixture must be broken");
 
     let tokens = decode_tokens(text);
@@ -436,7 +437,7 @@ fn all_any_parameters_coloured_when_guard_parse_fails() {
     // declaration must still get a PARAMETER token — not just the first, and not
     // only the ones named in a still-valid guard. `roleName` appears in no guard,
     // so a token on it can only come from the parameter-declaration path.
-    let text = "MACHINE m\nVARIABLES\n    v\nEVENTS\n    EVENT step\n    ANY\n        user\n        subject\n        roleName\n    WHERE\n        @grd1 user ∈ S :\n        @grd2 subject ∈ T\n    THEN\n        v ≔ 0\n    END\nEND\n";
+    let text = "MACHINE m\nVARIABLES\n    v\nEVENTS\n    EVENT step\n    ANY\n        user\n        subject\n        roleName\n    WHERE\n        @grd1 user ∈ S :\n        @grd2 subject ∈ T\n    THEN\n        @act1 v ≔ 0\n    END\nEND\n";
     assert!(rossi::parse(text).is_err(), "fixture must be broken");
 
     let tokens = decode_tokens(text);

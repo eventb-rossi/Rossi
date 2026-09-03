@@ -432,7 +432,7 @@ mod tests {
 
     #[test]
     fn event_refinement_and_formula_collisions_are_not_components() {
-        let source = "MACHINE Base\nVARIABLES\n    Base\nEVENTS\n    EVENT Base extends Base\n    THEN\n        Base := Base\n    END\nEND";
+        let source = "MACHINE Base\nVARIABLES\n    Base\nEVENTS\n    EVENT Base extends Base\n    THEN\n        @act1 Base := Base\n    END\nEND";
 
         for marker in [
             "VARIABLES\n    Base",

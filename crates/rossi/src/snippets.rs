@@ -56,7 +56,7 @@ pub const SNIPPETS: &[Snippet] = &[
             "EVENTS",
             "    EVENT INITIALISATION",
             "    BEGIN",
-            "        ${5:var_name} := ${6:value}",
+            "        @${5:act1} ${6:var_name} := ${7:value}",
             "    END",
             "END",
         ],
@@ -81,7 +81,7 @@ pub const SNIPPETS: &[Snippet] = &[
         body: &[
             "EVENT INITIALISATION",
             "BEGIN",
-            "    ${1:var} := ${2:value}",
+            "    @${1:act1} ${2:var} := ${3:value}",
             "END",
         ],
     },

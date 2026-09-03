@@ -171,6 +171,7 @@ fn category_of(error: &rossi::ParseError) -> &'static str {
         E::EmptyClause { .. } => "EmptyClause",
         E::ClauseOutOfOrder { .. } => "ClauseOutOfOrder",
         E::MissingFormula { .. } => "MissingFormula",
+        E::MissingLabel { .. } => "MissingLabel",
         E::RecoverableError { .. } => "RecoverableError",
         E::ArityMismatch { .. } => "ArityMismatch",
         E::MultipleErrors(errors) => errors.first().map_or("MultipleErrors", category_of),

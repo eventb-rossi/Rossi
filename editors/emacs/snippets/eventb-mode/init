@@ -4,5 +4,5 @@
 # --
 EVENT INITIALISATION
 BEGIN
-    ${1:var} := ${2:value}
+    @${1:act1} ${2:var} := ${3:value}
 END

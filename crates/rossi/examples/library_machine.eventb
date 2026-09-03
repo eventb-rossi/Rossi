@@ -13,8 +13,8 @@ THEOREMS
 EVENTS
     EVENT INITIALISATION
     THEN
-        available_books := library_collection
-        loans := ∅
+        @act1 available_books := library_collection
+        @act2 loans := ∅
     END
 
     EVENT borrow_book_existing
@@ -27,8 +27,8 @@ EVENTS
         @grd3 member ∈ dom(loans)
         @grd4 card(loans(member)) < max_loans
     THEN
-        available_books := available_books ∖ {book}
-        loans(member) := loans(member) ∪ {book}
+        @act1 available_books := available_books ∖ {book}
+        @act2 loans(member) := loans(member) ∪ {book}
     END
 
     EVENT borrow_book_new
@@ -40,8 +40,8 @@ EVENTS
         @grd2 book ∈ available_books
         @grd3 member ∉ dom(loans)
     THEN
-        available_books := available_books ∖ {book}
-        loans(member) := {book}
+        @act1 available_books := available_books ∖ {book}
+        @act2 loans(member) := {book}
     END
 
     EVENT return_book
@@ -52,8 +52,8 @@ EVENTS
         @grd1 member ∈ dom(loans)
         @grd2 book ∈ loans(member)
     THEN
-        available_books := available_books ∪ {book}
-        loans(member) := loans(member) ∖ {book}
+        @act1 available_books := available_books ∪ {book}
+        @act2 loans(member) := loans(member) ∖ {book}
     END
 
     EVENT register_member
@@ -63,6 +63,6 @@ EVENTS
         @grd1 new_member ∈ MEMBERS
         @grd2 new_member ∉ dom(loans)
     THEN
-        loans(new_member) := ∅
+        @act1 loans(new_member) := ∅
     END
 END

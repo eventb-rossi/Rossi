@@ -12,8 +12,8 @@ VARIANT
 EVENTS
     EVENT INITIALISATION
     THEN
-        lights := {north_south ↦ red, east_west ↦ red}
-        timer := 0
+        @act1 lights := {north_south ↦ red, east_west ↦ red}
+        @act2 timer := 0
     END
 
     EVENT tick
@@ -21,7 +21,7 @@ EVENTS
     WHERE
         @grd1 timer > 0
     THEN
-        timer := timer − 1
+        @act1 timer := timer − 1
     END
 
     EVENT change_to_yellow
@@ -32,8 +32,8 @@ EVENTS
         @grd2 lights(direction) = green
         @grd3 timer = 0
     THEN
-        lights(direction) := yellow
-        timer := 3
+        @act1 lights(direction) := yellow
+        @act2 timer := 3
     END
 
     EVENT change_to_red
@@ -44,8 +44,8 @@ EVENTS
         @grd2 lights(direction) = yellow
         @grd3 timer = 0
     THEN
-        lights(direction) := red
-        timer := 2
+        @act1 lights(direction) := red
+        @act2 timer := 2
     END
 
     EVENT change_to_green
@@ -57,7 +57,7 @@ EVENTS
         @grd3 lights(opposite(direction)) = red
         @grd4 timer = 0
     THEN
-        lights(direction) := green
-        timer := 10
+        @act1 lights(direction) := green
+        @act2 timer := 10
     END
 END

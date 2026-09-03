@@ -11,8 +11,8 @@ INVARIANTS
 EVENTS
     EVENT INITIALISATION
     THEN
-        concrete_state := 0
-        step_size := 1
+        @act1 concrete_state := 0
+        @act2 step_size := 1
     END
 
     EVENT increase
@@ -25,7 +25,7 @@ EVENTS
     WITH
         @delta delta = steps ∗ step_size
     THEN
-        concrete_state := concrete_state + steps ∗ step_size
+        @act1 concrete_state := concrete_state + steps ∗ step_size
     END
 
     EVENT decrease
@@ -35,7 +35,7 @@ EVENTS
     WITH
         @abstract_state' abstract_state' = concrete_state − step_size
     THEN
-        concrete_state := concrete_state − step_size
+        @act1 concrete_state := concrete_state − step_size
     END
 
     EVENT change_step_size
@@ -45,6 +45,6 @@ EVENTS
         @grd1 new_size ∈ ℕ1
         @grd2 new_size ≤ 10
     THEN
-        step_size := new_size
+        @act1 step_size := new_size
     END
 END

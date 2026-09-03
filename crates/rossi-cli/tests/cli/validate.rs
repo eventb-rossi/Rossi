@@ -1728,7 +1728,7 @@ fn validate_stdin_duplicate_identifier_and_label_report_eb021_eb022() {
     // severity, so the run exits non-zero.
     let output = run_cli_with_stdin(
         &["validate", "--format", "json", "-"],
-        "MACHINE M\nVARIABLES\n    x x\nINVARIANTS\n    @inv1 x >= 0\n    @inv1 x <= 5\nEVENTS\n    EVENT INITIALISATION\n    THEN\n        x := 0\n    END\nEND\n",
+        "MACHINE M\nVARIABLES\n    x x\nINVARIANTS\n    @inv1 x >= 0\n    @inv1 x <= 5\nEVENTS\n    EVENT INITIALISATION\n    THEN\n        @act1 x := 0\n    END\nEND\n",
     );
     assert!(
         !output.status.success(),

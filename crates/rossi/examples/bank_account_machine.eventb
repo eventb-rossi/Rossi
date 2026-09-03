@@ -11,8 +11,8 @@ INVARIANTS
 EVENTS
     EVENT INITIALISATION
     THEN
-        balances :∈ ACCOUNTS → ℤ
-        active_accounts := ∅
+        @act1 balances :∈ ACCOUNTS → ℤ
+        @act2 active_accounts := ∅
     END
 
     EVENT open_account
@@ -25,8 +25,8 @@ EVENTS
         @grd3 initial_deposit ∈ ℕ
         @grd4 initial_deposit ≤ max_balance
     THEN
-        balances(account) := initial_deposit
-        active_accounts := active_accounts ∪ {account}
+        @act1 balances(account) := initial_deposit
+        @act2 active_accounts := active_accounts ∪ {account}
     END
 
     EVENT deposit
@@ -38,7 +38,7 @@ EVENTS
         @grd2 amount ∈ ℕ1
         @grd3 balances(account) + amount ≤ max_balance
     THEN
-        balances(account) := balances(account) + amount
+        @act1 balances(account) := balances(account) + amount
     END
 
     EVENT withdraw
@@ -50,7 +50,7 @@ EVENTS
         @grd2 amount ∈ ℕ1
         @grd3 balances(account) − amount ≥ min_balance
     THEN
-        balances(account) := balances(account) − amount
+        @act1 balances(account) := balances(account) − amount
     END
 
     EVENT transfer
@@ -66,8 +66,8 @@ EVENTS
         @grd5 balances(from_account) − amount ≥ min_balance
         @grd6 balances(to_account) + amount ≤ max_balance
     THEN
-        balances(from_account) := balances(from_account) − amount
-        balances(to_account) := balances(to_account) + amount
+        @act1 balances(from_account) := balances(from_account) − amount
+        @act2 balances(to_account) := balances(to_account) + amount
     END
 
     EVENT close_account
@@ -77,6 +77,6 @@ EVENTS
         @grd1 account ∈ active_accounts
         @grd2 balances(account) = 0
     THEN
-        active_accounts := active_accounts ∖ {account}
+        @act1 active_accounts := active_accounts ∖ {account}
     END
 END

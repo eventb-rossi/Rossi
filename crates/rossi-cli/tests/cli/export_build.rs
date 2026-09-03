@@ -10,7 +10,7 @@ use crate::helpers::{
 
 const CTX: &str = "CONTEXT Ctx\nCONSTANTS\n    cap\nAXIOMS\n    @axm1 cap = 10\nEND\n";
 
-const MACHINE: &str = "MACHINE M0\nSEES\n    Ctx\nVARIABLES\n    x\nINVARIANTS\n    @inv1 x : NAT\n    @inv2 x <= cap\nEVENTS\n    EVENT INITIALISATION\n    THEN\n        x := 0\n    END\n\n    EVENT inc\n    WHERE\n        @grd1 x < cap\n    THEN\n        x := x + 1\n    END\nEND\n";
+const MACHINE: &str = "MACHINE M0\nSEES\n    Ctx\nVARIABLES\n    x\nINVARIANTS\n    @inv1 x : NAT\n    @inv2 x <= cap\nEVENTS\n    EVENT INITIALISATION\n    THEN\n        @act1 x := 0\n    END\n\n    EVENT inc\n    WHERE\n        @grd1 x < cap\n    THEN\n        @act1 x := x + 1\n    END\nEND\n";
 
 /// Write the context + machine fixture into a fresh source directory.
 fn source_dir(prefix: &str) -> PathBuf {
@@ -23,7 +23,7 @@ fn source_dir(prefix: &str) -> PathBuf {
 /// A minimal single-machine project for the multi-project fixtures.
 fn simple_machine(name: &str) -> String {
     format!(
-        "MACHINE {name}\nVARIABLES\n    x\nINVARIANTS\n    @inv1 x : NAT\nEVENTS\n    EVENT INITIALISATION\n    THEN\n        x := 0\n    END\nEND\n"
+        "MACHINE {name}\nVARIABLES\n    x\nINVARIANTS\n    @inv1 x : NAT\nEVENTS\n    EVENT INITIALISATION\n    THEN\n        @act1 x := 0\n    END\nEND\n"
     )
 }
 
