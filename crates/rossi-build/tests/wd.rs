@@ -4,10 +4,14 @@ fn project(components: Vec<ProjectComponent>) -> Project {
     Project::new("wd", components)
 }
 
-fn findings(project: &Project) -> Vec<rossi_build::Diagnostic> {
+fn checked_model(project: &Project) -> rossi_build::sc_model::ScModel {
     let (build, model) = build_with_model(project);
     assert!(build.is_ok(), "build diagnostics: {:?}", build.diagnostics);
-    wd::run(project, &model)
+    model
+}
+
+fn findings(project: &Project) -> Vec<rossi_build::Diagnostic> {
+    wd::run(project, &checked_model(project))
 }
 
 #[test]
@@ -293,8 +297,7 @@ fn conditions_and_diagnostics_agree() {
     .unwrap();
     let project = project(vec![machine]);
 
-    let (build, model) = build_with_model(&project);
-    assert!(build.is_ok(), "build diagnostics: {:?}", build.diagnostics);
+    let model = checked_model(&project);
     let conditions = wd::conditions(&project.components, &model);
     let diagnostics = wd::run(&project, &model);
 
@@ -302,6 +305,64 @@ fn conditions_and_diagnostics_agree() {
     assert!(!conditions.is_empty());
     for (condition, diagnostic) in conditions.iter().zip(&diagnostics) {
         assert_eq!(condition.origin, diagnostic.origin);
-        assert_eq!(condition.span, diagnostic.span);
+        // A diagnostic names its component in `origin` and keeps the bare
+        // span; the condition additionally carries the source that span
+        // indexes.
+        assert_eq!(
+            condition.span.as_ref().map(|located| located.value),
+            diagnostic.span
+        );
     }
+}
+
+#[test]
+fn conditions_name_the_source_their_spans_index() {
+    // Two machines, each with a division guard, in files of their own. Both
+    // spans are offsets into a text — only the source says which one.
+    fn machine(name: &str, var: &str, event: &str, divisor: u32) -> String {
+        format!(
+            "MACHINE {name}\n\
+             VARIABLES\n    {var}\n\
+             INVARIANTS\n    @i1 {var} : NAT\n\
+             EVENTS\n\
+             EVENT INITIALISATION\n    THEN\n        @a1 {var} := 1\n    END\n\n\
+             EVENT {event}\n    WHEN\n        @g1 {divisor} / {var} > 0\n    \
+             THEN\n        @a1 {var} := 1\n    END\n\
+             END\n"
+        )
+    }
+    let m1 = machine("M1", "v", "tick", 10);
+    let m2 = machine("M2", "w", "tock", 20);
+
+    let mut components = ProjectComponent::from_eventb("M1.eventb", &m1).unwrap();
+    components.extend(ProjectComponent::from_eventb("M2.eventb", &m2).unwrap());
+    let project = project(components);
+
+    let model = checked_model(&project);
+    let conditions = wd::conditions(&project.components, &model);
+
+    let located: Vec<(&str, &str)> = conditions
+        .iter()
+        .filter_map(|condition| {
+            let span = condition.span.as_ref()?;
+            let text = match span.source.as_str() {
+                "M1.eventb" => &m1,
+                "M2.eventb" => &m2,
+                other => panic!("unexpected source {other}"),
+            };
+            // A formula span runs to the next token, so it swallows the
+            // trailing layout.
+            Some((
+                condition.origin.as_str(),
+                text[span.value.start..span.value.end].trim_end(),
+            ))
+        })
+        .collect();
+
+    // Each span resolves, in the text its own source names, to the formula
+    // the condition came from.
+    assert_eq!(
+        located,
+        [("M1.tick/g1", "10 / v > 0"), ("M2.tock/g1", "20 / w > 0")]
+    );
 }

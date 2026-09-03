@@ -147,6 +147,10 @@ impl InlayHintsProvider {
             seen.insert(kind_and_name(component));
             components.push(component.clone());
         }
+        // This file's components, keyed the same way the dedup above keys
+        // them. The WD pass below is fed these and not the dependencies,
+        // whose spans index their own files.
+        let local = seen.clone();
         for component in doc.components() {
             let environment = environments.resolve(component, &loader);
             for dependency in environment
@@ -253,12 +257,12 @@ impl InlayHintsProvider {
         }
 
         if config.inlay_hints.well_definedness {
-            // The project was assembled roots-first, so this file's
-            // components are exactly the leading `doc.components().len()`
-            // project entries.
             push_well_definedness_hints(
                 &mut hints,
-                &project.components[..doc.components().len()],
+                project
+                    .components
+                    .iter()
+                    .filter(|component| local.contains(&kind_and_name(&component.component))),
                 doc.text(),
                 &model,
                 &index,
@@ -277,12 +281,13 @@ impl InlayHintsProvider {
 /// over the whole formula, so there is one marker per formula, at the
 /// formula's end.
 ///
-/// `local_components` must be this file's components only: dependency
-/// formulas carry spans into *their* files, and their lemmas would be
-/// computed just to be discarded.
-fn push_well_definedness_hints(
+/// `local_components` must be the components whose spans index `text`: the
+/// loop below resolves each condition's span against `text` without re-reading
+/// the source the condition names, so a dependency would both have its lemma
+/// computed for nothing and anchor its marker at an offset into the wrong file.
+fn push_well_definedness_hints<'a>(
     hints: &mut Vec<InlayHint>,
-    local_components: &[rossi_build::ProjectComponent],
+    local_components: impl IntoIterator<Item = &'a rossi_build::ProjectComponent>,
     text: &str,
     model: &rossi_build::sc_model::ScModel,
     index: &PositionIndex,
@@ -297,7 +302,7 @@ fn push_well_definedness_hints(
     // at its formula's last visible character instead.
     let masked = rossi::comments::mask_comments(text);
     for condition in conditions {
-        let Some(span) = condition.span else {
+        let Some(span) = condition.span.map(|located| located.value) else {
             continue;
         };
         hints.push(InlayHint {

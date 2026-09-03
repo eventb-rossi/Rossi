@@ -14,7 +14,7 @@
 
 use std::path::{Path, PathBuf};
 
-use rossi::{Component, NamedComponent, NamedProject, parse_components, parse_xml};
+use rossi::{Component, NamedComponent, NamedProject, SourceId, parse_components, parse_xml};
 
 use crate::error::{ProjectError, Result};
 use crate::rodin_ids::RodinIds;
@@ -117,6 +117,18 @@ impl ProjectComponent {
             rodin_ids: RodinIds::default(),
             source,
         }
+    }
+
+    /// Identity of the text this component's spans index.
+    ///
+    /// Derived from [`filename`](Self::filename) rather than stored, so it
+    /// cannot drift out of sync with that public field. Two components are
+    /// only comparable by this id if their filenames were spelled the same
+    /// way: [`from_xml`](Self::from_xml) and [`from_eventb`](Self::from_eventb)
+    /// reduce theirs to a basename, while [`from_parsed`](Self::from_parsed)
+    /// and the struct literal take what the caller gives them.
+    pub fn source_id(&self) -> SourceId {
+        SourceId::new(&self.filename)
     }
 
     /// Short name (extension stripped). For `"AuctionContext.buc"` this is

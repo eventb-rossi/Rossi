@@ -6,6 +6,7 @@
 //! features can rely on them.
 
 use rossi::ast::Span;
+use rossi::formula::FormulaRef;
 use rossi::{
     AssignmentKind, ExpressionKind, PredicateKind, parse_action_str, parse_expression_str,
     parse_predicate_str,
@@ -242,4 +243,37 @@ fn becomes_such_that_target_is_spanned() {
         panic!("expected becomes-such-that");
     };
     assert_eq!(slice(src, idents[0].span().unwrap()), "x");
+}
+
+#[test]
+fn propositional_leaves_of_a_parsed_guard_resolve_to_their_source() {
+    // The motivating case: number the atomic conditions of a guard and paint
+    // each one back onto the text it came from.
+    let src = "x > 0 ∧ (y = 1 ⇒ ¬ z ∈ S) ∧ (∀ n · n > y)";
+    let pred = parse_predicate_str(src).expect("parses");
+
+    let located: Vec<(usize, String, &str)> = pred
+        .propositional_leaves()
+        .iter()
+        .enumerate()
+        .map(|(index, position)| {
+            let FormulaRef::Pred(leaf) = pred.sub_formula(position).expect("leaf exists") else {
+                panic!("expected a predicate at {position}");
+            };
+            let span = leaf.span().expect("parsed leaves carry spans");
+            (index, position.to_string(), slice(src, span).trim_end())
+        })
+        .collect();
+
+    assert_eq!(
+        located,
+        [
+            (0, "0".to_string(), "x > 0"),
+            (1, "1.0".to_string(), "y = 1"),
+            (2, "1.1.0".to_string(), "z ∈ S"),
+            // The quantifier is one condition; `n > y` inside it is not a
+            // condition of this guard.
+            (3, "2".to_string(), "∀ n · n > y"),
+        ]
+    );
 }
