@@ -208,7 +208,10 @@ fn parse_error_range(error: &rossi::ParseError, text: &str) -> Range {
 /// resolution, and no type inference — duplicate identifiers (EB021) and
 /// labels (EB022) from the shared `rossi_build::duplicates` core (the same
 /// detection the SC build enforces), plus the shadowed-name (EB023) and
-/// keyword-name (EB028) lints from `rossi_build::lint::run_component` — so
+/// keyword-name (EB028) lints from `rossi_build::lint::run_component`, plus
+/// the non-portable-whitespace advisory (EB031) from
+/// `rossi_build::lint::run_source`, which reads `text` directly because
+/// whitespace sits between AST nodes rather than inside one — so
 /// they are safe to recompute on every keystroke alongside the parse errors.
 /// `rossi validate` runs the same two passes on loose `.eventb` text; this
 /// only maps their output into the protocol's shape. `text` is the source
@@ -225,6 +228,7 @@ pub(crate) fn lint_diagnostics<'a>(
             rossi_build::duplicates::component_duplicate_diagnostics(c)
                 .into_iter()
                 .chain(rossi_build::lint::run_component(c))
+                .chain(rossi_build::lint::run_source(c, text))
         })
         .map(move |d| build_diagnostic_to_lsp(&d, text))
 }

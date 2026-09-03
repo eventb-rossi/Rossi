@@ -7,6 +7,12 @@
 //! parser's error recovery all derive their keyword sets from this table rather
 //! than restating them.
 //!
+//! It also holds the lexical character classes the grammar mirrors
+//! ([`is_word_char`], [`is_whitespace`]) and the "stock Camille cannot read
+//! this" portability predicates ([`camille_reserved_keyword`],
+//! [`camille_unreadable_separator`]), for callers that scan text rather than
+//! parse it.
+//!
 //! The vocabulary matches the structural keyword list documented in
 //! `docs/EVENTB_LANGUAGE_REFERENCE.md` and is kept in sync with `grammar.pest`
 //! by the `keywords_match_grammar` test.
@@ -543,6 +549,98 @@ pub fn is_word_char(c: char) -> bool {
 /// never be split at an embedded keyword.
 pub fn is_structural_word_char(c: char) -> bool {
     is_word_char(c) || c == '-'
+}
+
+/// Whether `c` is whitespace to rossi's grammar — and so to Rodin's math
+/// lexer, which the grammar mirrors.
+///
+/// `LexicalClass.isWhitespace(cp)` in RodinCore's `org.eventb.core.ast` is
+/// `Character.isWhitespace(cp) || FormulaFactory.isEventBWhiteSpace(cp)`, and
+/// `isEventBWhiteSpace` is `Character.isSpaceChar(cp) || 0x09..=0x0D ||
+/// 0x1C..=0x1F`. ORing `isSpaceChar` in cancels Java's usual NBSP / U+2007 /
+/// U+202F carve-out, so the union is every Unicode Zs/Zl/Zp separator together
+/// with those two control ranges. U+0085 (Cc) and U+200B (Cf) are **not**
+/// whitespace; `WHITESPACE` in `grammar.pest` enumerates exactly this set.
+#[must_use]
+pub fn is_whitespace(c: char) -> bool {
+    matches!(
+        c,
+        '\u{09}'..='\u{0D}'
+            | '\u{1C}'..='\u{1F}'
+            | '\u{20}'
+            | '\u{A0}'
+            | '\u{1680}'
+            | '\u{2000}'..='\u{200A}'
+            | '\u{2028}'
+            | '\u{2029}'
+            | '\u{202F}'
+            | '\u{205F}'
+            | '\u{3000}'
+    )
+}
+
+/// Camille's `layout_char`, transcribed from `EventBParser.scc`:
+///
+/// ```text
+/// layout_char = [[[0 .. 32] + [127..160]] + [[8206 .. 8207] + [8232 .. 8233]]];
+/// ```
+///
+/// Camille is the parser behind Rodin's `.eventb` text editor — HHU's
+/// `de.be4.eventb.core.parser`, bundled by the `org.eventb.texteditor.parsers`
+/// plugin. It is unrelated to Rodin's math lexer and knows a different set: the
+/// whole C0/C1 range (so it takes U+0085), the bidi marks, and the Zl/Zp pair,
+/// stopping at U+00A0 — everything from U+1680 up is an "Unknown token" to it.
+#[must_use]
+pub fn camille_layout_char(c: char) -> bool {
+    matches!(
+        c,
+        '\u{0}'..='\u{20}' | '\u{7F}'..='\u{A0}' | '\u{200E}'..='\u{200F}' | '\u{2028}'..='\u{2029}'
+    )
+}
+
+/// Whether `c` separates tokens for rossi and Rodin but not for stock Camille,
+/// i.e. text that parses here and cannot be reopened in Rodin's text editor.
+///
+/// This is the difference between the two lexers rather than a third hand-kept
+/// table, so it cannot drift from either: [`is_whitespace`] minus
+/// [`camille_layout_char`] = `{U+1680, U+2000..=U+200A, U+202F, U+205F,
+/// U+3000}`. U+00A0 is therefore excluded for free — Camille's second range
+/// ends exactly on it, and it is the separator real Rodin XML contains.
+///
+/// Only Camille's `normal` lexer state is meant: structural positions. Inside a
+/// formula the same code points fall under `all_formula_chars`, are folded into
+/// the formula token and handed to Rodin's `FormulaFactory`, which accepts
+/// them; there they are portable. Callers must scope the scan accordingly.
+///
+/// The sibling portability predicate is [`camille_reserved_keyword`].
+#[must_use]
+pub fn camille_unreadable_separator(c: char) -> bool {
+    is_whitespace(c) && !camille_layout_char(c)
+}
+
+/// Whether a clause's members are bare declared names rather than formulas.
+///
+/// A grammar fact, kept beside the keyword table rather than in the consumers:
+/// the parser's `accepts_required_clause_name` splits the same seven keywords,
+/// and EB031 uses it to scan only the regions where an exotic separator is a
+/// portability problem. `EVENTS`, `AXIOMS`, `INVARIANTS`, `VARIANT` and the
+/// event clauses all carry formulas and are excluded.
+///
+/// `ANY` is in the set even though a component's `clauses()` never yields it —
+/// an event's clauses carry no `ClauseRegion` — so a caller that reaches event
+/// parameters by another route classifies them the same way.
+#[must_use]
+pub fn clause_holds_only_names(keyword: KeywordId) -> bool {
+    matches!(
+        keyword,
+        KeywordId::Extends
+            | KeywordId::Sets
+            | KeywordId::Constants
+            | KeywordId::Refines
+            | KeywordId::Sees
+            | KeywordId::Variables
+            | KeywordId::Any
+    )
 }
 
 /// Whether the match of `len` bytes at byte `offset` in `text` is a whole
