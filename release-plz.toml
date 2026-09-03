@@ -1,11 +1,12 @@
 # release-plz configuration — automated releases for the Rossi crate suite.
 # https://release-plz.dev/docs/config
 #
-# The four crates share one version (`version.workspace = true`) and release in
+# The five crates share one version (`version.workspace = true`) and release in
 # lockstep: each release is a single version, a single `vX.Y.Z` tag, and a single
 # combined GitHub release. release-plz natively bumps the shared
 # `[workspace.package].version` (no `version_group` needed) and publishes the
-# crates in dependency order (rossi -> rossi-build / eventb-lsp -> rossi-cli).
+# crates in dependency order (rossi -> rossi-prove -> rossi-build / eventb-lsp
+# -> rossi-cli).
 
 # Default for every crate: publish, but cut no tag/release and write no changelog
 # of its own. A new workspace member inherits this automatically — no edit needed.
@@ -30,7 +31,7 @@ changelog_update = true
 # `changelog_path` is a per-package key (release-plz rejects it under [workspace]);
 # point rossi-cli's changelog at the repo root so the suite has one combined file.
 changelog_path = "./CHANGELOG.md"
-changelog_include = ["rossi", "rossi-build", "eventb-lsp"]
+changelog_include = ["rossi", "rossi-prove", "rossi-build", "eventb-lsp"]
 
 # Curated "keep a changelog" format. Group feat->Added, refactor->Changed,
 # revert->Removed, fix->Fixed, perf->Performance, docs->Documentation; skip
