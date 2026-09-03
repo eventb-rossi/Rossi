@@ -566,8 +566,9 @@ mod tests {
     fn structural_parse_errors_carry_their_rule_and_underline_the_construct() {
         // The range is what a quick fix acts on: the clause keyword for an
         // empty clause, the label for a bare label, the whole clause for one
-        // written out of order. The wording itself is pinned where the errors
-        // are raised (`crates/rossi/tests/empty_clause_test.rs`).
+        // written out of order, the item itself for a missing label. The
+        // wording is pinned where the errors are raised
+        // (`crates/rossi/tests/empty_clause_test.rs`).
         for (text, code, range) in [
             (
                 "MACHINE m\nVARIABLES\n    x\nEVENTS\n    EVENT e\n    WHERE\n    THEN\n        @act1 x ≔ 1\n    END\nEND\n",
@@ -583,6 +584,11 @@ mod tests {
                 "MACHINE m\nVARIABLES\n    x\nEVENTS\n    EVENT e\n    THEN\n        @act1 x ≔ 1\n    WITH\n        @w y = 1\n    END\nEND\n",
                 "EB030",
                 (Position::new(7, 4), Position::new(8, 16)),
+            ),
+            (
+                "MACHINE m\nVARIABLES\n    x\nEVENTS\n    EVENT e\n    THEN\n        x ≔ 1\n    END\nEND\n",
+                "EB032",
+                (Position::new(6, 8), Position::new(6, 13)),
             ),
         ] {
             let error = rossi::parse(text).expect_err("must fail strict parsing");

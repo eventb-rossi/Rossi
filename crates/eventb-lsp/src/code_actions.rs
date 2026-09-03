@@ -14,7 +14,7 @@ use crate::text_utils::{line_keyword, line_keyword_is};
 use rossi::keywords::KeywordId;
 use rossi::operators;
 use rossi_build::rules::RuleId;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
 /// The source action that normalizes every operator to the configured
 /// convention (`rossi.format.useUnicode`) and changes nothing else. A
@@ -108,6 +108,46 @@ fn text_in_range(text: &str, range: Range) -> Option<&str> {
 /// carries its `@` sigil, which no keyword spelling does.
 fn keyword_at(text: &str, range: Range) -> Option<KeywordId> {
     rossi::keywords::lookup(text_in_range(text, range)?).map(|keyword| keyword.id)
+}
+
+/// Rodin's label stem for the clause `word` opens — `@axm1` under AXIOMS, and
+/// so on. `None` for anything that is not a clause keyword carrying labeled
+/// items; `WHEN` and `BEGIN` resolve to `WHERE` and `THEN` in `lookup`, so they
+/// need no arm of their own.
+fn label_stem(word: &str) -> Option<&'static str> {
+    Some(match rossi::keywords::lookup(word)?.id {
+        KeywordId::Axioms => "axm",
+        KeywordId::Theorems => "thm",
+        KeywordId::Invariants => "inv",
+        KeywordId::Where => "grd",
+        KeywordId::With | KeywordId::Witness => "wit",
+        KeywordId::Then => "act",
+        _ => return None,
+    })
+}
+
+/// The byte range of the event holding `offset` in the comment-masked `masked`:
+/// from the line that opens it to the one opening the next, or the ends of the
+/// document when there is none. The whole line is scanned rather than its first
+/// token, because an inline status (`convergent EVENT e`) hides the keyword.
+fn enclosing_event_range(masked: &str, offset: usize) -> std::ops::Range<usize> {
+    let mut start = 0;
+    let mut end = masked.len();
+    let mut at = 0;
+    for line in masked.split_inclusive('\n') {
+        let opens_event = line
+            .split_whitespace()
+            .any(|word| line_keyword(word) == Some(KeywordId::Event));
+        if opens_event {
+            if at <= offset {
+                start = at;
+            } else {
+                end = end.min(at);
+            }
+        }
+        at += line.len();
+    }
+    start..end
 }
 
 /// Provides code actions and refactorings
@@ -466,6 +506,20 @@ impl CodeActionProvider {
             }
         }
 
+        // Write the label an item is missing (EB032).
+        for diagnostic in params
+            .context
+            .diagnostics
+            .iter()
+            .filter(|d| diagnostic_code_is(d, RuleId::MissingLabel.code()))
+        {
+            if let Some(action) =
+                self.create_insert_label_action(&params.text_document.uri, diagnostic, text)
+            {
+                actions.push(CodeActionOrCommand::CodeAction(action));
+            }
+        }
+
         // Move a clause written below one it must precede (EB030).
         for diagnostic in params
             .context
@@ -581,6 +635,67 @@ impl CodeActionProvider {
             kind: Some(CodeActionKind::QUICKFIX),
             diagnostics: Some(vec![diagnostic.clone()]),
             edit: Some(single_edit(uri, range, String::new())),
+            command: None,
+            is_preferred: Some(true),
+            disabled: None,
+            data: None,
+        })
+    }
+
+    /// Quick fix for EB032 (an item with no label): write one in front of it.
+    ///
+    /// The stem follows Rodin's own naming for the enclosing clause
+    /// ([`label_stem`]) and the number is the first free one in the scope the
+    /// label has to be unique in (EB022), so the fix reads like the labels
+    /// around it and cannot collide with one.
+    fn create_insert_label_action(
+        &self,
+        uri: &Url,
+        diagnostic: &crate::lsp_types::Diagnostic,
+        text: &str,
+    ) -> Option<CodeAction> {
+        // One lexical scan serves both the mask and the labels already written.
+        let lexical = rossi::comments::lexical_spans(text);
+        let masked = lexical.mask_comments_chars(text);
+        let item = crate::position::position_to_offset(&masked, diagnostic.range.start)?;
+        // The clause keyword is the last one written before the item: on the
+        // item's own line for an inline `EVENT e THEN x ≔ 1 END`, on a line
+        // above it for the indented form.
+        let stem = masked[..item]
+            .split_whitespace()
+            .rev()
+            .find_map(label_stem)?;
+        // A guard, witness or action label is unique within its event, an
+        // axiom, invariant or theorem within the component, and Rodin numbers
+        // each event's items from 1 — so the free number is looked for in the
+        // scope the clash would be found in.
+        let scope = match stem {
+            "grd" | "wit" | "act" => enclosing_event_range(&masked, item),
+            _ => 0..masked.len(),
+        };
+        let taken: HashSet<&str> = lexical
+            .labels
+            .iter()
+            .filter(|span| scope.contains(&span.start))
+            // The span covers `@name`; a trailing `:` is dropped to match the
+            // parser's `extract_label`, as the semantic tokens do.
+            .map(|span| text[span.start + 1..span.end].trim_end_matches(':'))
+            .collect();
+        let label = (1..)
+            .map(|n| format!("{stem}{n}"))
+            .find(|label| !taken.contains(label.as_str()))?;
+        Some(CodeAction {
+            title: format!("Insert label @{label}"),
+            kind: Some(CodeActionKind::QUICKFIX),
+            diagnostics: Some(vec![diagnostic.clone()]),
+            edit: Some(single_edit(
+                uri,
+                Range {
+                    start: diagnostic.range.start,
+                    end: diagnostic.range.start,
+                },
+                format!("@{label} "),
+            )),
             command: None,
             is_preferred: Some(true),
             disabled: None,
