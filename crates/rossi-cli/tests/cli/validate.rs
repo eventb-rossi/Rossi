@@ -1705,6 +1705,25 @@ fn validate_stdin_clause_out_of_order_reports_eb030() {
 }
 
 #[test]
+fn validate_stdin_missing_label_reports_eb032_at_the_item() {
+    let source =
+        "MACHINE m\nVARIABLES\n    x\nEVENTS\n    EVENT e\n    THEN\n        x ≔ 1\n    END\nEND\n";
+    let output = run_cli_with_stdin(&["validate", "--format", "json", "-"], source);
+    assert!(!output.status.success(), "expected non-zero exit for EB032");
+    let rows: serde_json::Value =
+        serde_json::from_slice(&output.stdout).expect("JSON output should be valid");
+    let row = rows
+        .as_array()
+        .expect("rows array")
+        .iter()
+        .find(|row| row["rule_id"] == "EB032")
+        .unwrap_or_else(|| panic!("expected an EB032 row: {rows}"));
+    assert_eq!(row["error"], "an action needs a label");
+    assert_eq!(row["region"]["start_line"], 7);
+    assert_eq!(row["region"]["start_column"], 9);
+}
+
+#[test]
 fn validate_stdin_camille_error_reports_eb004() {
     // Loose `.eventb` text that the Camille grammar rejects is tagged EB004
     // (whole-file Camille parse error), not EB005 (formula-level error).
