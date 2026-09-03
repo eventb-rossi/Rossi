@@ -485,17 +485,8 @@ impl<'a, 'b> Walk<'a, 'b> {
         // penalising anything above the cheapest cost makes the disagreement
         // rare without making it unreachable.
         let divergence_penalty = if self.shape_is_divergent() { RARE } else { 1 };
-        // An optional label is nearly always worth taking: without one a
-        // clause holds a run of bare predicates, and where each ends is a
-        // question only a GLR parser can answer. Rodin's own text tools always
-        // emit labels for the same reason. Occasionally leave it off, so the
-        // unlabeled form stays covered.
-        let insist_on_label = members.iter().any(is_blank)
-            && members.iter().any(mentions_label)
-            && !self.source.ratio(1, RARE);
-
         let weight = |walk: &Self, member: &Node, cost: usize| {
-            if cost > limit || (insist_on_label && is_blank(member)) {
+            if cost > limit {
                 return 0;
             }
             let base = walk.member_weight(member);
@@ -773,24 +764,6 @@ fn literals(node: &Node) -> Vec<&str> {
             members.iter().flat_map(|member| literals(member)).collect()
         }
         node => node.transparent().map(literals).unwrap_or_default(),
-    }
-}
-
-/// Whether an alternative derives the empty string, i.e. is the untaken arm of
-/// an optional construct.
-fn is_blank(node: &Node) -> bool {
-    matches!(node, Node::Blank)
-}
-
-/// Whether an alternative starts with a label. Shallow on purpose: it answers
-/// "is this the label arm of an optional", not "does a label occur anywhere
-/// below".
-fn mentions_label(node: &Node) -> bool {
-    match node {
-        Node::Symbol { name } => name == "label",
-        Node::Seq { members } => members.first().is_some_and(mentions_label),
-        Node::Choice { members } => members.iter().any(mentions_label),
-        node => node.transparent().is_some_and(mentions_label),
     }
 }
 
