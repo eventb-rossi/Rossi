@@ -25,69 +25,7 @@ pub fn zip_with_entries(entries: &[(&str, &[u8])]) -> Vec<u8> {
 
 /// Clear all spans from a Component for AST comparison (spans differ after roundtrip).
 pub fn clear_spans(component: &mut Component) {
-    match component {
-        Component::Context(ctx) => {
-            ctx.span = None;
-            ctx.name_span = None;
-            // Clause regions are span-derived metadata; offsets shift when the
-            // source is reformatted, so drop them for AST comparison.
-            ctx.clauses.clear();
-            for set in &mut ctx.sets {
-                set.span = None;
-            }
-            for constant in &mut ctx.constants {
-                constant.span = None;
-            }
-            for axiom in &mut ctx.axioms {
-                axiom.span = None;
-            }
-        }
-        Component::Machine(machine) => {
-            machine.span = None;
-            machine.name_span = None;
-            // Clause regions are span-derived metadata; offsets shift when the
-            // source is reformatted, so drop them for AST comparison.
-            machine.clauses.clear();
-            for var in &mut machine.variables {
-                var.span = None;
-            }
-            for inv in &mut machine.invariants {
-                inv.span = None;
-            }
-            if let Some(init) = &mut machine.initialisation {
-                init.span = None;
-                init.name_span = None;
-                for action in &mut init.actions {
-                    action.span = None;
-                }
-                for lp in init.with.iter_mut().chain(&mut init.witnesses) {
-                    lp.span = None;
-                }
-            }
-            for event in &mut machine.events {
-                event.span = None;
-                event.name_span = None;
-                for target in &mut event.refines {
-                    target.span = None;
-                }
-                for param in &mut event.parameters {
-                    param.span = None;
-                }
-                for guard in &mut event.guards {
-                    guard.span = None;
-                }
-                for lp in &mut event.with {
-                    lp.span = None;
-                }
-                for lp in &mut event.witnesses {
-                    lp.span = None;
-                }
-                for action in &mut event.actions {
-                    action.span = None;
-                }
-            }
-        }
-    }
+    component.clear_spans();
 }
 
 /// Roundtrip helper: parse -> pretty-print -> re-parse -> compare ASTs.

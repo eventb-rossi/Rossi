@@ -51,12 +51,22 @@ pub trait VisitMut {
     fn visit_file_metadata(&mut self, _metadata: &mut FileMetadata) {}
 
     fn visit_span(&mut self, _span: &mut Span) {}
+
+    /// Visit a span that may be absent.
+    ///
+    /// Overriding this is the only way to *remove* a span rather than adjust
+    /// one, which is what an AST comparison needs; the default forwards a
+    /// present span to [`VisitMut::visit_span`] so a transform that only cares
+    /// about positions can ignore the distinction.
+    fn visit_optional_span(&mut self, span: &mut Option<Span>) {
+        if let Some(span) = span {
+            self.visit_span(span);
+        }
+    }
 }
 
 fn visit_optional_span<V: VisitMut + ?Sized>(visitor: &mut V, span: &mut Option<Span>) {
-    if let Some(span) = span {
-        visitor.visit_span(span);
-    }
+    visitor.visit_optional_span(span);
 }
 
 pub fn walk_component<V: VisitMut + ?Sized>(visitor: &mut V, component: &mut Component) {
