@@ -1,0 +1,23 @@
+[package]
+name = "eventb-fuzz"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+authors.workspace = true
+description = "Grammar fuzzer for the Rossi Event-B toolchain (development only, not published)"
+license.workspace = true
+repository.workspace = true
+# Development-only tooling: a fuzzer for this workspace's own parser, printer
+# and static checker, never shipped to users. Kept off crates.io, like xtask.
+publish = false
+
+[[bin]]
+name = "eventb-fuzz"
+path = "src/main.rs"
+doc = false
+
+[dependencies]
+rossi.workspace = true
+clap.workspace = true
+serde.workspace = true
+serde_json.workspace = true

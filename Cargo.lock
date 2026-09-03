@@ -318,6 +318,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "eventb-fuzz"
+version = "0.2.0"
+dependencies = [
+ "clap",
+ "rossi",
+ "serde",
+ "serde_json",
+]
+
+[[package]]
 name = "eventb-lsp"
 version = "0.2.0"
 dependencies = [
