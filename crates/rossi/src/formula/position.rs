@@ -213,6 +213,30 @@ impl Predicate {
         found
     }
 
+    /// The positions of the leaves of this predicate's propositional
+    /// skeleton, left to right.
+    ///
+    /// The skeleton is the `∧ ∨ ⇒ ⇔ ¬` tree. This descends through those
+    /// connectives and stops everywhere else, so a quantifier is a leaf and
+    /// its body is never entered, as is a relational predicate whose operands
+    /// embed a `bool(P)`, and so is an extension node whatever it denotes.
+    /// The result is never empty: a predicate built from no connective is its
+    /// own single leaf, at the root position.
+    ///
+    /// The returned positions are sorted, form a subset of
+    /// [`Self::positions`], and each addresses a [`FormulaRef::Pred`], so a
+    /// leaf can be read back with [`Self::sub_formula`]. A flat 0-based index
+    /// is `.iter().enumerate()`.
+    ///
+    /// [`Self::positions`] cannot express this: its filter selects nodes but
+    /// does not stop the descent, so it would also return the subpredicates of
+    /// a leaf.
+    pub fn propositional_leaves(&self) -> Vec<Position> {
+        let mut found = Vec::new();
+        collect_leaves(self, &mut Vec::new(), &mut found);
+        found
+    }
+
     /// Replaces the subformula at `position`; see
     /// [`Expression::rewrite_sub_formula`].
     pub fn rewrite_sub_formula(
@@ -221,6 +245,37 @@ impl Predicate {
         replacement: FormulaRef<'_>,
     ) -> Result<Predicate, PositionError> {
         rewrite_pred_at(self, position.indices(), replacement)
+    }
+}
+
+/// Whether `p` is a connective of the propositional skeleton — the nodes
+/// [`Predicate::propositional_leaves`] descends through.
+///
+/// The kind alone decides it: `AssocPredOp` is `∧`/`∨` and `BinaryPredOp` is
+/// `⇒`/`⇔`, both exhaustive. An extension node is deliberately not a
+/// connective: what its children mean is the extension's business, so it
+/// stands as one condition rather than being taken apart.
+fn is_connective(p: &Predicate) -> bool {
+    matches!(
+        p.kind(),
+        PredicateKind::Associative { .. } | PredicateKind::Binary { .. } | PredicateKind::Not(_)
+    )
+}
+
+fn collect_leaves(p: &Predicate, path: &mut Vec<u32>, found: &mut Vec<Position>) {
+    if !is_connective(p) {
+        found.push(Position(path.clone()));
+        return;
+    }
+    // Taking the predicate children through `pred_child` rather than
+    // re-deriving indices per kind is what keeps a leaf's position the same
+    // one `sub_formula` resolves.
+    for index in 0..pred_child_count(p) {
+        if let Some(FormulaRef::Pred(child)) = pred_child(p, index) {
+            path.push(index as u32);
+            collect_leaves(child, path, found);
+            path.pop();
+        }
     }
 }
 

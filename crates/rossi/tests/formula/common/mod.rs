@@ -83,6 +83,11 @@ pub fn btrue() -> Predicate {
     ff().literal_predicate(LiteralPredOp::BTrue, None)
 }
 
+/// `⊥`.
+pub fn bfalse() -> Predicate {
+    ff().literal_predicate(LiteralPredOp::BFalse, None)
+}
+
 /// The standard hash of a value, for hash-consistency assertions.
 pub fn hash_of(value: &impl Hash) -> u64 {
     let mut hasher = DefaultHasher::new();
