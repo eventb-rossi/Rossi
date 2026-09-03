@@ -350,6 +350,81 @@ impl Span {
     }
 }
 
+/// Identity of the text a [`Span`] indexes — a filename, path, or URI.
+///
+/// A span is a pair of byte offsets and says nothing about what it offsets
+/// into. That is enough while a consumer holds one document, which is why
+/// nothing in the AST carries a `SourceId`. It stops being enough as soon as
+/// formulas from several components meet: a flattened machine draws guards
+/// along its `REFINES`/`EXTENDS`/`SEES` chain, and resolving one of those
+/// spans against the wrong component's text yields a wrong region rather than
+/// an error. Pair the span with its source at that boundary — see
+/// [`Located`].
+///
+/// The identity is whatever string the producer already uses to name a
+/// source; rossi does not interpret it. Cloning is O(1), so one handle can be
+/// shared across every span of a component.
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub struct SourceId(std::sync::Arc<str>);
+
+impl SourceId {
+    /// Name a source.
+    pub fn new(name: &str) -> Self {
+        SourceId(std::sync::Arc::from(name))
+    }
+
+    /// The name this source was created with.
+    pub fn as_str(&self) -> &str {
+        &self.0
+    }
+}
+
+impl std::fmt::Display for SourceId {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(&self.0)
+    }
+}
+
+// Written out rather than derived: `Arc<str>` is only serializable under
+// serde's `rc` feature, which would have to be turned on for every crate
+// sharing the workspace dependency. Going through the string also puts a
+// plain name on the wire instead of a one-element tuple.
+#[cfg(feature = "serde")]
+impl serde::Serialize for SourceId {
+    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        serializer.serialize_str(&self.0)
+    }
+}
+
+#[cfg(feature = "serde")]
+impl<'de> serde::Deserialize<'de> for SourceId {
+    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        let name = String::deserialize(deserializer)?;
+        Ok(SourceId::new(&name))
+    }
+}
+
+/// A value paired with the source its positions are relative to.
+///
+/// Used for [`Span`]s that have left the document they were parsed from.
+/// Single-document paths keep the bare `Span`, so nothing that never crosses
+/// a component boundary pays for this.
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+pub struct Located<T> {
+    /// The text `value` is relative to.
+    pub source: SourceId,
+    /// The located value, typically a [`Span`].
+    pub value: T,
+}
+
+impl<T> Located<T> {
+    /// Pair `value` with the source it is relative to.
+    pub fn new(source: SourceId, value: T) -> Self {
+        Located { source, value }
+    }
+}
+
 /// The source region of one clause section: its header keyword through its last
 /// member (the span of the clause's grammar rule).
 ///
@@ -369,5 +444,32 @@ impl ClauseRegion {
     /// Create a clause region introduced by `keyword`, covering `span`.
     pub fn new(keyword: KeywordId, span: Span) -> Self {
         Self { keyword, span }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn source_ids_compare_by_name() {
+        let a = SourceId::new("AuctionMachine.eventb");
+        // A separately constructed id for the same source is the same id, so
+        // a consumer need not thread one handle everywhere to compare them.
+        assert_eq!(a, SourceId::new("AuctionMachine.eventb"));
+        assert_ne!(a, SourceId::new("AuctionContext.eventb"));
+        assert_eq!(a.as_str(), "AuctionMachine.eventb");
+        assert_eq!(a.to_string(), "AuctionMachine.eventb");
+    }
+
+    #[test]
+    fn equal_spans_in_different_sources_stay_distinct() {
+        // The point of the type: two components can carry the same byte
+        // range and mean different regions.
+        let span = Span { start: 0, end: 4 };
+        assert_ne!(
+            Located::new(SourceId::new("M0.eventb"), span),
+            Located::new(SourceId::new("M1.eventb"), span)
+        );
     }
 }

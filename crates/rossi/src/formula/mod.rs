@@ -24,7 +24,7 @@ pub mod typenv;
 pub mod types;
 pub mod wd;
 
-pub use crate::ast::Span;
+pub use crate::ast::{Located, SourceId, Span};
 pub use assignment::{Assignment, AssignmentKind};
 pub use decl::BoundIdentDecl;
 pub use expression::{Expression, ExpressionKind, Form};
