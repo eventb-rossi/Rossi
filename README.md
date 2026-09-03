@@ -5,8 +5,8 @@
 # Event-B Rossi
 
 A Rust toolchain for the Event-B formal modeling language: parser,
-static checker, command-line tool, and Language Server Protocol
-implementation.
+static checker, proof checker, command-line tool, and Language Server
+Protocol implementation.
 
 ## Overview
 
@@ -20,8 +20,11 @@ Rossi covers the full author-to-Rodin path:
   well-formedness checks on the AST and emits Rodin-compatible
   `.bcc` / `.bcm` checked XML, so models authored in text round-trip
   through the Rodin toolchain.
+- **`rossi-prove`** — sequent-prover kernel that checks the proofs a
+  Rodin project stores (`.bpr` / `.bps`) against its proof obligations,
+  by reuse and by replay.
 - **`rossi-cli`** — the `rossi` command-line tool wrapping the
-  parser, checker, and language server.
+  parser, checker, prover, and language server.
 - **`eventb-lsp`** — Language Server Protocol implementation powering
   editor extensions for VS Code, Neovim, Emacs, Sublime Text, and Zed.
 
@@ -41,8 +44,12 @@ Rossi covers the full author-to-Rodin path:
 - `EB0xx` diagnostics plus advisory lints (dead or unmodified variables, incomplete INITIALISATION, …)
 - Rodin-compatible `.bcc` / `.bcm` checked output
 
+**Proof checking**
+- Stored Rodin proofs checked against regenerated obligations by reuse (re-applying the recorded rules) and by replay (re-running the reasoners)
+- Per-obligation verdicts — discharged, reviewed, pending, unattempted, broken — with the proof's recorded confidence
+
 **Command-line workflows**
-- `validate`, `import`, `export`, `fmt`, and `build` subcommands
+- `validate`, `import`, `export`, `fmt`, `build`, and `prove` subcommands
 - Text, JSON, and SARIF 2.1.0 diagnostic output for CI and IDE integration
 
 **Editor integration (LSP)**
