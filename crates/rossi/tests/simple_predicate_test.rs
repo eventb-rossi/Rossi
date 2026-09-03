@@ -1157,41 +1157,76 @@ fn test_relation_arrow_and_typing_operator_spellings() {
     assert_eq!(binary_op_of("x ,, y"), BinaryExprOp::Mapsto);
 }
 
+/// Every code point Rodin's math lexer treats as whitespace.
+///
+/// `LexicalClass.isWhitespace(cp)` is
+/// `Character.isWhitespace(cp) || FormulaFactory.isEventBWhiteSpace(cp)`
+/// (RodinCore `org.eventb.core.ast`), and `isEventBWhiteSpace(cp)` is
+/// `Character.isSpaceChar(cp) || 0x09..=0x0D || 0x1C..=0x1F`. OR-ing
+/// `isSpaceChar` in cancels Java's usual NBSP / U+2007 / U+202F carve-out, so
+/// the union is exactly Zs u Zl u Zp u U+0009..=U+000D u U+001C..=U+001F --
+/// the 28 code points below. `grammar.pest`'s `WHITESPACE` enumerates the same
+/// set; this is the list that pins it.
+const RODIN_WHITESPACE: &[char] = &[
+    '\u{09}', '\u{0A}', '\u{0B}', '\u{0C}', '\u{0D}', // U+0009..U+000D
+    '\u{1C}', '\u{1D}', '\u{1E}', '\u{1F}',   // U+001C..U+001F
+    '\u{20}',   // SPACE (Zs)
+    '\u{A0}',   // NO-BREAK SPACE (Zs)
+    '\u{1680}', // OGHAM SPACE MARK (Zs)
+    '\u{2000}', '\u{2001}', '\u{2002}', '\u{2003}', '\u{2004}', '\u{2005}', '\u{2006}', '\u{2007}',
+    '\u{2008}', '\u{2009}', '\u{200A}', // EN QUAD..HAIR SPACE (Zs)
+    '\u{2028}', // LINE SEPARATOR (Zl)
+    '\u{2029}', // PARAGRAPH SEPARATOR (Zp)
+    '\u{202F}', // NARROW NO-BREAK SPACE (Zs)
+    '\u{205F}', // MEDIUM MATHEMATICAL SPACE (Zs)
+    '\u{3000}', // IDEOGRAPHIC SPACE (Zs)
+];
+
+/// Code points that read as blank but are **not** separators to Rodin, so they
+/// must not be separators here either.
+///
+/// U+0085 NEL is the one worth calling out: both `Character.isWhitespace` and
+/// `Character.isSpaceChar` exclude it, so Rodin's math lexer rejects it. (It is
+/// Camille's `layout_char` -- a different lexer, in a different project -- that
+/// accepts U+0085, which is why a survey that merges the two disagrees here.)
+/// The rest are category Cf, not a space separator.
+const NOT_RODIN_WHITESPACE: &[char] = &[
+    '\u{85}',   // NEXT LINE (Cc)
+    '\u{200B}', // ZERO WIDTH SPACE (Cf)
+    '\u{FEFF}', // ZERO WIDTH NO-BREAK SPACE / BOM (Cf)
+    '\u{180E}', // MONGOLIAN VOWEL SEPARATOR (Cf since Unicode 6.3)
+];
+
 #[test]
 fn test_unicode_whitespace_matches_rodin() {
-    // Rodin's math lexer treats any Unicode space separator as whitespace
-    // (LexicalClass.isWhitespace + FormulaFactory.isEventBWhiteSpace), including
-    // the non-breaking spaces Java's Character.isWhitespace omits. rossi's
-    // WHITESPACE rule mirrors that set, so a predicate separated by such spaces
-    // parses identically to the ASCII-space form. Real Rodin XML in the wild puts
-    // U+00A0 around operators like `=` and `≤`, which Rodin accepts.
-    let ascii = rossi::parse_predicate_str("sense_ev = TRUE ⇒ ct ≤ st")
-        .expect("ASCII-spaced predicate should parse");
+    // Real Rodin XML in the wild puts U+00A0 around operators like `=` and
+    // `<=`, which Rodin accepts -- so the wide set is not academic.
+    let ascii =
+        rossi::parse_predicate_str("sense_ev = TRUE").expect("ASCII-spaced predicate should parse");
 
-    // U+00A0 NO-BREAK SPACE separating the operands and operators.
-    let nbsp = rossi::parse_predicate_str("sense_ev\u{a0}=\u{a0}TRUE ⇒ ct\u{a0}≤\u{a0}st")
-        .expect("U+00A0-separated predicate should parse");
-    assert_eq!(
-        nbsp, ascii,
-        "U+00A0 must be whitespace, same AST as ASCII spaces"
-    );
+    for &separator in RODIN_WHITESPACE {
+        let source = format!("sense_ev{separator}={separator}TRUE");
+        let parsed = rossi::parse_predicate_str(&source).unwrap_or_else(|e| {
+            panic!(
+                "U+{:04X} is Rodin whitespace and must parse: {e:?}",
+                separator as u32
+            )
+        });
+        assert_eq!(
+            parsed, ascii,
+            "U+{:04X} must separate tokens exactly like an ASCII space",
+            separator as u32
+        );
+    }
 
-    // U+2007 FIGURE SPACE — another non-breaking Zs space Java excludes but Rodin
-    // accepts; confirms we matched the category, not just the one codepoint.
-    let figure = rossi::parse_predicate_str("sense_ev\u{2007}=\u{2007}TRUE ⇒ ct ≤ st")
-        .expect("U+2007-separated predicate should parse");
-    assert_eq!(
-        figure, ascii,
-        "U+2007 must be whitespace, same AST as ASCII spaces"
-    );
-
-    // Negative parity: U+200B ZERO WIDTH SPACE is category Cf, not a space
-    // separator — Rodin does NOT treat it as whitespace, so neither do we. It
-    // must fail rather than silently glue tokens together.
-    assert!(
-        rossi::parse_predicate_str("sense_ev\u{200b}=\u{200b}TRUE").is_err(),
-        "U+200B is not whitespace in Rodin; it must not parse as a separator"
-    );
+    for &glyph in NOT_RODIN_WHITESPACE {
+        let source = format!("sense_ev{glyph}={glyph}TRUE");
+        assert!(
+            rossi::parse_predicate_str(&source).is_err(),
+            "U+{:04X} is not whitespace in Rodin; it must not glue tokens together",
+            glyph as u32
+        );
+    }
 }
 
 #[test]
