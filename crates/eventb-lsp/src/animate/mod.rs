@@ -6,7 +6,7 @@
 //! machine's dependency closure from the live buffers (refinement ancestors
 //! and visible contexts, unsaved edits included), statically checks it with
 //! `rossi-build`, writes the result into a throwaway Rodin project directory,
-//! and runs `eventb-animate` there with `--json -`. The format-3 JSON report
+//! and runs `eventb-animate` there with `--json -`. The format-4 JSON report
 //! is classified into a verdict; violations and tool-reported errors become
 //! diagnostics anchored back onto the live sources, and every outcome ends
 //! in a `window/showMessage`.
@@ -388,7 +388,7 @@ async fn execute_with_progress(
 
     let report = report::parse(&output.stdout, &output.stderr)?;
     let verdict = match input.mode {
-        AnimateMode::Check => report::classify_check(&report),
+        AnimateMode::Check => report::classify_check(&report, output.code),
         AnimateMode::Po => report::classify_po(&report),
     };
     let findings = diagnostics::findings(&verdict, &closure);

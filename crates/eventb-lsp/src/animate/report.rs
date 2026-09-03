@@ -1,17 +1,18 @@
-//! Deserialization and classification of eventb-animate's JSON report v3.
+//! Deserialization and classification of eventb-animate's JSON report v4.
 //!
 //! Every run uses `--json -`: stdout carries exactly one JSON document and
-//! all human output goes to stderr. Exit codes are deliberately ignored —
-//! they conflate violation with load failure (1) and inconclusive with usage
-//! error (2); the report's `status`/`completion` carry the real verdict.
-//! A usage error writes no report at all and is reported with the stderr tail.
+//! all human output goes to stderr. The report's `status`/`finding` carry the
+//! verdict; since 7.0 the exit code names the *failure* kind on top of that —
+//! 66 for an input the tool could not use, 70 for its own failure — so the two
+//! are read together. A usage error writes no report at all and is reported
+//! with the stderr tail.
 
 use serde::Deserialize;
 
 use super::AnimateError;
 use super::closure::{InvariantInfo, normalize_predicate};
 
-/// The subset of the format-3 report the lens flows consume. Tolerant by
+/// The subset of the format-4 report the lens flows consume. Tolerant by
 /// construction: unknown fields are ignored and missing ones default, so
 /// point releases of the tool cannot break classification.
 #[derive(Debug, Default, Deserialize)]
@@ -134,7 +135,7 @@ pub struct PoResult {
     pub bindings: Vec<StateBinding>,
 }
 
-/// Parse stdout as a format-3 report, reporting the stderr tail when there
+/// Parse stdout as a format-4 report, reporting the stderr tail when there
 /// is none (usage errors and crashes write nothing to stdout).
 pub(crate) fn parse(stdout: &str, stderr: &str) -> Result<Report, AnimateError> {
     let report: Report = serde_json::from_str(stdout).map_err(|_| {
@@ -147,7 +148,7 @@ pub(crate) fn parse(stdout: &str, stderr: &str) -> Result<Report, AnimateError> 
             })
         ))
     })?;
-    if report.format_version != 3 || report.tool != "eventb-animate" {
+    if report.format_version != 4 || report.tool != "eventb-animate" {
         return Err(AnimateError::ToolFailed(format!(
             "unexpected report shape (formatVersion {}, tool '{}')",
             report.format_version, report.tool
@@ -174,8 +175,9 @@ fn report_message(report: &Report) -> String {
 /// `finding.category`, `completion.phase == "load"`) is the same one the
 /// corpus classifier in `crates/rossi-build/tests/animate_corpus.rs` reads;
 /// the two decoders are separate code, so a vocabulary change must be
-/// applied to both.
-pub(crate) fn classify_check(report: &Report) -> Verdict {
+/// applied to both. `code` is the process exit code, which since 7.0 tells
+/// an unusable input (66) from a tool failure (70).
+pub(crate) fn classify_check(report: &Report, code: Option<i32>) -> Verdict {
     let reason = report
         .completion
         .as_ref()
@@ -228,14 +230,22 @@ pub(crate) fn classify_check(report: &Report) -> Verdict {
         }
         "error" => {
             let message = report_message(report);
-            if report
-                .completion
-                .as_ref()
-                .is_some_and(|c| c.phase == "load")
-            {
-                Verdict::LoadError { message }
-            } else {
-                Verdict::EngineError { message }
+            match code {
+                Some(66) => Verdict::LoadError { message },
+                Some(70) => Verdict::EngineError { message },
+                // No code means a signal killed the tool; fall back to the
+                // phase, which carries the same split inside the report.
+                _ => {
+                    if report
+                        .completion
+                        .as_ref()
+                        .is_some_and(|c| c.phase == "load")
+                    {
+                        Verdict::LoadError { message }
+                    } else {
+                        Verdict::EngineError { message }
+                    }
+                }
             }
         }
         other => Verdict::EngineError {
@@ -358,10 +368,10 @@ mod tests {
     use super::*;
     use crate::lsp_types::Url;
 
-    // Trimmed from docs/examples/json-report-v3-exhaustive.json in the
+    // Trimmed from docs/examples/json-report-v4-exhaustive.json in the
     // eventb-animate repository.
     const EXHAUSTIVE: &str = r#"{
-        "formatVersion": 3, "tool": "eventb-animate", "toolVersion": "6.4",
+        "formatVersion": 4, "tool": "eventb-animate", "toolVersion": "7.0",
         "command": "check", "machine": "M2", "status": "ok",
         "completion": {"classification": "complete", "phase": "search", "reason": "exhaustive"},
         "searchStatistics": {"statesDiscovered": 15, "statesProcessed": 15, "transitions": 34},
@@ -373,9 +383,9 @@ mod tests {
         ]
     }"#;
 
-    // Trimmed from docs/examples/json-report-v3-counterexample.json.
+    // Trimmed from docs/examples/json-report-v4-counterexample.json.
     const COUNTEREXAMPLE: &str = r#"{
-        "formatVersion": 3, "tool": "eventb-animate", "toolVersion": "6.4",
+        "formatVersion": 4, "tool": "eventb-animate", "toolVersion": "7.0",
         "command": "check", "machine": "M1", "status": "violation",
         "completion": {"classification": "counterexample", "phase": "search", "reason": "property_violation"},
         "searchStatistics": {"statesDiscovered": 4, "statesProcessed": 3, "transitions": 5},
@@ -397,7 +407,7 @@ mod tests {
     fn classifies_exhaustive_ok() {
         let report = parse(EXHAUSTIVE, "").unwrap();
         assert_eq!(
-            classify_check(&report),
+            classify_check(&report, None),
             Verdict::CheckOk {
                 reason: "exhaustive".into(),
                 states: 15
@@ -410,7 +420,7 @@ mod tests {
         let bounded =
             EXHAUSTIVE.replace("\"reason\": \"exhaustive\"", "\"reason\": \"state_limit\"");
         let report = parse(&bounded, "").unwrap();
-        match classify_check(&report) {
+        match classify_check(&report, None) {
             Verdict::CheckOk { reason, .. } => assert_eq!(reason, "state_limit"),
             other => panic!("expected bounded ok, got {other:?}"),
         }
@@ -420,7 +430,7 @@ mod tests {
     fn classifies_counterexample() {
         let report = parse(COUNTEREXAMPLE, "").unwrap();
         assert_eq!(
-            classify_check(&report),
+            classify_check(&report, None),
             Verdict::InvariantViolation {
                 violated: vec!["inv1".into()],
                 state: "(x = 1)".into(),
@@ -439,7 +449,7 @@ mod tests {
         // also pins the deserializer's ignore-unknown-fields tolerance.
         let legacy = COUNTEREXAMPLE.replace("\"bindings\"", "\"legacyBindings\"");
         let report = parse(&legacy, "").unwrap();
-        match classify_check(&report) {
+        match classify_check(&report, None) {
             Verdict::InvariantViolation { bindings, .. } => assert!(bindings.is_empty()),
             other => panic!("expected InvariantViolation, got {other:?}"),
         }
@@ -448,21 +458,31 @@ mod tests {
     #[test]
     fn classifies_load_failure_and_engine_errors() {
         let load = r#"{
-            "formatVersion": 3, "tool": "eventb-animate", "command": "check",
+            "formatVersion": 4, "tool": "eventb-animate", "command": "check",
             "status": "error", "message": "Error loading model",
             "completion": {"classification": "none", "phase": "load", "reason": "load_error"}
         }"#;
         let report = parse(load, "").unwrap();
+        // 66 (EX_NOINPUT) and 70 (EX_SOFTWARE) name the failure kind directly.
         assert_eq!(
-            classify_check(&report),
+            classify_check(&report, Some(66)),
             Verdict::LoadError {
                 message: "Error loading model".into()
             }
         );
+        assert!(matches!(
+            classify_check(&report, Some(70)),
+            Verdict::EngineError { .. }
+        ));
 
+        // Killed by a signal: the completion phase still carries the split.
+        assert!(matches!(
+            classify_check(&report, None),
+            Verdict::LoadError { .. }
+        ));
         let engine = load.replace("\"phase\": \"load\"", "\"phase\": \"search\"");
         assert!(matches!(
-            classify_check(&parse(&engine, "").unwrap()),
+            classify_check(&parse(&engine, "").unwrap(), None),
             Verdict::EngineError { .. }
         ));
     }
@@ -480,14 +500,14 @@ mod tests {
 
     #[test]
     fn foreign_reports_are_rejected() {
-        assert!(parse(r#"{"formatVersion": 2, "tool": "eventb-animate"}"#, "").is_err());
-        assert!(parse(r#"{"formatVersion": 3, "tool": "other"}"#, "").is_err());
+        assert!(parse(r#"{"formatVersion": 3, "tool": "eventb-animate"}"#, "").is_err());
+        assert!(parse(r#"{"formatVersion": 4, "tool": "other"}"#, "").is_err());
     }
 
     fn po_report(status: &str, checks: &str) -> Report {
         parse(
             &format!(
-                r#"{{"formatVersion": 3, "tool": "eventb-animate", "command": "po",
+                r#"{{"formatVersion": 4, "tool": "eventb-animate", "command": "po",
                      "status": "{status}", "message": "gate message", "checks": [{checks}]}}"#
             ),
             "",

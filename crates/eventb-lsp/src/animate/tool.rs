@@ -92,6 +92,10 @@ pub(crate) fn watchdog(mode: AnimateMode, config: &AnimateConfig, po_count: usiz
 pub(crate) struct ToolOutput {
     pub stdout: String,
     pub stderr: String,
+    /// The process exit code, or `None` when a signal killed the tool.
+    /// eventb-animate names the failure kind here: 66 for an unusable input,
+    /// 70 for its own failure.
+    pub code: Option<i32>,
 }
 
 /// Spawn the tool and wait for it under `watchdog`. On timeout the whole
@@ -129,6 +133,7 @@ pub(crate) async fn run_tool(
         Ok(Ok(output)) => Ok(ToolOutput {
             stdout: String::from_utf8_lossy(&output.stdout).into_owned(),
             stderr: String::from_utf8_lossy(&output.stderr).into_owned(),
+            code: output.status.code(),
         }),
         Ok(Err(error)) => Err(AnimateError::ToolFailed(format!(
             "waiting for '{program}' failed: {error}"
