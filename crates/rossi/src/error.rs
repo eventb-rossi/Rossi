@@ -85,6 +85,22 @@ pub enum ParseError {
         span: Option<Span>,
     },
 
+    /// A comprehension written in the implicit form `{E ∣ P}` whose expression
+    /// binds nothing — `{2 ∣ ⊤}`, or an `E` naming only identifiers an
+    /// enclosing binder already declares. The form takes its declarations from
+    /// the identifiers free in `E`, and a quantified expression with no
+    /// declaration is not representable, so this is refused while parsing
+    /// rather than built. Rodin refuses it the same way, and at the same place
+    /// (`ProblemKind.ExpressionNotBinding`). `line` and `column` are 1-indexed;
+    /// `span` is the byte range of `E` alone, as Rodin's location is (additive
+    /// and unreferenced by `Display`, oracle-safe).
+    #[error("Expression not binding any variable in quantified expression")]
+    ExpressionNotBinding {
+        line: usize,
+        column: usize,
+        span: Option<Span>,
+    },
+
     /// A clause header (`WHERE`, `INVARIANTS`, `THEN`, …) with nothing under
     /// it: the next token already opens another section. Reported at the
     /// keyword, because the clause is what is wrong — the parser would
@@ -323,6 +339,7 @@ impl ParseError {
             | ParseError::ReservedWord { line, span, .. }
             | ParseError::IncompatibleOperators { line, span, .. }
             | ParseError::AssignmentInPredicate { line, span, .. }
+            | ParseError::ExpressionNotBinding { line, span, .. }
             | ParseError::AssignmentArityMismatch { line, span, .. } => {
                 *line += line_delta;
                 shift_span(span, byte_delta);
@@ -376,6 +393,7 @@ impl ParseError {
             | ParseError::ReservedWord { line, column, .. }
             | ParseError::IncompatibleOperators { line, column, .. }
             | ParseError::AssignmentInPredicate { line, column, .. }
+            | ParseError::ExpressionNotBinding { line, column, .. }
             | ParseError::AssignmentArityMismatch { line, column, .. }
             | ParseError::ClauseError { line, column, .. }
             | ParseError::RecoverableError { line, column, .. } => Some((*line, *column)),
@@ -402,6 +420,7 @@ impl ParseError {
             | ParseError::ReservedWord { span, .. }
             | ParseError::IncompatibleOperators { span, .. }
             | ParseError::AssignmentInPredicate { span, .. }
+            | ParseError::ExpressionNotBinding { span, .. }
             | ParseError::AssignmentArityMismatch { span, .. }
             | ParseError::RecoverableError { span, .. } => *span,
             ParseError::FileContext { source, .. } => source.span(),

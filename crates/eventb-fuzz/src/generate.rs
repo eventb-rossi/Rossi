@@ -877,11 +877,9 @@ mod tests {
     /// on this list is new, and fails the test.
     ///
     /// The list is expected to shrink to nothing. It exists so that a known
-    /// crash does not mask an unknown one.
-    const KNOWN_CRASHES: &[&str] = &[
-        // §1: `{E ∣ P}` where nothing is free in E.
-        "a quantified expression needs at least one declaration",
-    ];
+    /// crash does not mask an unknown one, and is empty: every crash the
+    /// generator has found so far is fixed, so any crash at all fails the test.
+    const KNOWN_CRASHES: &[&str] = &[];
 
     static PANIC_HOOK: std::sync::Mutex<()> = std::sync::Mutex::new(());
 

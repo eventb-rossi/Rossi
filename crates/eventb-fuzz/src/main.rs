@@ -151,6 +151,7 @@ fn category_of(error: &rossi::ParseError) -> &'static str {
         E::ReservedWord { .. } => "ReservedWord",
         E::IncompatibleOperators { .. } => "IncompatibleOperators",
         E::AssignmentInPredicate { .. } => "AssignmentInPredicate",
+        E::ExpressionNotBinding { .. } => "ExpressionNotBinding",
         E::EmptyExpression => "EmptyExpression",
         E::EmptyPredicate => "EmptyPredicate",
         E::MissingPredicate => "MissingPredicate",

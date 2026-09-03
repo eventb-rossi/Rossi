@@ -2003,6 +2003,18 @@ fn incompatible_operators(span: pest::Span<'_>, left: String, right: String) -> 
     }
 }
 
+/// Build a [`ParseError::ExpressionNotBinding`] anchored at the member
+/// expression `span` of an implicit comprehension, which is the location Rodin
+/// reports too. Called only on the rejection path.
+fn expression_not_binding(span: pest::Span<'_>) -> ParseError {
+    let (line, column) = span.start_pos().line_col();
+    ParseError::ExpressionNotBinding {
+        line,
+        column,
+        span: Some(Span::from_pest(span)),
+    }
+}
+
 /// Parse an expression
 ///
 /// The grammar's expression precedence chain (`expression` →
@@ -2514,9 +2526,16 @@ fn parse_expression(
                                 // E is parsed in the enclosing scope and the
                                 // fresh names are then bound over it, shifting
                                 // enclosing-binder references past the new
-                                // declarations.
+                                // declarations. An E that leaves nothing free
+                                // binds nothing, which no quantified expression
+                                // can represent, so it is refused here — where
+                                // Rodin refuses it, and at the same location.
+                                let member_span = p.as_span();
                                 let member = parse_expression(p, fx)?;
                                 let names = first_free_names(&member);
+                                if names.is_empty() {
+                                    return Err(expression_not_binding(member_span));
+                                }
                                 // The declaration carries the span of the
                                 // name's first occurrence in E — there is no
                                 // declaration site, so that occurrence stands

@@ -865,3 +865,56 @@ fn any_parameters_round_trip_without_commas() {
     );
     parse(&printed).unwrap_or_else(|e| panic!("pretty output must reparse: {e:?}\n{printed}"));
 }
+
+// ============================================================================
+// Set comprehension: `{E ∣ P}` with nothing to bind
+// ============================================================================
+
+// The implicit form takes its declarations from the identifiers free in `E`.
+// With none free there is nothing to bind, and the model cannot hold a
+// quantifier with no declaration — so this has to be refused while parsing.
+// Rodin refuses the same text with "Expression not binding any variable in
+// quantified expression", reported on the expression part alone.
+#[test]
+fn implicit_comprehension_binding_nothing_is_rejected() {
+    for (src, member) in [
+        ("{2 ∣ ⊤}", "2"),
+        ("{ℕ ∣ ⊤}", "ℕ"),
+        ("{∅ ∣ ⊤}", "∅"),
+        ("{{} ∣ ⊤}", "{}"),
+        ("{1 ↦ 2 ∣ ⊤}", "1 ↦ 2"),
+    ] {
+        let error = parse_expression_str(src)
+            .expect_err("a comprehension binding nothing must not produce an expression");
+        let ParseError::ExpressionNotBinding {
+            line,
+            column,
+            span: Some(span),
+        } = error
+        else {
+            panic!("expected a not-binding error for {src:?}, got {error:?}");
+        };
+        assert_eq!(line, 1);
+        assert_eq!(column, src[..span.start].chars().count() + 1);
+        assert_eq!(src[span.start..span.end].trim(), member);
+    }
+}
+
+// The point of the guard: a component holding such an axiom is rejected, not
+// aborted on. The parser is hosted by `rossi validate`, the language server and
+// any library caller, none of which survive a panic.
+#[test]
+fn a_comprehension_binding_nothing_does_not_abort_the_parser() {
+    let source = "context C\naxioms\n    @a {2 ∣ ⊤} = 1\nend\n";
+    parse(source).expect_err("the axiom must be rejected, not crash the parser");
+}
+
+// The guard must not swallow the forms that do bind. `{x ∣ …}` reaches the
+// identifier-list arm, so `{x + y ∣ …}` is the one that covers the implicit arm.
+#[test]
+fn a_comprehension_that_binds_something_still_parses() {
+    for src in ["{x ∣ x > 0}", "{x + y ∣ y < x}"] {
+        parse_expression_str(src)
+            .unwrap_or_else(|e| panic!("comprehension must parse: {e:?}\n{src}"));
+    }
+}
