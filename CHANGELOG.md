@@ -1,5 +1,94 @@
 # Changelog
 
+## [0.2.1](https://github.com/eventb-rossi/rossi/compare/v0.2.0...v0.2.1) - 2026-09-03
+
+### Added
+- *(import)* Merge components in dependency order
+- *(parse)* Require a label on every predicate and action
+- *(lint)* Warn on separators stock Camille cannot read (EB031)
+- *(cli)* Report an empty clause and a clause order as EB029 and EB030
+- *(lint)* Warn when a declared name spells a structural keyword
+- *(build)* Compute proof statuses in repack by default
+- *(cli)* Replay proofs in the prove command
+- *(cli)* Add a prove command reporting proof status
+- *(deps)* Order components for a single merged document
+- *(lsp)* Offer to remove an empty clause and to move a misplaced one
+- *(parse)* Report an event clause written out of order
+- *(parse)* Report an empty clause and a bare label where they are
+- *(parse)* Summarize a parse error's expected set by category
+- *(lsp)* Flag ASCII operator spellings behind rossi.format.enforceUnicode
+- *(lsp)* Add a source.fixAll.rossi operator normalization action
+- *(prove)* Auto-rewrite driver and type rewrites
+- *(prove)* Stream .bpr proof files into stored proofs
+- *(ast)* Parse canonical type strings back into Type
+- *(prove)* The small remaining reasoners
+- *(prove)* Negation and membership removal
+- *(prove)* Override splits, image goals and the one-point rule
+- *(prove)* Domain, image and bounded-goal reasoners
+- *(prove)* Partition rewrites and the manual-rewrite shape
+- *(prove)* The generalized modus ponens reasoner
+- *(prove)* The level-5 auto rewriter
+- *(prove)* Input-bearing inference reasoners
+- *(prove)* Core structural reasoners
+- *(prove)* Proof builder with reuse, replay, and rebuild
+- *(prove)* Proof status verdicts and the .bps model
+- *(prove)* Load .bpo sequents into prover sequents
+- *(prove)* Proof dependency analysis and the reuse predicate
+- *(prove)* Reasoner descriptors and the versioned registry
+- *(prove)* Proof rules, hyp actions, and proof trees
+- *(prove)* Scaffold the crate with sequents and confidence
+- *(build)* Register the missing-label rule
+- *(build)* Register the empty-clause and clause-order rules
+- *(lsp)* Refresh the workspace index on watched-file changes
+- *(build)* Compute proof statuses at the reconcile boundary
+- *(lsp)* Offer to write the label an item is missing
+- *(lsp)* Report components duplicated within one file
+- *(lsp)* Register the .eventb file watcher with the client
+
+### Changed
+- *(cli)* Allocate through mimalloc
+- *(lsp)* Keep the index off the edit path when nothing moved
+- *(cli)* Walk source trees through the shared walker
+- *(cli)* Check components in parallel in prove
+- *(cli)* Reuse the proof-file walkers in prove's collection
+- *(parse)* Move span clearing into the AST
+- *(parse)* Derive event-clause boundary sets from the grammar follow-set
+- *(prove)* Share type-checked intern entries across a file's proofs
+- *(prove)* Share type environments across a proof's intern entries
+- *(ast)* Parse canonical type strings without the formula parser
+- *(ast)* Move type-ascription stripping into the formula layer
+- *(prove)* Edit owned sequents in place across an antecedent's actions
+- *(prove)* Copy only the hypothesis sets a proof step changes
+- *(prove)* Parse each distinct intern formula once per proof file
+- *(prove)* Hand out proofs as the .bpr streams
+- *(prove)* Read only the intern entries the dependencies name
+- *(prove)* Load each hypothesis set once per project
+- *(prove)* Drop constant plumbing and share the crate's helpers
+- *(build)* Share one Event-B source predicate
+- *(build)* Update statuses per component in parallel
+- *(build)* Classify through the shared bucket type
+- *(lsp)* Give the cross-reference index disk and open layers
+- *(lsp)* Record every file that declares a component name
+- *(lsp)* Key both workspace indexes by canonical URI
+
+### Fixed
+- *(cli)* Match the Rodin XML build gate to the project loader
+- *(cli)* Single-source the prove command's confidence classification
+- *(build)* Discover only direct-child sources as components
+- *(xml)* Name an element that carries no label
+- *(parse)* Read an implicit comprehension's member in a closed scope
+- *(parse)* Reject a set comprehension that binds nothing
+- *(lsp)* Keep label text intact when converting operators
+- *(parse)* Bind unary minus at additive precedence
+- *(prove)* Resolve parent-set handles inside the referring file's directory
+- *(lsp)* Read eventb-animate's v4 report
+- *(lsp)* Hover a declared name that spells a keyword as the name
+- *(lsp)* Let a declared name that spells a keyword be renamed
+
+### Documentation
+- Describe rossi-prove in the READMEs
+- *(lsp)* Record why the project rebuild skips the status update
+
 ## [0.2.0](https://github.com/eventb-rossi/rossi/compare/v0.1.9...v0.2.0) - 2026-08-23
 
 ### Added
