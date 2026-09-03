@@ -851,6 +851,136 @@ fn eb029_offers_nothing_for_a_label_with_no_formula() {
 }
 
 #[test]
+fn eb032_offers_to_insert_a_label() {
+    // The action has no label; the stem comes from the enclosing clause and
+    // the number from the labels the same event already uses. `@act1` in the
+    // event above is a different namespace (EB022 scopes action labels per
+    // event), so it does not push this one to `@act2`.
+    let provider = CodeActionProvider::new();
+    let text = "MACHINE m\nVARIABLES\n    x\nEVENTS\n    EVENT INITIALISATION\n    THEN\n        @act1 x ≔ 0\n    END\n    EVENT e\n    THEN\n        x ≔ 1\n    END\nEND\n";
+    // The diagnostic underlines the item, as the provider emits it.
+    let item = Range {
+        start: Position::new(10, 8),
+        end: Position::new(10, 13),
+    };
+    let params = diagnostic_params("file:///m.eventb", item, "EB032");
+    let actions = provider
+        .provide_code_actions(&params, text, true)
+        .unwrap_or_default();
+
+    let fix = action_titled(&actions, "Insert label")
+        .expect("an Insert quick fix must be offered for EB032");
+    assert_eq!(fix.title, "Insert label @act1");
+    assert_eq!(fix.kind, Some(CodeActionKind::QUICKFIX));
+    let edit = &fix.edit.as_ref().unwrap().changes.as_ref().unwrap()
+        [&Url::parse("file:///m.eventb").unwrap()][0];
+    assert_eq!(edit.new_text, "@act1 ");
+    assert_eq!(
+        edit.range,
+        Range {
+            start: Position::new(10, 8),
+            end: Position::new(10, 8),
+        },
+        "the label goes in front of the item, replacing nothing"
+    );
+}
+
+#[test]
+fn eb032_numbers_past_the_labels_in_scope() {
+    // Guards and actions share one namespace per event, invariants one per
+    // component, so each is looked for where its clash would be.
+    let provider = CodeActionProvider::new();
+    for (text, item, title) in [
+        (
+            "MACHINE m\nVARIABLES\n    x\nEVENTS\n    EVENT e\n    THEN\n        @act1 x ≔ 0\n        x ≔ 1\n    END\nEND\n",
+            Range {
+                start: Position::new(7, 8),
+                end: Position::new(7, 13),
+            },
+            "Insert label @act2",
+        ),
+        (
+            "MACHINE m\nVARIABLES\n    x\nINVARIANTS\n    @inv1 x ∈ ℕ\n    x > 0\nEND\n",
+            Range {
+                start: Position::new(5, 4),
+                end: Position::new(5, 9),
+            },
+            "Insert label @inv2",
+        ),
+    ] {
+        let params = diagnostic_params("file:///m.eventb", item, "EB032");
+        let actions = provider
+            .provide_code_actions(&params, text, true)
+            .unwrap_or_default();
+        let fix = action_titled(&actions, "Insert label")
+            .unwrap_or_else(|| panic!("no Insert quick fix for:\n{text}"));
+        assert_eq!(fix.title, title, "for:\n{text}");
+    }
+}
+
+#[test]
+fn eb032_finds_the_clause_written_inline_before_the_item() {
+    // The clause keyword need not open a line of its own: reading the last one
+    // written before the item covers `EVENTS EVENT e THEN x ≔ 1 END`, where
+    // the item's line opens with `EVENTS`.
+    let provider = CodeActionProvider::new();
+    let text = "MACHINE m\nVARIABLES\n    x\nEVENTS EVENT e THEN x ≔ 1 END\nEND\n";
+    let item = Range {
+        start: Position::new(3, 20),
+        end: Position::new(3, 25),
+    };
+    let params = diagnostic_params("file:///m.eventb", item, "EB032");
+    let actions = provider
+        .provide_code_actions(&params, text, true)
+        .unwrap_or_default();
+
+    let fix = action_titled(&actions, "Insert label")
+        .expect("an inline clause must still name the label");
+    assert_eq!(fix.title, "Insert label @act1");
+}
+
+#[test]
+fn eb032_names_the_label_after_its_clause() {
+    // Each clause has its own stem: Rodin writes `grd1` in a guard and `inv1`
+    // in an invariant, so the fix does too.
+    let provider = CodeActionProvider::new();
+    for (text, item, title) in [
+        (
+            "MACHINE m\nVARIABLES\n    x\nINVARIANTS\n    x ∈ ℕ\nEND\n",
+            Range {
+                start: Position::new(4, 4),
+                end: Position::new(4, 9),
+            },
+            "Insert label @inv1",
+        ),
+        (
+            "MACHINE m\nVARIABLES\n    x\nEVENTS\n    EVENT e\n    WHERE\n        x > 0\n    THEN\n        @act1 x ≔ 1\n    END\nEND\n",
+            Range {
+                start: Position::new(6, 8),
+                end: Position::new(6, 13),
+            },
+            "Insert label @grd1",
+        ),
+        (
+            "CONTEXT c\nCONSTANTS\n    k\nAXIOMS\n    k = 1\nEND\n",
+            Range {
+                start: Position::new(4, 4),
+                end: Position::new(4, 9),
+            },
+            "Insert label @axm1",
+        ),
+    ] {
+        let params = diagnostic_params("file:///m.eventb", item, "EB032");
+        let actions = provider
+            .provide_code_actions(&params, text, true)
+            .unwrap_or_default();
+        let fix = action_titled(&actions, "Insert label")
+            .unwrap_or_else(|| panic!("no Insert quick fix for:\n{text}"));
+        assert_eq!(fix.title, title, "for:\n{text}");
+    }
+}
+
+#[test]
 fn eb030_offers_to_move_the_clause_above_the_one_it_must_precede() {
     let provider = CodeActionProvider::new();
     let text = "MACHINE m\nVARIABLES\n    x\nEVENTS\n    EVENT e\n    THEN\n        @act1 x ≔ 1\n    WITH\n        @w y = 1\n    END\nEND\n";
