@@ -6,6 +6,7 @@ members = [
     "crates/rossi-cli",
     "crates/rossi-prove",
     "crates/eventb-lsp",
+    "crates/eventb-fuzz",
     "crates/xtask",
 ]
 # The Zed extension is a standalone `cdylib` built to wasm by Zed (against
@@ -85,3 +86,20 @@ lto = true
 codegen-units = 1
 strip = true
 panic = "abort"
+
+# Fuzzing needs the speed of a release build with none of its diagnostics
+# stripped away: `panic = "abort"` would turn every caught panic into a dead
+# process with no finding attached, and a stripped binary reports a crash
+# without the location that makes it actionable. Overflow checks and debug
+# assertions stay on because a fuzzer's job is to find exactly what they catch.
+# Full LTO and one codegen unit are dropped so an edit-and-rerun cycle takes
+# seconds rather than minutes.
+[profile.fuzz]
+inherits = "release"
+panic = "unwind"
+strip = false
+debug = 1
+debug-assertions = true
+overflow-checks = true
+lto = false
+codegen-units = 16

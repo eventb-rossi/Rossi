@@ -1,0 +1,1010 @@
+//! Deriving Event-B text from the tree-sitter grammar.
+//!
+//! The walk is an ordinary recursive descent over [`Node`], with three things
+//! layered on top that a plain CFG walk cannot get right:
+//!
+//! * **Budgets.** The expression and predicate rules are mutually recursive and
+//!   branch two ways, so an unbounded walk diverges. A depth budget bounds
+//!   nesting (well under the parser's own limit) and a token budget bounds
+//!   size; when either runs low the walk takes only the alternatives whose
+//!   cheapest derivation still fits, using the cost table [`Grammar`] solved at
+//!   load time.
+//! * **Names.** Identifiers come from [`Scope`], which mints them where the
+//!   grammar declares one and draws them back where it refers to one, so a
+//!   generated model mostly type-checks instead of failing at the first
+//!   unknown name. Component and event cross-references are wired to
+//!   components and events already emitted.
+//! * **Layout.** The walk emits tokens, not text. A final pass separates them,
+//!   which is where the decision "may these two tokens touch?" is made once,
+//!   correctly, instead of at every emit site.
+
+use std::collections::BTreeSet;
+
+use crate::choice::{ByteSource, ByteSourceExt};
+use crate::grammar::{Grammar, Node};
+use crate::vocab::Scope;
+
+/// How large and how deep a generated model may get.
+#[derive(Debug, Clone)]
+pub struct Config {
+    /// Most nested rule expansions.
+    ///
+    /// Kept well below [`rossi::MAX_NESTING_DEPTH`] so that a generated model
+    /// exercises the parser rather than its nesting guard; the mutators are
+    /// what probe the limit itself.
+    pub max_depth: usize,
+    /// Soft cap on emitted tokens. Once spent, the walk takes the cheapest
+    /// derivation that closes what it has opened, so output stays bounded
+    /// without ever being truncated mid-construct.
+    pub max_tokens: usize,
+    /// Most components in one generated file.
+    pub max_components: usize,
+    /// Rules never to derive.
+    ///
+    /// Suppressing a rule and re-measuring is how a class of disagreement
+    /// between the two grammars is isolated: if acceptance jumps when a rule
+    /// is off, that rule is the cause. It is a diagnostic control, not part of
+    /// normal generation.
+    pub suppressed: Vec<String>,
+}
+
+impl Default for Config {
+    fn default() -> Self {
+        Self {
+            max_depth: 24,
+            max_tokens: 600,
+            max_components: 3,
+            suppressed: Vec::new(),
+        }
+    }
+}
+
+/// A generated model and what the generator knows about it.
+#[derive(Debug, Clone)]
+pub struct Generated {
+    /// The Event-B text.
+    pub text: String,
+    /// Rules the generator could not derive, if any. Empty for the grammar as
+    /// it stands; a non-empty list means the grammar grew a construct the
+    /// generator does not model, which the smoke test treats as a failure.
+    pub unsupported: Vec<String>,
+}
+
+/// Alternatives that are legal in the tree-sitter grammar but that Rossi's
+/// parser rejects outright, so that taking them at their natural rate would
+/// make most generated models uninteresting rejections.
+///
+/// They stay reachable — the disagreement is exactly what a differential
+/// fuzzer is for — just rare. The weight is relative to [`DEFAULT_WEIGHT`].
+fn rule_weight(name: &str) -> usize {
+    match name {
+        // Bare `dom`, `ran`, `not` and `theorem` in expression position. The
+        // tree-sitter grammar keeps the identifier reading alive; Rossi
+        // reports a reserved word for `dom`, `ran` and `theorem`, and Rodin
+        // agrees.
+        "_identifier_like" => 1,
+        _ => DEFAULT_WEIGHT,
+    }
+}
+
+const DEFAULT_WEIGHT: usize = 24;
+
+/// How rarely a deliberately divergent shape is taken: often enough that a
+/// long run still probes the disagreement, rarely enough that it does not
+/// crowd out everything else.
+const RARE: usize = 32;
+
+/// How often, per thousand token boundaries, a comment is inserted.
+const COMMENT_PERMILLE: usize = 20;
+
+/// Rules whose `identifier` children declare a name rather than refer to one.
+const DECLARING_RULES: &[&str] = &[
+    "set_declaration",
+    "constants_clause",
+    "variables_clause",
+    "any_clause",
+    "typed_identifier",
+    "pattern_typed_identifier",
+];
+
+/// Rules that put the walk into formula position, where an `identifier` is a
+/// reference. Checked against the innermost of these and [`DECLARING_RULES`],
+/// so the type annotation of a binder (`x ⦂ T`) refers while the binder itself
+/// declares.
+const REFERRING_RULES: &[&str] = &["_expression", "_predicate"];
+
+/// Numbers worth generating: the boundaries a parser is most likely to get
+/// wrong, plus a few ordinary values.
+const NUMBERS: &[&str] = &[
+    "0",
+    "1",
+    "2",
+    "7",
+    "10",
+    "42",
+    "007",
+    "2147483647",
+    "2147483648",
+    "4294967296",
+    "9223372036854775808",
+    "18446744073709551616",
+];
+
+/// Hyphenated tails for component and event names. `end` and `variant` are
+/// there on purpose: a hyphenated name embedding a keyword (`ctx0-end`) is
+/// exactly what the pest grammar's structural word boundary exists to keep
+/// from splitting.
+const NAME_TAILS: &[&str] = &["1", "a", "C0", "end", "variant", "x_2"];
+
+/// Comment shapes inserted by the layout pass, including the ones that have
+/// historically confused comment handling: an empty block, a block ending in
+/// several stars, a block containing a slash.
+const BLOCK_COMMENTS: &[&str] = &[
+    "/* c */",
+    "/**/",
+    "/***/",
+    "/* a/b */",
+    "/* ** */",
+    "/* Ω ↦ */",
+];
+
+/// One emitted token and whether it may touch the token before it.
+struct Token {
+    text: String,
+    /// Set for a tree-sitter `IMMEDIATE_TOKEN`, which by definition may not be
+    /// preceded by whitespace (the hyphenated tail of a component name, which
+    /// would otherwise read as subtraction).
+    glued: bool,
+}
+
+/// What a component name position refers to.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Kind {
+    Context,
+    Machine,
+}
+
+/// Derives text from a grammar.
+pub struct Generator<'a> {
+    grammar: &'a Grammar,
+    config: Config,
+}
+
+impl<'a> Generator<'a> {
+    /// A generator for `grammar` under `config`.
+    pub fn new(grammar: &'a Grammar, config: Config) -> Self {
+        Self { grammar, config }
+    }
+
+    /// Derive one file: between one and [`Config::max_components`] components.
+    ///
+    /// The top level is driven here rather than through the grammar's
+    /// `source_file` rule so that a context exists before a machine can see
+    /// it, which is what makes the generated cross-references resolve.
+    pub fn generate(&self, source: &mut dyn ByteSource) -> Generated {
+        let mut walk = Walk::new(self.grammar, &self.config, source);
+        let count = walk.source.between(1, self.config.max_components);
+        for index in 0..count {
+            // The first component is always a context: a machine with nothing
+            // to see is legal but dull, and it is what lets `sees` resolve.
+            let kind = if index == 0 || walk.source.ratio(1, 3) {
+                Kind::Context
+            } else {
+                Kind::Machine
+            };
+            walk.start_component(kind);
+            let rule = match kind {
+                Kind::Context => "context",
+                Kind::Machine => "machine",
+            };
+            walk.symbol(rule);
+        }
+        Generated {
+            text: walk.render(),
+            unsupported: walk.unsupported,
+        }
+    }
+}
+
+struct Walk<'a, 'b> {
+    grammar: &'a Grammar,
+    config: &'a Config,
+    source: &'b mut dyn ByteSource,
+    tokens: Vec<Token>,
+    depth_budget: usize,
+    token_budget: usize,
+    /// Rule names currently being expanded, innermost last.
+    path: Vec<&'a str>,
+    /// Field names currently being filled, innermost last.
+    fields: Vec<&'a str>,
+    scope: Scope,
+    /// The words the grammar's `builtin` rule offers, collected once.
+    builtins: Vec<&'a str>,
+    /// Rules that open a binder scope, collected once: names minted inside one
+    /// leave scope at the end of its body.
+    scoped_rules: BTreeSet<&'a str>,
+    contexts: Vec<String>,
+    machines: Vec<String>,
+    events: Vec<String>,
+    /// Where the current component's events start in `events`, so a machine
+    /// gets at most one `INITIALISATION` and refines only a foreign event.
+    component_events_from: usize,
+    /// The number of assignment targets on the left of the `≔` currently being
+    /// walked, so the right-hand list can be given the same length instead of
+    /// a random one (Rossi rejects an arity mismatch).
+    assignment_arity: Option<usize>,
+    unsupported: Vec<String>,
+}
+
+impl<'a, 'b> Walk<'a, 'b> {
+    fn new(grammar: &'a Grammar, config: &'a Config, source: &'b mut dyn ByteSource) -> Self {
+        Self {
+            grammar,
+            config,
+            source,
+            tokens: Vec::new(),
+            depth_budget: config.max_depth,
+            token_budget: config.max_tokens,
+            path: Vec::new(),
+            fields: Vec::new(),
+            scope: Scope::new(),
+            builtins: grammar.rule("builtin").map(literals).unwrap_or_default(),
+            scoped_rules: scoped_rules(grammar),
+            contexts: Vec::new(),
+            machines: Vec::new(),
+            events: Vec::new(),
+            component_events_from: 0,
+            assignment_arity: None,
+            unsupported: Vec::new(),
+        }
+    }
+
+    /// Choose the next component's name and reset per-component state.
+    fn start_component(&mut self, kind: Kind) {
+        self.scope = Scope::new();
+        self.component_events_from = self.events.len();
+        self.depth_budget = self.config.max_depth;
+        self.token_budget = self.config.max_tokens;
+        let prefix = match kind {
+            Kind::Context => "ctx",
+            Kind::Machine => "mch",
+        };
+        let index = self.contexts.len() + self.machines.len();
+        let name = self.decorate_name(format!("{prefix}{index}"));
+        match kind {
+            Kind::Context => self.contexts.push(name),
+            Kind::Machine => self.machines.push(name),
+        }
+    }
+
+    /// The component being generated: the newest name in its own pool.
+    fn current_component(&self) -> Option<&String> {
+        if self.in_rule("machine") {
+            self.machines.last()
+        } else {
+            self.contexts.last()
+        }
+    }
+
+    fn push(&mut self, text: impl Into<String>) {
+        self.push_token(text, false);
+    }
+
+    fn push_token(&mut self, text: impl Into<String>, glued: bool) {
+        self.token_budget = self.token_budget.saturating_sub(1);
+        self.tokens.push(Token {
+            text: text.into(),
+            glued,
+        });
+    }
+
+    fn in_rule(&self, name: &str) -> bool {
+        self.path.contains(&name)
+    }
+
+    fn field(&self) -> Option<&str> {
+        self.fields.last().copied()
+    }
+
+    /// Expand the rule named `name`.
+    fn symbol(&mut self, name: &'a str) {
+        match name {
+            "identifier" => return self.emit_identifier(),
+            "builtin" => return self.emit_builtin(),
+            "number" => return self.emit_number(),
+            "label" => return self.emit_label(),
+            "_component_name" | "component_name" => return self.emit_component_name(),
+            _ => {}
+        }
+        // The rule's key in the grammar map outlives the walk, so the path can
+        // borrow it rather than allocate per expansion.
+        let Some((key, rule)) = self.grammar.rules.get_key_value(name) else {
+            self.unsupported.push(name.to_string());
+            return;
+        };
+        let scoped = self.scoped_rules.contains(name);
+        if scoped {
+            self.scope.push();
+        }
+        self.path.push(key.as_str());
+        // Saved and restored rather than decremented and incremented back: an
+        // expansion entered with the budget already spent would otherwise hand
+        // its caller a larger budget than it started with, and later siblings
+        // would nest past `max_depth`.
+        let saved_depth = self.depth_budget;
+        self.depth_budget = saved_depth.saturating_sub(1);
+        self.node(rule);
+        self.depth_budget = saved_depth;
+        self.path.pop();
+        if scoped {
+            self.scope.pop();
+        }
+    }
+
+    fn node(&mut self, node: &'a Node) {
+        match node {
+            Node::Blank => {}
+            Node::String { value } => self.push(value.clone()),
+            Node::Pattern { value } => match crate::regex::sample(value, self.source) {
+                Some(text) => self.push(text),
+                None => self.unsupported.push(format!("pattern {value}")),
+            },
+            Node::Symbol { name } => self.symbol(name),
+            Node::Seq { members } => {
+                for member in members {
+                    self.node(member);
+                }
+            }
+            Node::Choice { members } => {
+                if let Some(chosen) = self.choose(members) {
+                    self.node(chosen);
+                }
+            }
+            Node::Repeat { content } => self.repeat(content, 0),
+            Node::Repeat1 { content } => self.repeat(content, 1),
+            Node::Wrapper { content } => self.node(content),
+            Node::ImmediateToken { content } => {
+                let before = self.tokens.len();
+                self.node(content);
+                // Everything the immediate token produced must abut what came
+                // before it; in this grammar that is always a single terminal.
+                if let Some(token) = self.tokens.get_mut(before) {
+                    token.glued = true;
+                }
+            }
+            Node::Field { name, content } => {
+                self.fields.push(name.as_str());
+                self.node(content);
+                self.fields.pop();
+            }
+        }
+    }
+
+    /// Expand `content` between `min` and a budget-dependent number of times.
+    fn repeat(&mut self, content: &'a Node, min: usize) {
+        // A comma-separated assignment right-hand side must have as many
+        // elements as the left-hand side had targets. The grammar puts the
+        // repetition *outside* the `left`/`right` field wrapper, so the field
+        // stack does not name it here; the repeated group does.
+        let repeated = (self.path.last() == Some(&"assignment"))
+            .then(|| repeated_field(content))
+            .flatten();
+        if let Some(arity) = self.assignment_arity
+            && repeated == Some("right")
+        {
+            for _ in 0..arity.saturating_sub(1) {
+                self.node(content);
+            }
+            return;
+        }
+
+        let affordable = self.grammar.min_depth(content) <= self.depth_budget;
+        let out_of_budget = !affordable || self.token_budget == 0;
+        let divergent = self.shape_is_divergent() && !self.source.ratio(1, RARE);
+        let count = if out_of_budget || divergent {
+            min
+        } else {
+            // Short lists: a clause with thirty items tests nothing a clause
+            // with three does not, and spends the whole token budget.
+            self.source.between(min, min + 2)
+        };
+        for _ in 0..count {
+            self.node(content);
+        }
+        if repeated == Some("left") {
+            self.assignment_arity = Some(count + 1);
+        }
+    }
+
+    /// Whether the construct being expanded here is one the tree-sitter
+    /// grammar admits and Rossi's parser does not.
+    ///
+    /// Two of them, both confirmed against Rossi and against Rodin's own
+    /// textual grammar:
+    ///
+    /// * `function_application` is one permissive multi-argument node, because
+    ///   the same `f(a, b)` text is a predicate application (which Rossi
+    ///   allows) and an expression application (which it does not). The
+    ///   tree-sitter grammar documents that choice.
+    /// * `set_declaration` admits an enumerated form, `sets S = {a, b}`.
+    ///   Neither Rossi's grammar nor Camille's has it — both refuse the text —
+    ///   so the tree-sitter grammar over-accepts here.
+    ///
+    /// Taken at their natural rate these two would make most generated models
+    /// a rejection with nothing new in it, so they are taken rarely instead.
+    /// They stay reachable: the disagreement is what a differential fuzzer is
+    /// for.
+    fn shape_is_divergent(&self) -> bool {
+        matches!(
+            self.path.last(),
+            Some(&"function_application") | Some(&"set_declaration")
+        )
+    }
+
+    /// The weight of a choice alternative, looked through the wrappers that do
+    /// not change what it derives. Zero for a suppressed rule.
+    fn member_weight(&self, node: &Node) -> usize {
+        match node {
+            Node::Symbol { name } => {
+                if self.config.suppressed.iter().any(|rule| rule == name) {
+                    0
+                } else {
+                    rule_weight(name)
+                }
+            }
+            node => match node.transparent() {
+                Some(inner) => self.member_weight(inner),
+                None => DEFAULT_WEIGHT,
+            },
+        }
+    }
+
+    /// Pick one alternative that the remaining budget can afford.
+    fn choose(&mut self, members: &'a [Node]) -> Option<&'a Node> {
+        let costs: Vec<usize> = members
+            .iter()
+            .map(|member| self.grammar.min_depth(member))
+            .collect();
+        let cheapest = costs
+            .iter()
+            .copied()
+            .enumerate()
+            .min_by_key(|(_, cost)| *cost)?;
+
+        // Affordability, and nothing else: with tokens spent, close what is
+        // open by the shortest route; otherwise take anything the depth budget
+        // still allows.
+        let limit = if self.token_budget == 0 {
+            cheapest.1
+        } else {
+            self.depth_budget
+        };
+        // Preference, kept out of the budget so that "what can I afford" and
+        // "what do I want" stay separate. Inside a shape the two grammars
+        // disagree about, the arm that builds it is the dearer one, so
+        // penalising anything above the cheapest cost makes the disagreement
+        // rare without making it unreachable.
+        let divergence_penalty = if self.shape_is_divergent() { RARE } else { 1 };
+        // An optional label is nearly always worth taking: without one a
+        // clause holds a run of bare predicates, and where each ends is a
+        // question only a GLR parser can answer. Rodin's own text tools always
+        // emit labels for the same reason. Occasionally leave it off, so the
+        // unlabeled form stays covered.
+        let insist_on_label = members.iter().any(is_blank)
+            && members.iter().any(mentions_label)
+            && !self.source.ratio(1, RARE);
+
+        let weight = |walk: &Self, member: &Node, cost: usize| {
+            if cost > limit || (insist_on_label && is_blank(member)) {
+                return 0;
+            }
+            let base = walk.member_weight(member);
+            if cost > cheapest.1 {
+                base.div_ceil(divergence_penalty)
+            } else {
+                base
+            }
+        };
+
+        let total: usize = members
+            .iter()
+            .zip(&costs)
+            .map(|(member, cost)| weight(self, member, *cost))
+            .sum();
+        if total == 0 {
+            // Nothing fits the limit; take the cheapest alternative rather
+            // than fail, so a derivation always terminates.
+            return members.get(cheapest.0);
+        }
+        let mut ticket = self.source.below(total);
+        for (member, cost) in members.iter().zip(&costs) {
+            let weight = weight(self, member, *cost);
+            if ticket < weight {
+                return Some(member);
+            }
+            ticket -= weight;
+        }
+        members.get(cheapest.0)
+    }
+
+    fn emit_identifier(&mut self) {
+        if self.declares_here() {
+            let name = self.scope.mint(self.source);
+            self.push(name);
+            return;
+        }
+        match self.scope.reference(self.source) {
+            Some(name) => self.push(name),
+            // Nothing is in scope yet — a formula in a context with no
+            // constants. Mint one so the text is still well formed; it reads
+            // as an undeclared name, which the static-check properties expect
+            // and classify.
+            None => {
+                let name = self.scope.mint(self.source);
+                self.push(name);
+            }
+        }
+    }
+
+    /// Whether the identifier about to be emitted declares a name.
+    ///
+    /// Decided by the innermost enclosing rule that is either a declaring rule
+    /// or a formula rule: inside `x ⦂ T` the binder `x` sits directly under
+    /// `typed_identifier` and declares, while `T` sits under `_expression` and
+    /// refers.
+    fn declares_here(&self) -> bool {
+        self.path
+            .iter()
+            .rev()
+            .find(|name| DECLARING_RULES.contains(name) || REFERRING_RULES.contains(name))
+            .is_some_and(|name| DECLARING_RULES.contains(name))
+    }
+
+    /// Emit a built-in name.
+    ///
+    /// The words come from the grammar's own `builtin` rule; only the choice
+    /// among them is made here. `card`, `finite`, `max`, `min` and `partition`
+    /// are closed operators — `kernel_lang` §2.2 makes them meaningful only
+    /// applied to a parenthesized argument, and Rossi reports a reserved word
+    /// for a bare one — while the generic atoms (`id`, `pred`, `prj1`, `prj2`,
+    /// `succ`) stand alone. The tree-sitter grammar draws no such distinction.
+    fn emit_builtin(&mut self) {
+        let applied = self.in_rule("function_application") || self.in_rule("function_override");
+        let usable: Vec<&&str> = self
+            .builtins
+            .iter()
+            .filter(|word| applied || !rossi::builtins::is_reserved_operator_word(word))
+            .collect();
+        match self.source.pick(&usable) {
+            Some(word) => self.push(**word),
+            None => self.unsupported.push("builtin".to_string()),
+        }
+    }
+
+    fn emit_number(&mut self) {
+        let number = self.source.pick(NUMBERS).copied().unwrap_or("0");
+        self.push(number);
+    }
+
+    fn emit_label(&mut self) {
+        let index = self.source.below(1000);
+        self.push(format!("@l{index}"));
+    }
+
+    /// Emit a component-name position: the component's own name, a reference
+    /// to another component, or an event name.
+    fn emit_component_name(&mut self) {
+        if self.in_rule("event") {
+            return self.emit_event_name();
+        }
+
+        // The component's own name, chosen when the walk into it started.
+        if self.field() == Some("name")
+            && let Some(name) = self.current_component()
+        {
+            let name = name.clone();
+            self.push(name);
+            return;
+        }
+
+        // A cross-reference. `extends` and `sees` name contexts; `refines`
+        // names a machine. The component being generated does not appear in
+        // the other pool at all, so exclude it by name rather than by
+        // position: dropping the last entry unconditionally would hide the
+        // only context from a machine's `sees`, the one reference meant to
+        // resolve.
+        let pool = if self.in_rule("refines_clause") {
+            &self.machines
+        } else {
+            &self.contexts
+        };
+        let current = self.current_component();
+        let candidates: Vec<&String> = pool.iter().filter(|name| Some(*name) != current).collect();
+        match self.source.pick(&candidates) {
+            Some(name) => self.push((*name).clone()),
+            // No component of the right kind exists yet. Emit a plausible
+            // name anyway: it parses, and resolves to a missing-target
+            // diagnostic that the checker gate compares against Rodin's.
+            None => self.push("Absent"),
+        }
+    }
+
+    /// Occasionally give a component or event name a hyphenated tail.
+    ///
+    /// Rodin stores these names as file names and event labels, not as
+    /// mathematical identifiers, so real models carry hyphens (`ENV_C-1`,
+    /// `end-to-end`). The hyphen is also where the two grammars have to agree
+    /// that a name is one token and not a subtraction, and where the pest
+    /// grammar's wider structural word boundary applies. The name is assembled
+    /// here rather than derived from the grammar's `component_name` rule
+    /// because every later reference has to reproduce it exactly, which means
+    /// recording it.
+    fn decorate_name(&mut self, stem: String) -> String {
+        if !self.source.ratio(1, 4) {
+            return stem;
+        }
+        let tail = self.source.pick(NAME_TAILS).copied().unwrap_or("1");
+        format!("{stem}-{tail}")
+    }
+
+    fn emit_event_name(&mut self) {
+        if self.field() == Some("name") {
+            // The first event of a machine is the initialisation often enough
+            // to exercise its dedicated parse path — but at most once per
+            // machine, since a repeated name is a duplicate-event error rather
+            // than a parse test.
+            let own = &self.events[self.component_events_from..];
+            let name = if !own.iter().any(|event| event == "INITIALISATION")
+                && (own.is_empty() || self.source.ratio(1, 4))
+            {
+                "INITIALISATION".to_string()
+            } else {
+                let index = self.events.len();
+                self.decorate_name(format!("evt{index}"))
+            };
+            self.events.push(name.clone());
+            self.push(name);
+            return;
+        }
+        // A refines/extends target: an event of an abstract machine, so never
+        // one of this machine's own.
+        let candidates: Vec<&String> = self.events[..self.component_events_from]
+            .iter()
+            .filter(|name| *name != "INITIALISATION")
+            .collect();
+        match self.source.pick(&candidates) {
+            Some(name) => self.push((*name).clone()),
+            None => self.push("absent_event"),
+        }
+    }
+
+    /// Join the tokens into text.
+    ///
+    /// Separation is decided once, here. Two tokens may only touch when the
+    /// grammar demands it (an immediate token) or when one side is a bracket
+    /// or comma, which cannot fuse with anything: every other pair gets a
+    /// space, because deciding whether `<` and `+` would lex as `<+` means
+    /// re-implementing the lexer.
+    fn render(&mut self) -> String {
+        let tokens = std::mem::take(&mut self.tokens);
+        let mut out = String::new();
+        for (index, token) in tokens.iter().enumerate() {
+            if token.glued {
+                out.push_str(&token.text);
+                continue;
+            }
+            if index == 0 || starts_a_line(&token.text) {
+                if index > 0 {
+                    out.push('\n');
+                }
+                if !is_structural_keyword(&token.text) {
+                    out.push_str("    ");
+                }
+            } else if !may_touch(&tokens[index - 1].text, &token.text) || self.source.ratio(1, 2) {
+                out.push(' ');
+            }
+
+            // A comment is inserted before a token, never after: a line
+            // comment would otherwise swallow the rest of the line.
+            if self.source.ratio(COMMENT_PERMILLE, 1000)
+                && let Some(comment) = self.source.pick(BLOCK_COMMENTS)
+            {
+                out.push_str(comment);
+                out.push(' ');
+            }
+            out.push_str(&token.text);
+        }
+        out.push('\n');
+        out
+    }
+}
+
+/// The field a comma-separated repetition fills, when the repeated group names
+/// one directly. Shallow on purpose: it looks through the group's own sequence
+/// and no further, so a field of some nested rule is never mistaken for it.
+fn repeated_field(node: &Node) -> Option<&str> {
+    match node {
+        Node::Field { name, .. } => Some(name.as_str()),
+        Node::Seq { members } => members.iter().find_map(repeated_field),
+        _ => None,
+    }
+}
+
+/// The rules that open a binder scope.
+///
+/// The grammar states this itself: a rule that binds names gives them a
+/// `binder` field, or a `pattern` field for the lambda's maplet tree. Reading
+/// it off the grammar means a new binder form is handled without touching the
+/// fuzzer, which is the whole reason generation is driven by grammar data.
+fn scoped_rules(grammar: &Grammar) -> BTreeSet<&str> {
+    grammar
+        .rules
+        .iter()
+        .filter(|(_, node)| has_field(node, &["binder", "pattern"]))
+        .map(|(name, _)| name.as_str())
+        .collect()
+}
+
+/// Whether `node` has a field with one of these names anywhere below it.
+fn has_field(node: &Node, names: &[&str]) -> bool {
+    match node {
+        Node::Field { name, content } => {
+            names.contains(&name.as_str()) || has_field(content, names)
+        }
+        Node::Seq { members } | Node::Choice { members } => {
+            members.iter().any(|member| has_field(member, names))
+        }
+        Node::Repeat { content } | Node::Repeat1 { content } => has_field(content, names),
+        node => node
+            .transparent()
+            .is_some_and(|inner| has_field(inner, names)),
+    }
+}
+
+/// Every literal a node can derive, in grammar order.
+///
+/// Used for the `builtin` rule, whose alternatives are all plain strings: the
+/// words belong to the grammar, and only the choice among them depends on
+/// where the walk is.
+fn literals(node: &Node) -> Vec<&str> {
+    match node {
+        Node::String { value } => vec![value.as_str()],
+        Node::Choice { members } | Node::Seq { members } => {
+            members.iter().flat_map(|member| literals(member)).collect()
+        }
+        node => node.transparent().map(literals).unwrap_or_default(),
+    }
+}
+
+/// Whether an alternative derives the empty string, i.e. is the untaken arm of
+/// an optional construct.
+fn is_blank(node: &Node) -> bool {
+    matches!(node, Node::Blank)
+}
+
+/// Whether an alternative starts with a label. Shallow on purpose: it answers
+/// "is this the label arm of an optional", not "does a label occur anywhere
+/// below".
+fn mentions_label(node: &Node) -> bool {
+    match node {
+        Node::Symbol { name } => name == "label",
+        Node::Seq { members } => members.first().is_some_and(mentions_label),
+        Node::Choice { members } => members.iter().any(mentions_label),
+        node => node.transparent().is_some_and(mentions_label),
+    }
+}
+
+/// Whether a token opens a structural region: a clause keyword, an event
+/// keyword, or `END`.
+///
+/// `rossi::keywords` is the single source of truth for these spellings and
+/// already draws exactly this line — every keyword but the status values and
+/// the inline modifiers — so asking it keeps the layout right when a spelling
+/// is added there.
+fn is_structural_keyword(text: &str) -> bool {
+    rossi::keywords::is_clause_boundary(text)
+}
+
+/// Whether a token starts a new line in the rendered output, which is what
+/// makes generated text read like a model instead of one long line.
+fn starts_a_line(text: &str) -> bool {
+    text.starts_with('@') || is_structural_keyword(text)
+}
+
+/// Whether two adjacent tokens may be written without a separator.
+///
+/// Only brackets and commas qualify: no operator spelling in the language
+/// contains one, so they cannot fuse with a neighbour, while `<` next to `+`
+/// would lex as the single operator `<+`. A label is the exception to the
+/// exception: it runs to the next whitespace, brackets included, so `@l1(x`
+/// is one long label rather than a label followed by anything.
+fn may_touch(left: &str, right: &str) -> bool {
+    const UNFUSABLE: &[char] = &['(', ')', '{', '}', '[', ']', ','];
+    if left.starts_with('@') {
+        return false;
+    }
+    let left_end = left.chars().next_back();
+    let right_start = right.chars().next();
+    left_end.is_some_and(|c| UNFUSABLE.contains(&c))
+        || right_start.is_some_and(|c| UNFUSABLE.contains(&c))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::choice::SplitMix64;
+    use crate::test_support::load_grammar;
+
+    fn generate_all(count: usize) -> Vec<Generated> {
+        let Some(grammar) = load_grammar() else {
+            return Vec::new();
+        };
+        let generator = Generator::new(&grammar, Config::default());
+        let mut rng = SplitMix64::new(0x5EED);
+        (0..count).map(|_| generator.generate(&mut rng)).collect()
+    }
+
+    #[test]
+    fn every_generated_model_derives_completely() {
+        for model in generate_all(200) {
+            assert!(
+                model.unsupported.is_empty(),
+                "grammar constructs the generator cannot derive: {:?}",
+                model.unsupported
+            );
+            assert!(!model.text.trim().is_empty());
+        }
+    }
+
+    #[test]
+    fn generation_is_reproducible() {
+        let Some(grammar) = load_grammar() else {
+            return;
+        };
+        let generator = Generator::new(&grammar, Config::default());
+        let mut first = SplitMix64::new(4242);
+        let mut second = SplitMix64::new(4242);
+        for _ in 0..50 {
+            assert_eq!(
+                generator.generate(&mut first).text,
+                generator.generate(&mut second).text
+            );
+        }
+    }
+
+    /// Panic messages the parser is known to produce on valid-per-tree-sitter
+    /// input, each a known, still-open defect. A crash whose message is not
+    /// on this list is new, and fails the test.
+    ///
+    /// The list is expected to shrink to nothing. It exists so that a known
+    /// crash does not mask an unknown one.
+    const KNOWN_CRASHES: &[&str] = &[
+        // §1: `{E ∣ P}` where nothing is free in E.
+        "a quantified expression needs at least one declaration",
+    ];
+
+    static PANIC_HOOK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+    /// Parse `text`, turning a panic into a value.
+    ///
+    /// Catching is what a fuzz harness does: the target crashing is the result,
+    /// not an excuse to stop. `AssertUnwindSafe` is sound here because nothing
+    /// observes the parser's state afterwards — the caller records the message
+    /// and moves to the next input.
+    ///
+    /// The hook swap is serialised: `set_hook` is process-global, so two tests
+    /// in this binary swapping it concurrently would leave the silencing hook
+    /// installed and hide every later panic message.
+    fn parse_catching(text: &str) -> Result<bool, String> {
+        let guard = PANIC_HOOK.lock().unwrap_or_else(|error| error.into_inner());
+        let previous = std::panic::take_hook();
+        std::panic::set_hook(Box::new(|_| {}));
+        let outcome = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            rossi::parse_components(text).is_ok()
+        }));
+        std::panic::set_hook(previous);
+        drop(guard);
+        outcome.map_err(|payload| {
+            payload
+                .downcast_ref::<&str>()
+                .map(|message| (*message).to_string())
+                .or_else(|| payload.downcast_ref::<String>().cloned())
+                .unwrap_or_else(|| "non-string panic payload".to_string())
+        })
+    }
+
+    /// Generated models must not crash the parser, and enough of them must
+    /// parse for a run to spend its time on Rossi's accepting paths.
+    ///
+    /// The floor is well below 100% on purpose: the tree-sitter grammar admits
+    /// constructs Rossi refuses — enumerated set declarations, multi-argument
+    /// application, chained non-associative operators — so a generator faithful
+    /// to it produces rejections by design, and the `gen` subcommand reports
+    /// them bucketed by cause.
+    #[test]
+    fn generated_models_parse_or_are_rejected_cleanly() {
+        let models = generate_all(400);
+        if models.is_empty() {
+            return;
+        }
+        let mut accepted = 0usize;
+        let mut crashes: Vec<String> = Vec::new();
+        for model in &models {
+            match parse_catching(&model.text) {
+                Ok(true) => accepted += 1,
+                Ok(false) => {}
+                Err(message) => {
+                    if !crashes.contains(&message) {
+                        crashes.push(message);
+                    }
+                }
+            }
+        }
+        let unknown: Vec<&String> = crashes
+            .iter()
+            .filter(|message| !KNOWN_CRASHES.iter().any(|known| message.contains(known)))
+            .collect();
+        assert!(
+            unknown.is_empty(),
+            "new parser crashes on generated input: {unknown:?}"
+        );
+        assert!(
+            accepted * 100 >= models.len() * 25,
+            "only {accepted}/{} generated models parse, which is too few to \
+             exercise the accepting paths",
+            models.len()
+        );
+    }
+
+    #[test]
+    fn declared_names_are_the_ones_referred_to() {
+        // Every identifier a generated context uses must be one it declares:
+        // that is what keeps static-check findings meaningful.
+        let Some(grammar) = load_grammar() else {
+            return;
+        };
+        let generator = Generator::new(
+            &grammar,
+            Config {
+                max_components: 1,
+                ..Config::default()
+            },
+        );
+        let mut rng = SplitMix64::new(77);
+        let mut checked = 0;
+        for _ in 0..200 {
+            let model = generator.generate(&mut rng);
+            let Ok(true) = parse_catching(&model.text) else {
+                continue;
+            };
+            let Ok(components) = rossi::parse_components(&model.text) else {
+                continue;
+            };
+            for component in &components {
+                if let rossi::Component::Context(context) = component {
+                    let declared: Vec<&str> = context
+                        .sets
+                        .iter()
+                        .chain(&context.constants)
+                        .map(|element| element.name.as_str())
+                        .collect();
+                    if !declared.is_empty() {
+                        checked += 1;
+                    }
+                }
+            }
+        }
+        assert!(checked > 0, "no context with declarations was generated");
+    }
+
+    #[test]
+    fn tokens_that_could_fuse_are_kept_apart() {
+        assert!(!may_touch("<", "+"));
+        assert!(!may_touch("x", "y"));
+        assert!(!may_touch("end", "1"));
+        assert!(!may_touch("@label", "("));
+        assert!(may_touch("(", "x"));
+        assert!(may_touch("x", ")"));
+        assert!(may_touch("x", ","));
+    }
+}
