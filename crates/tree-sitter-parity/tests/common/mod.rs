@@ -95,3 +95,27 @@ pub fn without_panicking<T>(body: impl FnOnce() -> T) -> Option<T> {
     drop(guard);
     outcome.ok()
 }
+
+/// Rewrite every separator rossi accepts to a plain space, leaving newlines
+/// and everything else alone.
+///
+/// Takes whitespace out of a cross-tool comparison: rossi's separator set is
+/// Rodin's, which is wider than either Camille's `layout_char` or the
+/// tree-sitter grammar's ASCII `\s`, so without this a whitespace
+/// disagreement is indistinguishable from a grammar disagreement. Newlines
+/// survive because structure and `//` comments are line-terminated.
+pub fn normalize_whitespace(text: &str) -> String {
+    text.replace(
+        |c: char| c != '\n' && rossi::keywords::is_whitespace(c),
+        " ",
+    )
+}
+
+/// Whether `text` holds a separator [`normalize_whitespace`] would rewrite.
+///
+/// Allocation-free, so the report can count every input without building a
+/// normalised copy of each one.
+pub fn has_exotic_separator(text: &str) -> bool {
+    text.chars()
+        .any(|c| c != '\n' && c != ' ' && rossi::keywords::is_whitespace(c))
+}

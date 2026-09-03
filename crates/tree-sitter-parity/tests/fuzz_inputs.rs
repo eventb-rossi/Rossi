@@ -41,6 +41,14 @@ impl Verdict {
     }
 }
 
+/// Whether the two parsers gave the same answer.
+fn agree(rossi: Verdict, tree_sitter: bool) -> bool {
+    matches!(
+        (rossi, tree_sitter),
+        (Verdict::Accept, true) | (Verdict::Reject, false)
+    )
+}
+
 fn rossi_verdict(text: &str) -> Verdict {
     match common::without_panicking(|| rossi::parse_components(text).is_ok()) {
         Some(true) => Verdict::Accept,
@@ -67,18 +75,49 @@ fn report_parity_over_fuzz_inputs() {
     let mut neither = 0usize;
     let mut rossi_only = Vec::new();
     let mut tree_sitter_only = Vec::new();
+    let mut whitespace_only = Vec::new();
     let mut crashed = Vec::new();
+    let mut normalised = 0usize;
 
     for input in &inputs {
         let text = std::fs::read_to_string(input).expect("read input");
         let rossi = rossi_verdict(&text);
         let tree_sitter = common::tree_sitter_accepts(&mut parser, &text);
+
+        // Rossi's separator set is Rodin's, which is wider than the tree-sitter
+        // grammar's ASCII `\s`. Without taking that out of the comparison a
+        // whitespace disagreement is indistinguishable from a grammar one, and
+        // it is the grammar findings this report exists for. Re-run both
+        // parsers over the normalised text: a disagreement that survives is
+        // about the language, one that does not is about whitespace.
+        //
+        // `&&` keeps both the normalised copy and the re-parse off the
+        // agreeing majority; only the counter looks at every input.
+        let rewritten = common::has_exotic_separator(&text);
+        if rewritten {
+            normalised += 1;
+        }
+        let whitespace_is_the_difference = rewritten
+            && !agree(rossi, tree_sitter)
+            && {
+                let plain = common::normalize_whitespace(&text);
+                agree(
+                    rossi_verdict(&plain),
+                    common::tree_sitter_accepts(&mut parser, &plain),
+                )
+            };
+
         match (rossi, tree_sitter) {
             (Verdict::Accept, true) => both += 1,
             (Verdict::Reject, false) => neither += 1,
+            (Verdict::Crash, _) => crashed.push(input.clone()),
+            (Verdict::Accept, false) | (Verdict::Reject, true)
+                if whitespace_is_the_difference =>
+            {
+                whitespace_only.push(input.clone());
+            }
             (Verdict::Accept, false) => rossi_only.push(input.clone()),
             (Verdict::Reject, true) => tree_sitter_only.push(input.clone()),
-            (Verdict::Crash, _) => crashed.push(input.clone()),
         }
         // A per-input line is what makes a small, hand-built set of probe
         // cases readable; a fuzzing run's directory is far too large for it.
@@ -94,15 +133,18 @@ fn report_parity_over_fuzz_inputs() {
 
     println!(
         "parity over {} inputs: {both} accepted by both, {neither} by neither, \
-         {} only by rossi, {} only by tree-sitter, {} crashed rossi",
+         {} only by rossi, {} only by tree-sitter, {} whitespace-only, \
+         {} crashed rossi ({normalised} inputs held a separator normalisation rewrote)",
         inputs.len(),
         rossi_only.len(),
         tree_sitter_only.len(),
+        whitespace_only.len(),
         crashed.len()
     );
     for (label, group) in [
         ("ROSSI-ONLY      ", &rossi_only),
         ("TREE-SITTER-ONLY", &tree_sitter_only),
+        ("WHITESPACE-ONLY ", &whitespace_only),
         ("CRASHED-ROSSI   ", &crashed),
     ] {
         for input in group.iter().take(20) {
