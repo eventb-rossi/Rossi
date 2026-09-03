@@ -11,8 +11,9 @@
 //!
 //! The grammar lives in a git submodule. Everything here degrades to a skip
 //! when it is missing, so a clone without `--recurse-submodules` still builds
-//! and tests — except under CI, where a missing grammar is an error rather
-//! than a silently reduced test run.
+//! and tests — except where [`REQUIRE_GRAMMAR_ENV`] is set, which is our own
+//! CI, and there a missing grammar is an error rather than a silently reduced
+//! test run.
 
 pub mod choice;
 pub mod generate;
@@ -64,8 +65,9 @@ pub fn load_grammar_from(path: &Path) -> Result<grammar::Grammar, String> {
 /// is a skip or a failure.
 ///
 /// `Ok(None)` means "not there, and that is allowed" — the submodule is
-/// missing outside CI. Inside CI it is an error instead, because a run that
-/// silently tests nothing is worse than one that fails.
+/// missing in a plain clone. Where [`REQUIRE_GRAMMAR_ENV`] is set it is an
+/// error instead, because a run that silently tests nothing is worse than one
+/// that fails.
 pub fn load_grammar() -> Result<Option<grammar::Grammar>, String> {
     match grammar_path() {
         Some(path) => load_grammar_from(&path).map(Some),
@@ -78,9 +80,16 @@ pub fn load_grammar() -> Result<Option<grammar::Grammar>, String> {
 pub const MISSING_GRAMMAR: &str =
     "tree-sitter grammar not found: run `git submodule update --init` or set EVENTB_TS_GRAMMAR";
 
+/// Environment variable that turns a missing grammar from a skip into an
+/// error. Set in this repository's own CI, where the submodule is always
+/// checked out; deliberately not the generic `CI`, so that packagers building
+/// the release tarball (which carries no submodule) inside their own CI get
+/// the skip this crate documents rather than a failure.
+pub const REQUIRE_GRAMMAR_ENV: &str = "EVENTB_FUZZ_REQUIRE_GRAMMAR";
+
 /// Whether a missing grammar must be treated as an error.
 pub fn grammar_is_required() -> bool {
-    std::env::var_os("CI").is_some()
+    std::env::var_os(REQUIRE_GRAMMAR_ENV).is_some()
 }
 
 #[doc(hidden)]
@@ -89,7 +98,8 @@ pub mod test_support {
 
     /// The grammar for tests, or `None` when the submodule is absent.
     ///
-    /// Panics under CI rather than skipping: see [`crate::grammar_is_required`].
+    /// Panics rather than skipping where [`crate::REQUIRE_GRAMMAR_ENV`] is
+    /// set: see [`crate::grammar_is_required`].
     pub fn load_grammar() -> Option<Grammar> {
         match crate::load_grammar() {
             Ok(Some(grammar)) => Some(grammar),

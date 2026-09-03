@@ -35,6 +35,9 @@ concurrency:
 
 env:
   CARGO_TERM_COLOR: always
+  # The submodule is always checked out here, so eventb-fuzz must fail on a
+  # missing tree-sitter grammar instead of skipping its tests.
+  EVENTB_FUZZ_REQUIRE_GRAMMAR: '1'
 
 jobs:
   test:
