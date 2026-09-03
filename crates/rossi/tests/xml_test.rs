@@ -194,6 +194,33 @@ fn test_parse_machine_with_labeled_variants_xml() {
 }
 
 #[test]
+fn an_element_without_a_label_is_named_by_its_element_name() {
+    // A label is mandatory in the text format and undefined to Rodin's static
+    // checker when absent, so an element that carries none is read under its
+    // internal name. Printing it must produce text that parses again.
+    let xml = r#"<?xml version="1.0" encoding="UTF-8"?>
+<org.eventb.core.machineFile version="5">
+    <org.eventb.core.variable org.eventb.core.identifier="n"/>
+    <org.eventb.core.invariant name="_0" org.eventb.core.predicate="n ∈ ℕ"/>
+    <org.eventb.core.event name="_1" org.eventb.core.convergence="0" org.eventb.core.extended="false" org.eventb.core.label="e">
+        <org.eventb.core.witness name="_3" org.eventb.core.predicate="n = 0"/>
+        <org.eventb.core.action name="_2" org.eventb.core.assignment="n ≔ 0"/>
+    </org.eventb.core.event>
+</org.eventb.core.machineFile>"#;
+
+    let component = parse_xml(xml).expect("parse");
+    let Component::Machine(m) = &component else {
+        panic!("Expected Machine component");
+    };
+    assert_eq!(m.invariants[0].label.as_deref(), Some("_0"));
+    assert_eq!(m.events[0].with[0].label.as_deref(), Some("_3"));
+    assert_eq!(m.events[0].actions[0].label.as_deref(), Some("_2"));
+
+    let printed = rossi::to_string(&component);
+    rossi::parse(&printed).unwrap_or_else(|e| panic!("must reparse: {e}\n{printed}"));
+}
+
+#[test]
 fn test_unlabeled_second_variant_survives_round_trip() {
     // A non-first variant without a label (accepted from foreign XML,
     // stored as `None`) must not vanish or corrupt the round-trip: the
