@@ -31,17 +31,17 @@ use eventb_lsp::lsp_types::Url;
 const OK_CTX: &str = "CONTEXT ok_ctx\nCONSTANTS\n    bound\nAXIOMS\n    @axm1 bound = 3\nEND\n";
 
 /// Finite (4 states), deadlock-free, invariant holds: an exhaustive OK.
-const OK_MACHINE: &str = "MACHINE ok_m\nSEES\n    ok_ctx\nVARIABLES\n    x\nINVARIANTS\n    @inv1 x ∈ 0‥bound\nEVENTS\n    EVENT INITIALISATION\n    THEN\n        x := 0\n    END\n\n    EVENT inc\n    WHERE\n        @grd1 x < bound\n    THEN\n        @act1 x := x + 1\n    END\n\n    EVENT reset\n    WHERE\n        @grd1 x = bound\n    THEN\n        @act1 x := 0\n    END\nEND\n";
+const OK_MACHINE: &str = "MACHINE ok_m\nSEES\n    ok_ctx\nVARIABLES\n    x\nINVARIANTS\n    @inv1 x ∈ 0‥bound\nEVENTS\n    EVENT INITIALISATION\n    THEN\n        @act1 x := 0\n    END\n\n    EVENT inc\n    WHERE\n        @grd1 x < bound\n    THEN\n        @act1 x := x + 1\n    END\n\n    EVENT reset\n    WHERE\n        @grd1 x = bound\n    THEN\n        @act1 x := 0\n    END\nEND\n";
 
 /// `inc` is always enabled, so `@inv2 x < 3` breaks after three steps.
-const VIOLATING_MACHINE: &str = "MACHINE viol_m\nVARIABLES\n    x\nINVARIANTS\n    @inv1 x ≥ 0\n    @inv2 x < 3\nEVENTS\n    EVENT INITIALISATION\n    THEN\n        x := 0\n    END\n\n    EVENT inc\n    THEN\n        x := x + 1\n    END\nEND\n";
+const VIOLATING_MACHINE: &str = "MACHINE viol_m\nVARIABLES\n    x\nINVARIANTS\n    @inv1 x ≥ 0\n    @inv2 x < 3\nEVENTS\n    EVENT INITIALISATION\n    THEN\n        @act1 x := 0\n    END\n\n    EVENT inc\n    THEN\n        @act1 x := x + 1\n    END\nEND\n";
 
 /// `step` guards on `x > 5` but `x` starts at 0: an immediate deadlock.
-const DEADLOCK_MACHINE: &str = "MACHINE dl_m\nVARIABLES\n    x\nINVARIANTS\n    @inv1 x ∈ ℕ\nEVENTS\n    EVENT INITIALISATION\n    THEN\n        x := 0\n    END\n\n    EVENT step\n    WHERE\n        @grd1 x > 5\n    THEN\n        @act1 x := x + 1\n    END\nEND\n";
+const DEADLOCK_MACHINE: &str = "MACHINE dl_m\nVARIABLES\n    x\nINVARIANTS\n    @inv1 x ∈ ℕ\nEVENTS\n    EVENT INITIALISATION\n    THEN\n        @act1 x := 0\n    END\n\n    EVENT step\n    WHERE\n        @grd1 x > 5\n    THEN\n        @act1 x := x + 1\n    END\nEND\n";
 
 /// The INITIALISATION invariant-preservation PO is plainly false
 /// (`x := 0` vs `x < 0`): the disprover must find the counterexample.
-const DISPROVABLE_MACHINE: &str = "MACHINE po_m\nVARIABLES\n    x\nINVARIANTS\n    @inv1 x < 0\nEVENTS\n    EVENT INITIALISATION\n    THEN\n        x := 0\n    END\nEND\n";
+const DISPROVABLE_MACHINE: &str = "MACHINE po_m\nVARIABLES\n    x\nINVARIANTS\n    @inv1 x < 0\nEVENTS\n    EVENT INITIALISATION\n    THEN\n        @act1 x := 0\n    END\nEND\n";
 
 /// The configured-or-PATH tool, verified runnable via `--version` (which
 /// deliberately skips the ProB extraction). `None` skips the test.

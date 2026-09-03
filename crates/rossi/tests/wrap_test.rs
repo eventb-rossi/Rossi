@@ -35,7 +35,7 @@ fn conjunction_chain_splits_all_or_nothing() {
 
 #[test]
 fn nested_operand_aligns_one_past_its_paren() {
-    let source = "MACHINE m\nEVENTS\nEVENT e WHERE\n@grd1 (x = aaaaaaaaaa or y = bbbbbbbbbb or z = c) & f(y) <= bound\nTHEN skip END\nEND\n";
+    let source = "MACHINE m\nEVENTS\nEVENT e WHERE\n@grd1 (x = aaaaaaaaaa or y = bbbbbbbbbb or z = c) & f(y) <= bound\nTHEN @act1 skip END\nEND\n";
     let output = format_checked(source, &wrapped(40));
     let expected = "\
       @grd1 (x = aaaaaaaaaa
@@ -189,8 +189,8 @@ fn exact_boundary_stays_flat() {
 // =========================================================================
 
 #[test]
-fn unlabelled_wrapped_invariant_stays_one_element() {
-    let source = "MACHINE m\nINVARIANTS\nfirstcondition : NAT & secondcondition : NAT & thirdcondition : NAT\nEND\n";
+fn a_wrapped_invariant_stays_one_element() {
+    let source = "MACHINE m\nINVARIANTS\n@inv1 firstcondition : NAT & secondcondition : NAT & thirdcondition : NAT\nEND\n";
     let output = format_checked(source, &wrapped(40));
     let rossi::Component::Machine(machine) = parse(&output).unwrap() else {
         panic!("expected machine");
@@ -198,7 +198,7 @@ fn unlabelled_wrapped_invariant_stays_one_element() {
     assert_eq!(
         machine.invariants.len(),
         1,
-        "a wrapped unlabelled invariant must reparse as ONE element:\n{output}"
+        "a wrapped invariant must reparse as ONE element:\n{output}"
     );
 }
 

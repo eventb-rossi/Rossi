@@ -103,7 +103,7 @@ pub fn wd_fixture_dir(prefix: &str) -> PathBuf {
 
 pub const ASCII_CONTEXT: &str = "CONTEXT c\nCONSTANTS\n    x\nAXIOMS\n    @axm1 x : NAT\nEND\n";
 
-pub const DUP_VARIABLE_MACHINE: &str = "MACHINE M\nVARIABLES\n    x x\nINVARIANTS\n    @inv1 x >= 0\nEVENTS\n    EVENT INITIALISATION\n    THEN\n        x := 0\n    END\nEND\n";
+pub const DUP_VARIABLE_MACHINE: &str = "MACHINE M\nVARIABLES\n    x x\nINVARIANTS\n    @inv1 x >= 0\nEVENTS\n    EVENT INITIALISATION\n    THEN\n        @act1 x := 0\n    END\nEND\n";
 
 pub const MINIMAL_BUILD_CONTEXT_XML: &str = "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n\
     <org.eventb.core.contextFile version=\"3\" \

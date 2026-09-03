@@ -574,7 +574,7 @@ mod tests {
         // A machine with an invariant yields at least one obligation row.
         std::fs::write(
             src.join("m.eventb"),
-            "MACHINE m\nVARIABLES\n    x\nINVARIANTS\n    @inv1 x ∈ ℕ\nEVENTS\n    EVENT INITIALISATION\n    THEN\n        x ≔ 0\n    END\nEND\n",
+            "MACHINE m\nVARIABLES\n    x\nINVARIANTS\n    @inv1 x ∈ ℕ\nEVENTS\n    EVENT INITIALISATION\n    THEN\n        @act1 x ≔ 0\n    END\nEND\n",
         )
         .unwrap();
         std::fs::write(src.join("m.bpr"), "proof-v1").unwrap();

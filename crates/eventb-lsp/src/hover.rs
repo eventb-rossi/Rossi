@@ -666,7 +666,7 @@ const KEYWORD_DOCS: &[KeywordDocEntry] = &[
     (
         KeywordId::Initialisation,
         "INITIALISATION",
-        "Special event that initializes machine variables.\n\n```eventb\nEVENT INITIALISATION\nTHEN\n    count := 0\nEND\n```",
+        "Special event that initializes machine variables.\n\n```eventb\nEVENT INITIALISATION\nTHEN\n    @act1 count := 0\nEND\n```",
     ),
     (
         KeywordId::Status,
@@ -707,7 +707,7 @@ const KEYWORD_DOCS: &[KeywordDocEntry] = &[
     (
         KeywordId::Skip,
         "skip",
-        "A no-op action that makes no state change.\n\n```eventb\nTHEN\n    skip\n```",
+        "A no-op action that makes no state change.\n\n```eventb\nTHEN\n    @act1 skip\n```",
     ),
     // Event status values
     (

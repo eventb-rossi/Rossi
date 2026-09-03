@@ -151,6 +151,22 @@ pub enum ParseError {
         span: Option<Span>,
     },
 
+    /// An item written with no label: a bare predicate in an `AXIOMS`,
+    /// `INVARIANTS`, `WHERE` or `WITH` clause, a bare action in a `THEN`
+    /// clause. Rodin's textual grammar makes the label mandatory and its
+    /// static checker reports a missing one as an error, so an unlabeled item
+    /// is text no other Event-B tool reads. Reported at the item, which is
+    /// where the label belongs. `expected` names what stands there ("a
+    /// predicate", "an action"). `line` and `column` are 1-indexed; `span`
+    /// covers the item.
+    #[error("{expected} needs a label")]
+    MissingLabel {
+        expected: &'static str,
+        line: usize,
+        column: usize,
+        span: Option<Span>,
+    },
+
     #[error("Empty expression")]
     EmptyExpression,
 
@@ -335,6 +351,7 @@ impl ParseError {
             ParseError::PestError { line, span, .. }
             | ParseError::EmptyClause { line, span, .. }
             | ParseError::MissingFormula { line, span, .. }
+            | ParseError::MissingLabel { line, span, .. }
             | ParseError::ClauseOutOfOrder { line, span, .. }
             | ParseError::ReservedWord { line, span, .. }
             | ParseError::IncompatibleOperators { line, span, .. }
@@ -388,6 +405,7 @@ impl ParseError {
             ParseError::PestError { line, column, .. }
             | ParseError::EmptyClause { line, column, .. }
             | ParseError::MissingFormula { line, column, .. }
+            | ParseError::MissingLabel { line, column, .. }
             | ParseError::ClauseOutOfOrder { line, column, .. }
             | ParseError::NestingTooDeep { line, column, .. }
             | ParseError::ReservedWord { line, column, .. }
@@ -416,6 +434,7 @@ impl ParseError {
             ParseError::PestError { span, .. }
             | ParseError::EmptyClause { span, .. }
             | ParseError::MissingFormula { span, .. }
+            | ParseError::MissingLabel { span, .. }
             | ParseError::ClauseOutOfOrder { span, .. }
             | ParseError::ReservedWord { span, .. }
             | ParseError::IncompatibleOperators { span, .. }

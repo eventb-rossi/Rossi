@@ -14,9 +14,9 @@ INVARIANTS
 EVENTS
     EVENT INITIALISATION
     THEN
-        waiting_tasks := TASKS
-        running_tasks := ∅
-        completed_tasks := ∅
+        @act1 waiting_tasks := TASKS
+        @act2 running_tasks := ∅
+        @act3 completed_tasks := ∅
     END
 
     EVENT schedule_task
@@ -29,8 +29,8 @@ EVENTS
         @grd3 task ∈ waiting_tasks
         @grd4 ∀t·t ∈ waiting_tasks ⇒ task_priority(task) ≥ task_priority(t)
     THEN
-        waiting_tasks := waiting_tasks ∖ {task}
-        running_tasks(processor) := task
+        @act1 waiting_tasks := waiting_tasks ∖ {task}
+        @act2 running_tasks(processor) := task
     END
 
     EVENT complete_task
@@ -39,8 +39,8 @@ EVENTS
     WHERE
         @grd1 processor ∈ dom(running_tasks)
     THEN
-        completed_tasks := completed_tasks ∪ {running_tasks(processor)}
-        running_tasks := {processor} ⩤ running_tasks
+        @act1 completed_tasks := completed_tasks ∪ {running_tasks(processor)}
+        @act2 running_tasks := {processor} ⩤ running_tasks
     END
 
     EVENT preempt_task
@@ -52,7 +52,7 @@ EVENTS
         @grd2 new_task ∈ waiting_tasks
         @grd3 task_priority(new_task) > task_priority(running_tasks(processor))
     THEN
-        waiting_tasks := (waiting_tasks ∖ {new_task}) ∪ {running_tasks(processor)}
-        running_tasks(processor) := new_task
+        @act1 waiting_tasks := (waiting_tasks ∖ {new_task}) ∪ {running_tasks(processor)}
+        @act2 running_tasks(processor) := new_task
     END
 END

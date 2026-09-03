@@ -289,8 +289,8 @@ fn test_abstract_machine_variable_references_include_concrete_usages_when_not_sh
 fn refines_target_references_resolve_to_the_abstract_event() {
     let abs_uri = make_uri("abstract.eventb");
     let con_uri = make_uri("concrete.eventb");
-    let abs = "MACHINE abstract\nVARIABLES\n    state\nEVENTS\n    EVENT step\n    THEN\n        state ≔ state\n    END\nEND";
-    let con = "MACHINE concrete\nREFINES abstract\nVARIABLES\n    state\nEVENTS\n    EVENT step extends step\n    THEN\n        state ≔ state\n    END\nEND";
+    let abs = "MACHINE abstract\nVARIABLES\n    state\nEVENTS\n    EVENT step\n    THEN\n        @act1 state ≔ state\n    END\nEND";
+    let con = "MACHINE concrete\nREFINES abstract\nVARIABLES\n    state\nEVENTS\n    EVENT step extends step\n    THEN\n        @act1 state ≔ state\n    END\nEND";
     let provider = make_reference_provider(&[(abs_uri.clone(), abs), (con_uri.clone(), con)]);
 
     // The `extends` target (second `step`, char 24) resolves to the abstract

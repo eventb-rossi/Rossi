@@ -3,7 +3,7 @@
 //! These tests verify that the parser can recover from syntax errors
 //! and produce partial ASTs with error information.
 
-use rossi::{Component, parse, parse_components_with_recovery, parse_with_recovery};
+use rossi::{Component, ParseError, parse, parse_components_with_recovery, parse_with_recovery};
 use test_case::test_case;
 
 /// Unwrap the recovered component as a context, failing the test otherwise.
@@ -427,9 +427,9 @@ fn recovery_preserves_event_header_metadata() {
 #[test]
 fn recovery_keeps_formula_keywords_inside_event_clauses() {
     for strict_source in [
-        "MACHINE m\nVARIABLES then x\nINVARIANTS @i x ∈ ℤ\nEVENTS EVENT e WHERE @g then = then THEN x := then END END\n",
-        "MACHINE m\nVARIABLES end x\nINVARIANTS @i x ∈ ℤ\nEVENTS EVENT e WHERE @g end = end THEN x := x END END\n",
-        "MACHINE m\nVARIABLES event x\nINVARIANTS @i x ∈ ℤ\nEVENTS EVENT e WHERE @g event = event THEN x := x END END\n",
+        "MACHINE m\nVARIABLES then x\nINVARIANTS @i x ∈ ℤ\nEVENTS EVENT e WHERE @g then = then THEN @a x := then END END\n",
+        "MACHINE m\nVARIABLES end x\nINVARIANTS @i x ∈ ℤ\nEVENTS EVENT e WHERE @g end = end THEN @a x := x END END\n",
+        "MACHINE m\nVARIABLES event x\nINVARIANTS @i x ∈ ℤ\nEVENTS EVENT e WHERE @g event = event THEN @a x := x END END\n",
     ] {
         let recovered_source = strict_source.replace("@i x ∈ ℤ", "@i x ∈");
         parse(strict_source).expect("strict source parses");
@@ -784,8 +784,6 @@ fn recovery_errors(result: &rossi::ParseResult<Component>) -> Vec<String> {
 // The undocumented `label: predicate` form must keep working, including
 // with a trailing colon comment.
 #[test_case(None, "axm1: c1 = 1 // note: colon label form", &[(Some("axm1"), false)] ; "colon_label_syntax_still_works")]
-// `c1 : S` is a membership predicate, not label `c1` + predicate `S`.
-#[test_case(Some("S"), "c1 : S", &[(None, false)] ; "bare_membership_line_not_mislabeled")]
 // `@axm1: P` is the eventb-to-txt label spelling: the strict parser strips
 // the trailing colon (label "axm1"), and recovery must agree.
 #[test_case(None, "@axm1: c1 = 1", &[(Some("axm1"), false)] ; "trailing_colon_label_matches_strict_parser")]
@@ -1204,12 +1202,27 @@ fn test_recovery_rejects_enumerated_sets_without_promoting_elements() {
 }
 
 #[test]
-fn test_recovery_label_less_predicates_are_not_lost() {
-    // Bare, label-less predicates (one per line) must still be recovered when
-    // another clause forces recovery: the label is optional in the grammar, so
-    // each line is a valid clause member. Label-anchored segmentation finds no
-    // `@`, so it must fall back to a per-line split rather than lump them into
-    // one segment the single-predicate parser would reject (dropping them all).
+fn test_recovery_does_not_read_ascii_membership_as_a_label() {
+    // `:` is the ASCII spelling of ∈, so `c1 : S` is a membership predicate
+    // with no label — never label `c1` with predicate `S`. The legacy
+    // `label: predicate` form must not claim it.
+    let source = "\n    CONTEXT issue24\n    SETS\n        S\n    CONSTANTS\n        c1\n        +\n    AXIOMS\n        c1 : S\n    END\n    ";
+
+    let result = parse_with_recovery(source);
+    let extra = recovery_errors(&result);
+    assert_eq!(extra.len(), 1, "the bare predicate fails, got {extra:?}");
+    assert!(
+        expect_context(&result).axioms.is_empty(),
+        "`c1` is not a label, so nothing recovers"
+    );
+}
+
+#[test]
+fn test_recovery_reports_each_label_less_predicate_on_its_own_line() {
+    // Label-less predicates are a parse error, one per item. Label-anchored
+    // segmentation finds no `@` here, so it must fall back to a per-line split:
+    // lumping the lines into one segment would report a single failure for the
+    // pair, and blame the wrong text for it.
     let source = r#"
 CONTEXT c
 SETS
@@ -1223,11 +1236,27 @@ END
     let result = parse_with_recovery(source);
     assert!(result.has_recovered(), "expected recovery with errors");
 
+    let extra = recovery_errors(&result);
+    assert_eq!(extra.len(), 2, "one failure per bare line, got {extra:?}");
+    // Both keep the strict parser's own error, so the editor can hang the
+    // insert-label fix off the rule code rather than a generic message.
+    assert!(
+        result
+            .errors
+            .iter()
+            .filter(|e| matches!(e, ParseError::MissingLabel { .. }))
+            .count()
+            == 2,
+        "both bare lines report a missing label, got {:?}",
+        result.errors
+    );
+
+    // The bare membership spelling is the reason the split matters: `1 ∈ ℕ` is
+    // a predicate with no label, never label `1` with predicate `∈ ℕ`.
     let ctx = expect_context(&result);
-    assert_eq!(
-        ctx.axioms.len(),
-        2,
-        "both label-less axioms must be recovered, got {:?}",
+    assert!(
+        ctx.axioms.is_empty(),
+        "an unlabeled axiom is not recovered, got {:?}",
         ctx.axioms
     );
 }
@@ -1287,10 +1316,11 @@ fn test_recovery_multiline_theorem_orderings_stay_whole() {
 
 #[test]
 fn test_recovery_mixed_labelled_and_bare_predicates() {
-    // A clause that mixes a leading bare predicate with labelled ones recovers
-    // each: the leading segment (clause keyword to first label) carries the bare
-    // predicate, and each label opens its own — possibly multi-line — segment.
-    // The one broken labelled predicate is the only reported failure.
+    // A clause that mixes a leading bare predicate with labelled ones splits
+    // into one segment per item: the leading segment (clause keyword to first
+    // label) carries the bare predicate, and each label opens its own —
+    // possibly multi-line — segment. Only `@axm1` recovers; the bare predicate
+    // and the broken `@axm2` are reported one apiece.
     let source = r#"
     CONTEXT c
     CONSTANTS
@@ -1308,18 +1338,18 @@ fn test_recovery_mixed_labelled_and_bare_predicates() {
 
     let ctx = expect_context(&result);
     let labels: Vec<Option<&str>> = ctx.axioms.iter().map(|a| a.label.as_deref()).collect();
-    assert_eq!(
-        labels,
-        [None, Some("axm1")],
-        "the bare predicate and @axm1 recover, @axm2 fails"
-    );
+    assert_eq!(labels, [Some("axm1")], "only @axm1 recovers");
 
     let extra = recovery_errors(&result);
-    assert_eq!(extra.len(), 1, "only @axm2 fails, got {extra:?}");
+    assert_eq!(
+        extra.len(),
+        2,
+        "the bare predicate and @axm2 each fail, got {extra:?}"
+    );
     assert!(
-        extra[0].contains("@axm2"),
-        "the failure names @axm2, got: {}",
-        extra[0]
+        extra[1].contains("@axm2"),
+        "the second failure names @axm2, got: {}",
+        extra[1]
     );
 }
 

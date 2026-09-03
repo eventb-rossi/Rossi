@@ -477,7 +477,7 @@ mod tests {
 
         // The INITIALISATION outline entry's selection range is the name token,
         // not the (0, 0) default it used to fall back to.
-        let source = "MACHINE m\nVARIABLES\n    v\nEVENTS\n    EVENT INITIALISATION\n    THEN\n        v := 0\n    END\nEND";
+        let source = "MACHINE m\nVARIABLES\n    v\nEVENTS\n    EVENT INITIALISATION\n    THEN\n        @act1 v := 0\n    END\nEND";
         let component = parse(source).unwrap();
         let symbols = extract_symbols(&component, source);
         let init = symbols[0]

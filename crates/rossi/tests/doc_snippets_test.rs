@@ -188,7 +188,7 @@ fn expand_placeholders(template: &str) -> String {
 /// Keyed on the snippet's trigger prefix; a new snippet with an unknown prefix
 /// fails the test with an explicit "add a wrapper" message.
 fn wrap_snippet(prefix: &str, body: &str) -> Option<String> {
-    const INIT: &str = "EVENT INITIALISATION\nBEGIN\nx := 0\nEND";
+    const INIT: &str = "EVENT INITIALISATION\nBEGIN\n@act1 x := 0\nEND";
     match prefix {
         "ctx" | "mch" => Some(body.to_string()),
         "evt" => Some(format!(
@@ -203,7 +203,7 @@ fn wrap_snippet(prefix: &str, body: &str) -> Option<String> {
             "MACHINE m\nVARIABLES x\nINVARIANTS\n{body}\nEVENTS\n{INIT}\nEND\n"
         )),
         "grd" => Some(format!(
-            "MACHINE m\nVARIABLES x\nEVENTS\n{INIT}\nEVENT e\nWHERE\n{body}\nTHEN\nx := 1\nEND\nEND\n"
+            "MACHINE m\nVARIABLES x\nEVENTS\n{INIT}\nEVENT e\nWHERE\n{body}\nTHEN\n@act1 x := 1\nEND\nEND\n"
         )),
         "act" | "actnd" | "actst" => Some(format!(
             "MACHINE m\nVARIABLES x\nEVENTS\n{INIT}\nEVENT e\nBEGIN\n{body}\nEND\nEND\n"

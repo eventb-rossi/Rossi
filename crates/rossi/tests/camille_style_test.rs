@@ -28,7 +28,7 @@ fn camille_prints_full_machine() {
                   EVENTS\n\
                   EVENT INITIALISATION THEN @act1 a := 0 END\n\
                   convergent EVENT ML_out REFINES ML_out ANY p q WHERE @grd1 p < a THEN @act1 a := p END\n\
-                  EVENT stop WHERE @grd1 a = 0 THEN skip END\n\
+                  EVENT stop WHERE @grd1 a = 0 THEN @act1 skip END\n\
                   END\n";
     let expected = "machine bridge_m1 refines bridge_m0 sees bridge_ctx c2\n\
                     \n\
@@ -58,7 +58,7 @@ fn camille_prints_full_machine() {
                     \x20\x20\x20\x20where\n\
                     \x20\x20\x20\x20\x20\x20@grd1 a = 0\n\
                     \x20\x20\x20\x20then\n\
-                    \x20\x20\x20\x20\x20\x20skip\n\
+                    \x20\x20\x20\x20\x20\x20@act1 skip\n\
                     \x20\x20end\n\
                     end\n";
     assert_eq!(format_checked(source, &camille()), expected);
@@ -105,18 +105,19 @@ fn camille_machine_without_events_has_no_trailing_gap() {
 fn camille_first_event_follows_events_keyword_directly() {
     // No INITIALISATION: no blank line between `events` and the first
     // event; one blank line between successive events (Camille's rule).
-    let source = "MACHINE m\nEVENTS\nEVENT e1 THEN skip END\nEVENT e2 THEN skip END\nEND\n";
+    let source =
+        "MACHINE m\nEVENTS\nEVENT e1 THEN @act1 skip END\nEVENT e2 THEN @act1 skip END\nEND\n";
     let expected = "machine m\n\
                     \n\
                     events\n\
                     \x20\x20event e1\n\
                     \x20\x20\x20\x20then\n\
-                    \x20\x20\x20\x20\x20\x20skip\n\
+                    \x20\x20\x20\x20\x20\x20@act1 skip\n\
                     \x20\x20end\n\
                     \n\
                     \x20\x20event e2\n\
                     \x20\x20\x20\x20then\n\
-                    \x20\x20\x20\x20\x20\x20skip\n\
+                    \x20\x20\x20\x20\x20\x20@act1 skip\n\
                     \x20\x20end\n\
                     end\n";
     assert_eq!(format_checked(source, &camille()), expected);
@@ -126,7 +127,7 @@ fn camille_first_event_follows_events_keyword_directly() {
 fn camille_prints_variants_first_inline() {
     let source = "MACHINE m\nVARIABLES x\nINVARIANTS\n@inv1 x : NAT\n\
                   VARIANT x @second x + 1\n\
-                  EVENTS\nconvergent EVENT e THEN skip END\nEND\n";
+                  EVENTS\nconvergent EVENT e THEN @act1 skip END\nEND\n";
     let output = format_checked(source, &camille());
     assert!(
         output.contains("\nvariant x\n\x20\x20@second x + 1\n"),
@@ -144,7 +145,7 @@ fn camille_prints_variants_first_inline() {
 #[test]
 fn camille_normalizes_when_begin_and_status() {
     let source = "MACHINE m\nEVENTS\n\
-                  EVENT e1 STATUS convergent WHEN @g1 1 = 1 BEGIN skip END\n\
+                  EVENT e1 STATUS convergent WHEN @g1 1 = 1 BEGIN @act1 skip END\n\
                   END\n";
     let output = format_checked(source, &camille());
     assert!(
@@ -157,7 +158,7 @@ fn camille_normalizes_when_begin_and_status() {
 
 #[test]
 fn camille_prints_extended_event_header() {
-    let source = "MACHINE m REFINES m0\nEVENTS\nEVENT e extends e THEN skip END\nEND\n";
+    let source = "MACHINE m REFINES m0\nEVENTS\nEVENT e extends e THEN @act1 skip END\nEND\n";
     let output = format_checked(source, &camille());
     assert!(
         output.contains("\x20\x20event e extends e\n"),
@@ -209,7 +210,7 @@ fn camille_middle_commented_list_item_splits_the_line() {
 
 #[test]
 fn camille_commented_parameter_hangs_in_any() {
-    let source = "MACHINE m\nEVENTS\nEVENT e\nANY\np // param p\nq\nWHERE\n@grd1 p < q\nTHEN\nskip\nEND\nEND\n";
+    let source = "MACHINE m\nEVENTS\nEVENT e\nANY\np // param p\nq\nWHERE\n@grd1 p < q\nTHEN\n@act1 skip\nEND\nEND\n";
     let output = format_checked(source, &camille());
     assert!(
         output.contains("\x20\x20\x20\x20any p // param p\n\x20\x20\x20\x20\x20\x20\x20\x20q\n"),
@@ -221,7 +222,7 @@ fn camille_commented_parameter_hangs_in_any() {
 fn camille_formatting_is_idempotent_with_comments() {
     let source = "// header\nMACHINE m REFINES m0 SEES c // trailing\n\
                   VARIABLES\nx // one\ny\nINVARIANTS\n@inv1 x : NAT // inv\n\
-                  EVENTS\nEVENT INITIALISATION THEN x := 0 y := 0 END\n\
+                  EVENTS\nEVENT INITIALISATION THEN @act1 x := 0 @act2 y := 0 END\n\
                   EVENT e // event note\nANY\np // param\nWHERE\n@g p > 0\nTHEN\n@a x := p\nEND\nEND\n";
     let printer = camille();
     let once = format_str(source, &printer).unwrap();
@@ -236,7 +237,7 @@ fn camille_formatting_is_idempotent_with_comments() {
 #[test]
 fn toggles_override_each_preset() {
     let source = "MACHINE m REFINES m0\nVARIABLES x y\nINVARIANTS\n@inv1 x : NAT\n\
-                  EVENTS\nEVENT e ANY p WHERE @g p > 0 THEN skip END\nEND\n";
+                  EVENTS\nEVENT e ANY p WHERE @g p > 0 THEN @act1 skip END\nEND\n";
 
     let mut upper_camille = camille();
     upper_camille.keyword_case = KeywordCase::Upper;

@@ -245,7 +245,7 @@ mod tests {
     fn event_parameter_at_position_scopes_to_the_enclosing_event() {
         // `p` is the ANY parameter of event `e` (lines 4..=11); `k` only appears
         // in the guard text and is not a parameter.
-        let src = "MACHINE m\nVARIABLES\n    v\nEVENTS\n  EVENT e\n  ANY\n    p\n  WHERE\n    p > k\n  THEN\n    v := 0\n  END\nEND";
+        let src = "MACHINE m\nVARIABLES\n    v\nEVENTS\n  EVENT e\n  ANY\n    p\n  WHERE\n    @grd1 p > k\n  THEN\n    @act1 v := 0\n  END\nEND";
         let masked = rossi::comments::mask_comments_chars(src);
         let machine = machine_of(src);
 
@@ -268,7 +268,7 @@ mod tests {
         // Two sibling events; a line in each must resolve to that event, and a
         // line outside any event must resolve to nothing — independent of any
         // parameter, since `enclosing_event` is containment only.
-        let src = "MACHINE m\nVARIABLES\n    v\nEVENTS\n  EVENT e1\n  ANY\n    p1\n  THEN\n    v := 0\n  END\n  EVENT e2\n  ANY\n    p2\n  THEN\n    v := 1\n  END\nEND";
+        let src = "MACHINE m\nVARIABLES\n    v\nEVENTS\n  EVENT e1\n  ANY\n    p1\n  THEN\n    @act1 v := 0\n  END\n  EVENT e2\n  ANY\n    p2\n  THEN\n    @act1 v := 1\n  END\nEND";
         let masked = rossi::comments::mask_comments_chars(src);
         let machine = machine_of(src);
 

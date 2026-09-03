@@ -227,7 +227,7 @@ INVARIANTS
 EVENTS
     EVENT INITIALISATION
     BEGIN
-        count := 0
+        @act1 count := 0
     END
 
     EVENT increment

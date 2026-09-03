@@ -340,7 +340,7 @@ END";
         // `q` is an ANY parameter; `k` only appears in the guard text and is not
         // declared anywhere, so it resolves to nothing.
         let uri = "file:///m.eventb";
-        let source = "MACHINE m\nVARIABLES\n    v\nEVENTS\n  EVENT e\n  ANY\n    q\n  WHERE\n    @grd1 q > k\n  THEN\n    v ≔ 0\n  END\nEND";
+        let source = "MACHINE m\nVARIABLES\n    v\nEVENTS\n  EVENT e\n  ANY\n    q\n  WHERE\n    @grd1 q > k\n  THEN\n    @act1 v ≔ 0\n  END\nEND";
         let provider = setup(&[(uri, source)]);
 
         // `q` (parameter) used in the guard resolves to its declaration (line 6).
@@ -368,7 +368,7 @@ END";
         // An event named `ent` is a substring of `EVENT`; resolution reads the
         // name span from the AST and lands on the name, never inside the keyword.
         let uri = "file:///m.eventb";
-        let source = "MACHINE m\nEVENTS\n    EVENT ent\n    THEN\n        skip\n    END\nEND";
+        let source = "MACHINE m\nEVENTS\n    EVENT ent\n    THEN\n        @act1 skip\n    END\nEND";
         let provider = setup(&[(uri, source)]);
 
         // after "    EVENT "
@@ -408,9 +408,9 @@ END";
         // resolves to the abstract machine's event declaration (the differing-
         // name refinement case, which must keep working).
         let abs_uri = "file:///abstract.eventb";
-        let abs = "MACHINE abstract_mch\nVARIABLES\n    state\nEVENTS\n    EVENT update\n    THEN\n        state ≔ state + 1\n    END\nEND";
+        let abs = "MACHINE abstract_mch\nVARIABLES\n    state\nEVENTS\n    EVENT update\n    THEN\n        @act1 state ≔ state + 1\n    END\nEND";
         let con_uri = "file:///concrete.eventb";
-        let con = "MACHINE concrete_mch\nREFINES\n    abstract_mch\nVARIABLES\n    state\nEVENTS\n    EVENT update_v2\n    REFINES update\n    THEN\n        state ≔ state + 1\n    END\nEND";
+        let con = "MACHINE concrete_mch\nREFINES\n    abstract_mch\nVARIABLES\n    state\nEVENTS\n    EVENT update_v2\n    REFINES update\n    THEN\n        @act1 state ≔ state + 1\n    END\nEND";
         let provider = setup(&[(abs_uri, abs), (con_uri, con)]);
 
         // `update` after "    EVENT "
@@ -420,7 +420,7 @@ END";
     // The abstract machine declaring `EVENT ML_in`, shared by the two same-name
     // refinement tests below (its event name span is `range(4, 10, 15)`).
     const ML_IN_ABS_URI: &str = "file:///abstract.eventb";
-    const ML_IN_ABS: &str = "MACHINE abstract_mch\nVARIABLES\n    state\nEVENTS\n    EVENT ML_in\n    THEN\n        state ≔ state\n    END\nEND";
+    const ML_IN_ABS: &str = "MACHINE abstract_mch\nVARIABLES\n    state\nEVENTS\n    EVENT ML_in\n    THEN\n        @act1 state ≔ state\n    END\nEND";
 
     #[test]
     fn refined_event_keeping_its_name_resolves_to_the_abstract_event() {
@@ -428,7 +428,7 @@ END";
         // own name. Clicking the *target* jumps to the abstract event; clicking
         // the event's *own* name stays on the local declaration.
         let con_uri = "file:///concrete.eventb";
-        let con = "MACHINE concrete_mch\nREFINES\n    abstract_mch\nVARIABLES\n    state\nEVENTS\n    EVENT ML_in extends ML_in\n    THEN\n        state ≔ state\n    END\nEND";
+        let con = "MACHINE concrete_mch\nREFINES\n    abstract_mch\nVARIABLES\n    state\nEVENTS\n    EVENT ML_in extends ML_in\n    THEN\n        @act1 state ≔ state\n    END\nEND";
         let provider = setup(&[(ML_IN_ABS_URI, ML_IN_ABS), (con_uri, con)]);
 
         // The `extends` target (second `ML_in`, char 24) → abstract event.
@@ -449,7 +449,7 @@ END";
     fn refined_event_keeping_its_name_via_body_refines_resolves_to_the_abstract_event() {
         // The same, through a body-level `REFINES` clause with the kept name.
         let con_uri = "file:///concrete.eventb";
-        let con = "MACHINE concrete_mch\nREFINES\n    abstract_mch\nVARIABLES\n    state\nEVENTS\n    EVENT ML_in\n    REFINES ML_in\n    THEN\n        state ≔ state\n    END\nEND";
+        let con = "MACHINE concrete_mch\nREFINES\n    abstract_mch\nVARIABLES\n    state\nEVENTS\n    EVENT ML_in\n    REFINES ML_in\n    THEN\n        @act1 state ≔ state\n    END\nEND";
         let provider = setup(&[(ML_IN_ABS_URI, ML_IN_ABS), (con_uri, con)]);
 
         // The `REFINES` target (`ML_in` at char 12) → abstract event.

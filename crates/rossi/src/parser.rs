@@ -885,6 +885,20 @@ fn missing_formula_error(
     }
 }
 
+/// The error for an item written with no label, located at the item.
+///
+/// `line_col` walks the input from its start, so the pest span is kept and
+/// resolved here, on the error path only.
+fn missing_label_error(span: pest::Span<'_>, expected: &'static str) -> ParseError {
+    let (line, column) = span.start_pos().line_col();
+    ParseError::MissingLabel {
+        expected,
+        line,
+        column,
+        span: Some(trimmed_span(span.start(), span.as_str())),
+    }
+}
+
 /// The error for an event clause written after one it must precede.
 ///
 /// `seen` is the clauses already read, in source order, so the first of them
@@ -1303,7 +1317,8 @@ fn parse_machine(pair: pest::iterators::Pair<Rule>) -> Result<Component, ParseEr
 fn parse_labeled_predicate(
     pair: pest::iterators::Pair<Rule>,
 ) -> Result<LabeledPredicate, ParseError> {
-    let span = Span::from_pest(pair.as_span());
+    let pest_span = pair.as_span();
+    let span = Span::from_pest(pest_span);
     let inner = pair.into_inner();
     let mut label_pair = None;
     let mut is_theorem = false;
@@ -1335,8 +1350,11 @@ fn parse_labeled_predicate(
     }
 
     let predicate = predicate.ok_or(ParseError::MissingPredicate)?;
+    let Some(label_pair) = label_pair else {
+        return Err(missing_label_error(pest_span, "a predicate"));
+    };
     Ok(LabeledPredicate {
-        label: label_pair.and_then(extract_label),
+        label: extract_label(label_pair),
         is_theorem,
         predicate,
         span: Some(span),
@@ -1768,7 +1786,8 @@ fn parse_action(pair: pest::iterators::Pair<Rule>) -> Result<ActionBody, ParseEr
 fn parse_labeled_action(pair: pest::iterators::Pair<Rule>) -> Result<LabeledAction, ParseError> {
     use crate::ast::LabeledAction;
 
-    let span = Span::from_pest(pair.as_span());
+    let pest_span = pair.as_span();
+    let span = Span::from_pest(pest_span);
     let inner = pair.into_inner();
     let mut label_pair = None;
     let mut action = None;
@@ -1796,8 +1815,11 @@ fn parse_labeled_action(pair: pest::iterators::Pair<Rule>) -> Result<LabeledActi
     }
 
     let action = action.ok_or(ParseError::MissingAction)?;
+    let Some(label_pair) = label_pair else {
+        return Err(missing_label_error(pest_span, "an action"));
+    };
     Ok(LabeledAction {
-        label: label_pair.and_then(extract_label),
+        label: extract_label(label_pair),
         action,
         span: Some(span),
         comment: None,
@@ -3763,6 +3785,19 @@ fn push_recovery_error(
             return;
         }
     }
+    // An item with no label is the same mistake the strict parser names, so it
+    // keeps its own error rather than becoming a generic recovery one: the
+    // editor matches its quick fix on the rule code.
+    if let ParseError::MissingLabel { expected, .. } = source {
+        let (line, column) = offset_to_line_col(text.original, abs_start);
+        errors.push(ParseError::MissingLabel {
+            expected,
+            line,
+            column,
+            span: Some(trimmed_span(abs_start, content)),
+        });
+        return;
+    }
     let abs_end = abs_start + content.len();
     let (err_line, err_col) = offset_to_line_col(text.original, abs_start);
     let subject = leading_label(content)
@@ -5651,12 +5686,12 @@ mod tests {
     #[test]
     fn initialisation_name_span_covers_the_keyword() {
         for source in [
-            "MACHINE m\nEVENTS\n    EVENT INITIALISATION\n    THEN\n        x := 0\n    END\nEND",
-            "machine m\nevents\n    event initialisation\n    then\n        x := 0\n    end\nend",
+            "MACHINE m\nEVENTS\n    EVENT INITIALISATION\n    THEN\n        @act1 x := 0\n    END\nEND",
+            "machine m\nevents\n    event initialisation\n    then\n        @act1 x := 0\n    end\nend",
             // An extended init carries two INITIALISATION tokens; the name span
             // must be the event's own header keyword, not the abstract event
             // named after `extends`.
-            "MACHINE m\nREFINES n\nEVENTS\n    EVENT INITIALISATION extends INITIALISATION\n    THEN\n        x := 0\n    END\nEND",
+            "MACHINE m\nREFINES n\nEVENTS\n    EVENT INITIALISATION extends INITIALISATION\n    THEN\n        @act1 x := 0\n    END\nEND",
         ] {
             let Component::Machine(machine) = parse(source).expect("parses") else {
                 panic!("expected a machine");
@@ -5754,15 +5789,15 @@ mod tests {
         // (source, expects_extended) — inline refines, inline extends, body REFINES.
         let cases = [
             (
-                "MACHINE m\nREFINES n\nEVENTS\n    EVENT e refines f\n    THEN\n        x := 0\n    END\nEND",
+                "MACHINE m\nREFINES n\nEVENTS\n    EVENT e refines f\n    THEN\n        @act1 x := 0\n    END\nEND",
                 false,
             ),
             (
-                "MACHINE m\nREFINES n\nEVENTS\n    EVENT e extends f\n    THEN\n        x := 0\n    END\nEND",
+                "MACHINE m\nREFINES n\nEVENTS\n    EVENT e extends f\n    THEN\n        @act1 x := 0\n    END\nEND",
                 true,
             ),
             (
-                "MACHINE m\nREFINES n\nEVENTS\n    EVENT e\n    REFINES f\n    THEN\n        x := 0\n    END\nEND",
+                "MACHINE m\nREFINES n\nEVENTS\n    EVENT e\n    REFINES f\n    THEN\n        @act1 x := 0\n    END\nEND",
                 false,
             ),
         ];
@@ -5781,7 +5816,7 @@ mod tests {
 
         // Same name in source: the target span is the second occurrence, distinct
         // from the event's own name span — the discriminator issue #84 needs.
-        let source = "MACHINE m\nREFINES n\nEVENTS\n    EVENT ML_in extends ML_in\n    THEN\n        x := 0\n    END\nEND";
+        let source = "MACHINE m\nREFINES n\nEVENTS\n    EVENT ML_in extends ML_in\n    THEN\n        @act1 x := 0\n    END\nEND";
         let Component::Machine(machine) = parse(source).expect("parses") else {
             panic!("expected a machine");
         };

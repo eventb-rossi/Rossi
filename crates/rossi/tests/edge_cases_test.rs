@@ -26,12 +26,12 @@ fn test_becomes_in(op: &str) {
     EVENTS
         EVENT INITIALISATION
         THEN
-            x := 0
+            @act1 x := 0
         END
 
         EVENT choose
         THEN
-            x {op} {{1, 2, 3}}
+            @act1 x {op} {{1, 2, 3}}
         END
     END
     "#
@@ -70,12 +70,12 @@ fn test_becomes_such_that() {
     EVENTS
         EVENT INITIALISATION
         THEN
-            x := 0
+            @act1 x := 0
         END
 
         EVENT pick
         THEN
-            x :| x > 0
+            @act1 x :| x > 0
         END
     END
     "#;
@@ -197,12 +197,12 @@ fn test_forward_composition_parenthesized_in_action() {
     EVENTS
         EVENT INITIALISATION
         THEN
-            x := 0
+            @act1 x := 0
         END
 
         EVENT apply
         THEN
-            x := (f ; g)
+            @act1 x := (f ; g)
         END
     END
     "#;
@@ -320,7 +320,7 @@ fn test_anticipated_event() {
     EVENTS
         EVENT INITIALISATION
         THEN
-            x := 10
+            @act1 x := 10
         END
 
         EVENT step
@@ -328,7 +328,7 @@ fn test_anticipated_event() {
         WHERE
             @grd1 x > 0
         THEN
-            x := x - 1
+            @act1 x := x - 1
         END
     END
     "#;
@@ -739,10 +739,6 @@ fn context_theorems_paren_predicate_after_axioms_parses() {
     // bare parenthesized predicate, following an `AXIOMS` section. Before the
     // `!context_section_kw` guard, the AXIOMS `(labeled_predicate)*` swallowed
     // the `THEOREMS` keyword + `(…)` and failed at `END`.
-    //
-    // Asserts parse only (not byte-stable round-trip): printing an *unlabeled*
-    // theorem is a separate, orthogonal limitation and is not what this guard
-    // addresses.
     let source = r#"CONTEXT c
 SETS
     S
@@ -751,7 +747,7 @@ CONSTANTS
 AXIOMS
     @axm1 x ∈ S
 THEOREMS
-    (x ∈ S)
+    @thm1 (x ∈ S)
 END
 "#;
     parse(source).expect("AXIOMS list must not swallow the following THEOREMS section");

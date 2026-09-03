@@ -41,14 +41,14 @@ fn test_counter_machine() {
     EVENTS
         EVENT INITIALISATION
         THEN
-            count := 0
+            @act1 count := 0
         END
 
         EVENT increment
         WHERE
             @grd1 count < 100
         THEN
-            count := count + 1
+            @act1 count := count + 1
         END
     END
     "#;
@@ -109,7 +109,7 @@ fn test_event_with_parameters() {
     EVENTS
         EVENT INITIALISATION
         THEN
-            x := 0
+            @act1 x := 0
         END
 
         EVENT update
@@ -118,7 +118,7 @@ fn test_event_with_parameters() {
         WHERE
             @grd1 val > 0
         THEN
-            x := val
+            @act1 x := val
         END
     END
     "#;
@@ -165,7 +165,7 @@ fn test_event_with_clause() {
     EVENTS
         EVENT INITIALISATION
         THEN
-            x := 0
+            @act1 x := 0
         END
 
         EVENT set_value
@@ -178,7 +178,7 @@ fn test_event_with_clause() {
         WITH
             @abs_val abs_val = val
         THEN
-            x := val
+            @act1 x := val
         END
     END
     "#;
@@ -206,7 +206,7 @@ fn test_event_witness_clause() {
     EVENTS
         EVENT INITIALISATION
         THEN
-            x := 0
+            @act1 x := 0
         END
 
         EVENT update
@@ -219,7 +219,7 @@ fn test_event_witness_clause() {
         WITNESS
             @abs_param val > 0
         THEN
-            x := val
+            @act1 x := val
         END
     END
     "#;
@@ -247,7 +247,7 @@ fn test_multiple_with_bindings() {
     EVENTS
         EVENT INITIALISATION
         THEN
-            x := 0
+            @act1 x := 0
         END
 
         EVENT update
@@ -262,7 +262,7 @@ fn test_multiple_with_bindings() {
             @abs_a abs_a = a
             @abs_b abs_b = b
         THEN
-            x := a
+            @act1 x := a
         END
     END
     "#;
@@ -291,7 +291,7 @@ fn test_variant_clause_simple_identifier() {
     EVENTS
         EVENT INITIALISATION
         THEN
-            n := 10
+            @act1 n := 10
         END
 
         EVENT decrement
@@ -299,7 +299,7 @@ fn test_variant_clause_simple_identifier() {
         WHERE
             @grd1 n > 0
         THEN
-            n := n - 1
+            @act1 n := n - 1
         END
     END
     "#;
@@ -326,8 +326,8 @@ fn test_variant_clause_arithmetic_expression() {
     EVENTS
         EVENT INITIALISATION
         THEN
-            x := 5
-            y := 5
+            @act1 x := 5
+            @act2 y := 5
         END
     END
     "#;
@@ -362,8 +362,8 @@ fn test_variant_clause_labeled_items() {
     EVENTS
         EVENT INITIALISATION
         THEN
-            m := 5
-            k := 0
+            @act1 m := 5
+            @act2 k := 0
         END
     END
     "#;
@@ -374,40 +374,6 @@ fn test_variant_clause_labeled_items() {
     assert!(
         matches!(m.variants[0].expression.kind(), ExpressionKind::FreeIdentifier(n) if n == "k")
     );
-}
-
-// ============================================================================
-// Mixed labeled/unlabeled actions test
-// ============================================================================
-
-#[test]
-fn test_mixed_labeled_unlabeled_actions() {
-    let source = r#"
-    MACHINE test
-    VARIABLES
-        x
-    EVENTS
-        EVENT INITIALISATION
-        THEN
-            x := 0
-        END
-
-        EVENT update
-        THEN
-            @act1 x := x + 1
-            x := x + 2
-            @act3 x := x + 3
-        END
-    END
-    "#;
-
-    let m = common::parse_machine(source);
-    assert_eq!(m.events.len(), 1);
-    let event = &m.events[0];
-    assert_eq!(event.actions.len(), 3);
-    assert_eq!(event.actions[0].label, Some("act1".to_string()));
-    assert_eq!(event.actions[1].label, None);
-    assert_eq!(event.actions[2].label, Some("act3".to_string()));
 }
 
 // ============================================================================
@@ -467,12 +433,12 @@ fn test_multiple_parallel_assignment() {
     EVENTS
         EVENT INITIALISATION
         THEN
-            x, y := 0, 0
+            @act1 x, y := 0, 0
         END
 
         EVENT swap
         THEN
-            x, y := y, x
+            @act1 x, y := y, x
         END
     END
     "#;
@@ -861,7 +827,7 @@ fn test_machine_theorems_between_invariants_and_variant() {
     EVENTS
         EVENT INITIALISATION
         THEN
-            x := 1
+            @act1 x := 1
         END
     END
     "#;
@@ -922,7 +888,7 @@ fn test_machine_rejects_clause_after_events() {
     EVENTS
         EVENT INITIALISATION
         THEN
-            x := 0
+            @act1 x := 0
         END
     VARIABLES
         x
@@ -966,11 +932,11 @@ INVARIANTS
 EVENTS
     EVENT INITIALISATION
     THEN
-        x := 0
+        @act1 x := 0
     END
     EVNT foo
     THEN
-        x := 1
+        @act1 x := 1
     END
 END
 ";
@@ -1190,7 +1156,7 @@ fn test_machine_full_valid_order() {
     EVENTS
         EVENT INITIALISATION
         THEN
-            x := 0
+            @act1 x := 0
         END
     END
     "#;
@@ -1247,7 +1213,7 @@ fn test_label_colon_in_event_guard() {
         WHERE
             @grd1: 1 = 1
         THEN
-            x := 0
+            @act1 x := 0
         END
     END
     "#;
@@ -1401,19 +1367,19 @@ fn test_event_refines_multiple_targets() {
     EVENTS
         EVENT INITIALISATION
         THEN
-            x := 0
+            @act1 x := 0
         END
 
         EVENT setBoth
         REFINES
             setHeight setWidth
         THEN
-            x := 17
+            @act1 x := 17
         END
 
         EVENT alt refines a b
         THEN
-            x := 1
+            @act1 x := 1
         END
     END
     "#;

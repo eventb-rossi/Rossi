@@ -503,10 +503,9 @@ fn arb_carrier_set() -> impl Strategy<Value = NamedElement> {
     prop_oneof![Just("SS"), Just("TT"), Just("UU")].prop_map(|name| NamedElement::new(name.into()))
 }
 
-/// Generate a label from a fixed pool. Always returns `Some(label)` to avoid
-/// a known grammar ambiguity in ASCII mode where unlabeled predicates starting
-/// with keyword-like identifiers followed by `:` (the `In` operator) are
-/// misinterpreted as labels.
+/// Generate a label from a fixed pool. Always returns `Some(label)`: the
+/// grammar requires one on every predicate and action, so a `None` here would
+/// print text the parser refuses to read back.
 fn arb_label() -> impl Strategy<Value = Option<String>> {
     prop_oneof![
         Just(Some("axm1".into())),

@@ -93,7 +93,7 @@ VARIANT
 EVENTS
     EVENT INITIALISATION
     THEN
-        x := 10
+        @act1 x := 10
     END
 
     EVENT decrement
@@ -101,7 +101,7 @@ EVENTS
     WHERE
         @grd1 x > 0
     THEN
-        x := x - 1
+        @act1 x := x - 1
     END
 END
 "#;
@@ -709,7 +709,7 @@ VARIABLES
 EVENTS
     EVENT INITIALISATION
     THEN
-        x := 0
+        @act1 x := 0
     END
 
     EVENT update
@@ -720,7 +720,7 @@ EVENTS
     WITH
         @abs_x abs_x = x
     THEN
-        x := x + 1
+        @act1 x := x + 1
     END
 END
 "#,
@@ -731,10 +731,9 @@ END
 
 // Oftype (⦂)
 #[test_case("MACHINE test\nVARIABLES\n    x\nINVARIANTS\n    @inv1 x \u{2208} \u{2115} \u{2982} \u{2124}\nEND\n" ; "oftype")]
-// Unlabeled typed-forall axiom: arb_label deliberately never generates
-// unlabeled predicates, and ASCII mode is exactly the grammar ambiguity the
-// property avoids, so both modes stay pinned here.
-#[test_case("CONTEXT test\nAXIOMS\n    \u{2200}x\u{2982}\u{2124}\u{00B7}x > 0\nEND\n" ; "typed_forall")]
+// Typed-forall axiom: `arb_label` generates no unlabeled predicate and the
+// property test skips ASCII mode, so both modes stay pinned here.
+#[test_case("CONTEXT test\nAXIOMS\n    @axm1 \u{2200}x\u{2982}\u{2124}\u{00B7}x > 0\nEND\n" ; "typed_forall")]
 fn test_roundtrip_both_modes(source: &str) {
     common::assert_roundtrip(source);
     common::assert_roundtrip_ascii(source);

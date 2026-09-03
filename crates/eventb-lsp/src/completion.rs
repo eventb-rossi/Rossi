@@ -1234,8 +1234,8 @@ mod tests {
     fn test_completion_refined_variables() {
         use crate::lsp_types::Url;
 
-        let abstract_source = "MACHINE abstract_mch\nVARIABLES\n    abstract_state\nEVENTS\n    EVENT INITIALISATION\n    THEN\n        abstract_state := 0\n    END\nEND";
-        let concrete_source = "MACHINE concrete_mch\nREFINES\n    abstract_mch\nVARIABLES\n    concrete_state\nEVENTS\n    EVENT INITIALISATION\n    THEN\n        concrete_state := 0\n    END\nEND";
+        let abstract_source = "MACHINE abstract_mch\nVARIABLES\n    abstract_state\nEVENTS\n    EVENT INITIALISATION\n    THEN\n        @act1 abstract_state := 0\n    END\nEND";
+        let concrete_source = "MACHINE concrete_mch\nREFINES\n    abstract_mch\nVARIABLES\n    concrete_state\nEVENTS\n    EVENT INITIALISATION\n    THEN\n        @act1 concrete_state := 0\n    END\nEND";
 
         let crm = Arc::new(CrossReferenceManager::new());
         let dm = Arc::new(DocumentManager::new());
@@ -1538,7 +1538,7 @@ mod tests {
             "MACHINE m\nEVENTS\n    EVENT e\n        |STATUS ordinary\n    END\nEND",
         );
         let unlabelled_action = complete_labels_at_marker(
-            "MACHINE m\nEVENTS\n    EVENT e\n    THEN\n        STATUS := |\n    END\nEND",
+            "MACHINE m\nEVENTS\n    EVENT e\n    THEN\n        @act1 STATUS := |\n    END\nEND",
         );
         for labels in [&parameter, &before_status, &unlabelled_action] {
             for value in ["ordinary", "convergent", "anticipated"] {
@@ -1611,9 +1611,9 @@ mod tests {
     /// Build a provider whose workspace holds an abstract machine, a context,
     /// and the current machine `concrete_mch`.
     fn provider_with_workspace() -> CompletionProvider {
-        let abstract_source = "MACHINE abstract_mch\nVARIABLES\n    s\nEVENTS\n    EVENT INITIALISATION\n    THEN\n        s := 0\n    END\nEND";
+        let abstract_source = "MACHINE abstract_mch\nVARIABLES\n    s\nEVENTS\n    EVENT INITIALISATION\n    THEN\n        @act1 s := 0\n    END\nEND";
         let ctx_source = "CONTEXT ctx0\nCONSTANTS\n    c\nAXIOMS\n    @a1 c = 0\nEND";
-        let concrete_source = "MACHINE concrete_mch\nREFINES\n    abstract_mch\nVARIABLES\n    t\nEVENTS\n    EVENT INITIALISATION\n    THEN\n        t := 0\n    END\nEND";
+        let concrete_source = "MACHINE concrete_mch\nREFINES\n    abstract_mch\nVARIABLES\n    t\nEVENTS\n    EVENT INITIALISATION\n    THEN\n        @act1 t := 0\n    END\nEND";
 
         let crm = Arc::new(CrossReferenceManager::new());
         crm.update_component("file:///abstract_mch.eventb".to_string(), abstract_source);
@@ -1656,7 +1656,7 @@ mod tests {
         let crm = Arc::new(CrossReferenceManager::new());
         crm.update_component(
             "file:///abstract-mch.eventb".to_string(),
-            "MACHINE abstract-mch\nVARIABLES\n    s\nEVENTS\n    EVENT INITIALISATION\n    THEN\n        s := 0\n    END\nEND",
+            "MACHINE abstract-mch\nVARIABLES\n    s\nEVENTS\n    EVENT INITIALISATION\n    THEN\n        @act1 s := 0\n    END\nEND",
         );
         let mut provider = CompletionProvider::new();
         provider.set_cross_reference_manager(crm);

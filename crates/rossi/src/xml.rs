@@ -2540,12 +2540,12 @@ mod tests {
         EVENTS
             EVENT INITIALISATION
             THEN
-                count := 0
+                @act1 count := 0
             END
 
             EVENT increment
             THEN
-                count := count + 1
+                @act1 count := count + 1
             END
         END
         "#;

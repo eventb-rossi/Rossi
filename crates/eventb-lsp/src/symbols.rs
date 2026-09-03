@@ -624,7 +624,7 @@ mod tests {
         let sources = [
             (
                 "file:///abstract.eventb",
-                "MACHINE abstract\nVARIABLES\n    state\nEVENTS\n    EVENT step\n    THEN\n        state ≔ state\n    END\nEND",
+                "MACHINE abstract\nVARIABLES\n    state\nEVENTS\n    EVENT step\n    THEN\n        @act1 state ≔ state\n    END\nEND",
             ),
             ("file:///parent.eventb", "CONTEXT parent\nEND"),
             (
@@ -636,7 +636,7 @@ mod tests {
             manager.update_component(uri.to_string(), source);
             documents.open(Url::parse(uri).unwrap(), 1, source.to_string());
         }
-        let concrete = "MACHINE concrete\nREFINES\n    abstract\nSEES\n    seen\nEVENTS\n    EVENT step extends step\n    THEN\n        skip\n    END\nEND";
+        let concrete = "MACHINE concrete\nREFINES\n    abstract\nSEES\n    seen\nEVENTS\n    EVENT step extends step\n    THEN\n        @act1 skip\n    END\nEND";
         let loader = ComponentLoader::new(&manager, Some(&documents));
         let mut environments = ResolvedEnvironments::new();
 

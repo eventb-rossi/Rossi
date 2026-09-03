@@ -580,6 +580,12 @@ standalone_action = {
   | identifier ~ (comma ~ identifier)* ~ op_becomes_such ~ predicate           // Non-deterministic assignment (becomes such that)
 }
 
+// A label is mandatory, as it is in Rodin's textual grammar (Camille's
+// `action = [label]:P.label [action]:formula`) and in its static checker,
+// which reports a missing label as an error. The bare `action` arm is an error
+// production in the sense of `missing_formula` below: it consumes the item so
+// the rest of the clause still parses, and the AST builder reports the missing
+// label at the action.
 labeled_action = {
     label ~ (action | missing_formula)
   | action
@@ -658,10 +664,12 @@ empty_clause = { &section_kw }
 // opens the next section, so that is where its formula is missing.
 missing_formula = { &(label | section_kw | EOI) }
 
-// Accepts both orderings: "@label theorem pred" and "theorem @label pred"
-// as well as "@label pred", "theorem pred", and bare "pred".
+// Accepts both orderings: "@label theorem pred" and "theorem @label pred",
+// as well as "@label pred".
 // A label commits the item: once one is written a formula must follow, so a
 // missing one is reported at the label instead of swallowing the next keyword.
+// The bare `predicate` arm is the error production for the opposite mistake,
+// an item with no label at all; see `labeled_action` above.
 labeled_predicate = {
     (kw_theorem ~ label | label ~ kw_theorem?) ~ (predicate | missing_formula)
   | predicate

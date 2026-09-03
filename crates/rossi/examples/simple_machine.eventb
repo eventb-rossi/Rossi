@@ -10,8 +10,8 @@ INVARIANTS
 EVENTS
     EVENT INITIALISATION
     THEN
-        active_persons := {}
-        stored_items := {}
+        @act1 active_persons := {}
+        @act2 stored_items := {}
     END
 
     EVENT add_person
@@ -22,7 +22,7 @@ EVENTS
         @grd2 person /: active_persons
         @grd3 card(active_persons) < person_limit
     THEN
-        active_persons := active_persons \/ {person}
+        @act1 active_persons := active_persons \/ {person}
     END
 
     EVENT add_item
@@ -32,7 +32,7 @@ EVENTS
         @grd1 item : ITEMS
         @grd2 item /: stored_items
     THEN
-        stored_items := stored_items \/ {item}
+        @act1 stored_items := stored_items \/ {item}
     END
 
     EVENT remove_person
@@ -41,6 +41,6 @@ EVENTS
     WHERE
         @grd1 person : active_persons
     THEN
-        active_persons := active_persons \ {person}
+        @act1 active_persons := active_persons \ {person}
     END
 END
