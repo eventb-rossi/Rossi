@@ -9,13 +9,14 @@ use crate::Severity;
 
 /// Validation rule identifiers exposed in `Diagnostic.rule_id`.
 ///
-/// Codes use the stable `EBnnn` scheme (`"EB001"`..`"EB031"`); gaps are
+/// Codes use the stable `EBnnn` scheme (`"EB001"`..`"EB032"`); gaps are
 /// rules not yet implemented in rossi (EB020 unknown
 /// type) or removed as valueless (EB013 dead
 /// constant — every hit was already an EB006 typing Error). EB023, EB024,
 /// EB028 and EB031 are rossi-only extensions; EB025 is a refinement
-/// static-check emitted by `crate::build`; EB029 and EB030 are structural parse errors
-/// raised by the Camille grammar (`rossi::ParseError`), not by a check.
+/// static-check emitted by `crate::build`; EB029, EB030 and EB032 are
+/// structural parse errors raised by the Camille grammar
+/// (`rossi::ParseError`), not by a check.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum RuleId {
     /// EB001 — XML parse error (corrupt Rodin archive, malformed `.buc`/`.bum`).
@@ -96,10 +97,12 @@ pub enum RuleId {
     /// that Rodin's math lexer accepts but stock Camille cannot read.
     /// (rossi-only.)
     NonPortableWhitespace,
+    /// EB032 — A predicate or action is written with no `@label`.
+    MissingLabel,
 }
 
 impl RuleId {
-    /// Stable string code (`"EB001"`..`"EB031"`).
+    /// Stable string code (`"EB001"`..`"EB032"`).
     #[must_use]
     pub fn code(self) -> &'static str {
         match self {
@@ -132,6 +135,7 @@ impl RuleId {
             RuleId::EmptyClause => "EB029",
             RuleId::ClauseOutOfOrder => "EB030",
             RuleId::NonPortableWhitespace => "EB031",
+            RuleId::MissingLabel => "EB032",
         }
     }
 
@@ -168,6 +172,7 @@ impl RuleId {
             RuleId::EmptyClause => "Empty clause or label",
             RuleId::ClauseOutOfOrder => "Event clause out of order",
             RuleId::NonPortableWhitespace => "Non-portable whitespace",
+            RuleId::MissingLabel => "Missing label",
         }
     }
 
@@ -258,6 +263,9 @@ impl RuleId {
             RuleId::NonPortableWhitespace => {
                 "Two names in a structural position (a component header, or an `EXTENDS` / `SETS` / `CONSTANTS` / `REFINES` / `SEES` / `VARIABLES` / `ANY` list) are separated by a Unicode space outside Camille's `layout_char` set. Rodin's math lexer treats these as whitespace and so does rossi, but stock Camille answers \"Unknown token\" and cannot open the file, so the model does not round-trip through Rodin's text editor. Run `rossi fmt -i` to rewrite the separators. The same code points inside a formula are folded into the formula text and handed to Rodin, so they are portable there and are not reported."
             }
+            RuleId::MissingLabel => {
+                "An axiom, invariant, guard, witness or action is written with no `@label`. Rodin's textual grammar requires one on every item and its static checker reports a missing one as an error, so the model does not round-trip through the toolchain. Write a label before the formula; only the first `VARIANT` item may go without."
+            }
         }
     }
 
@@ -284,6 +292,7 @@ impl RuleId {
             | RuleId::EventMergeMismatch
             | RuleId::EmptyClause
             | RuleId::ClauseOutOfOrder
+            | RuleId::MissingLabel
             | RuleId::DuplicateComponent => Severity::Error,
             RuleId::WellDefinedness => Severity::Info,
             RuleId::DeadVariable
@@ -312,6 +321,7 @@ impl RuleId {
                 Some(RuleId::EmptyClause)
             }
             rossi::ParseError::ClauseOutOfOrder { .. } => Some(RuleId::ClauseOutOfOrder),
+            rossi::ParseError::MissingLabel { .. } => Some(RuleId::MissingLabel),
             rossi::ParseError::AssignmentInPredicate { .. } => Some(RuleId::AssignmentInPredicate),
             _ => None,
         }
@@ -351,6 +361,7 @@ impl RuleId {
             RuleId::EmptyClause,
             RuleId::ClauseOutOfOrder,
             RuleId::NonPortableWhitespace,
+            RuleId::MissingLabel,
         ]
     }
 }
@@ -395,6 +406,7 @@ mod tests {
         assert_eq!(RuleId::EmptyClause.code(), "EB029");
         assert_eq!(RuleId::ClauseOutOfOrder.code(), "EB030");
         assert_eq!(RuleId::NonPortableWhitespace.code(), "EB031");
+        assert_eq!(RuleId::MissingLabel.code(), "EB032");
     }
 
     /// `all()` is a hand-maintained array with no exhaustiveness check, unlike
@@ -406,8 +418,8 @@ mod tests {
     /// order also subsumes the uniqueness and length checks.
     #[test]
     fn all_lists_every_rule() {
-        // `EB001`..`EB031` minus the two documented gaps (EB013, EB020).
-        let expected: Vec<String> = (1..=31)
+        // `EB001`..`EB032` minus the two documented gaps (EB013, EB020).
+        let expected: Vec<String> = (1..=32)
             .filter(|n| !matches!(n, 13 | 20))
             .map(|n| format!("EB{n:03}"))
             .collect();
