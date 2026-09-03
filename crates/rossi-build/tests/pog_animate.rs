@@ -146,8 +146,8 @@ fn check_one(
         Err(common::WaitError::Timeout) => return Err(Skip("timeout".into())),
         Err(common::WaitError::Io(e)) => return Err(Skip(format!("wait: {e}"))),
     };
-    // A nonzero exit just means obligations are open — expected for
-    // fresh (unattempted) statuses; the JSON is still complete.
+    // The exit code is not read: open obligations exit 2 — expected for
+    // fresh (unattempted) statuses — and the JSON is complete either way.
     let json: serde_json::Value = serde_json::from_str(&stdout).map_err(|e| {
         Fail(format!(
             "animator produced no JSON ({e}); stderr: {}",

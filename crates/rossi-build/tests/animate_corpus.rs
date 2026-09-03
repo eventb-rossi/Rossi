@@ -4,10 +4,10 @@
 //! `incomplete` / `load_error` / `timeout`) against the reference
 //! `animate_results.tsv`.
 //!
-//! Requires `eventb-animate` v6.2+ and mirrors the corpus's own recording
+//! Requires `eventb-animate` v7.0+ and mirrors the corpus's own recording
 //! procedure (`scripts/animate-all.sh` there): a bounded consistency check
 //! (`--time-limit`, default 120 s) with the outcome classified from the
-//! format-3 JSON report (`--json -`), plus an outer watchdog 15 s past the
+//! format-4 JSON report (`--json -`), plus an outer watchdog 15 s past the
 //! internal limit as a process-failure fallback.
 //!
 //! `#[ignore]` by default: the corpus and animate executable live outside the
@@ -286,10 +286,15 @@ fn is_tolerated_drift(expected: &str, actual: &str) -> bool {
     is_checked_verdict(expected) && is_checked_verdict(actual)
 }
 
-/// Classify a finished run from its format-3 JSON report, mirroring the
+/// Classify a finished run from its format-4 JSON report, mirroring the
 /// corpus recording script (`scripts/animate-all.sh`) so the regenerated
 /// archives are judged by exactly the rules the reference was recorded
 /// under. A run that produced no valid report is a load error.
+///
+/// The exit code is deliberately not read here, even though 7.0 now names
+/// the failure kind in it: these outcomes are diffed against the reference
+/// TSV, so they must keep being derived the way the script that recorded it
+/// derives them.
 fn classify(stdout: &str, stderr: &str) -> Outcome {
     let Ok(report) = serde_json::from_str::<serde_json::Value>(stdout) else {
         let combined = format!("{stdout}\n{stderr}");
@@ -298,7 +303,7 @@ fn classify(stdout: &str, stderr: &str) -> Outcome {
             log_hint(&combined)
         ));
     };
-    let valid = report["formatVersion"] == 3
+    let valid = report["formatVersion"] == 4
         && report["tool"] == "eventb-animate"
         && report["command"] == "check"
         && report["completion"].is_object();

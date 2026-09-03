@@ -2,7 +2,7 @@
 //! `eventb-animate` binary: in-memory sources → closure → static check →
 //! temp Rodin project → tool run → classified verdict + findings.
 //!
-//! `#[ignore]` by default: they need eventb-animate 6.x (and a JVM)
+//! `#[ignore]` by default: they need eventb-animate 7.x (and a JVM)
 //! installed. Run locally:
 //!
 //!   EVENTB_ANIMATE=<path> cargo test -p eventb-lsp --test animate_tool_test -- --ignored --nocapture --test-threads=1
