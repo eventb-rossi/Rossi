@@ -498,6 +498,73 @@ impl DependencyGraph {
         Ok(())
     }
 
+    // --- Topological order over every edge kind (merge) ---
+
+    /// Topologically order every component for one merged document,
+    /// dependencies first.
+    ///
+    /// Unlike [`Self::topological_order`], this walks all three edge kinds at
+    /// once, so contexts and machines interleave: each context appears just
+    /// before the first component that EXTENDS or SEES it. Seeds are taken in
+    /// insertion order rather than lexicographically, so independent
+    /// components keep the caller's order. Returns `Err(cycle)` if a cycle
+    /// exists.
+    pub fn topological_order_all(&self) -> Result<Vec<String>, Cycle> {
+        // A cyclic model has no order to report, and `detect_cycles` already
+        // walks exactly these edges — so ask it first and keep the walk below
+        // infallible rather than repeating its bookkeeping.
+        if let Some(cycle) = self.detect_cycles(None).into_iter().next() {
+            return Err(cycle);
+        }
+        let nodes: Vec<(ComponentKind, &str)> = self
+            .nodes
+            .iter()
+            .flatten()
+            .map(|n| (n.kind(), n.name()))
+            .collect();
+        let referenced: HashSet<(ComponentKind, &str)> = nodes
+            .iter()
+            .flat_map(|node| self.all_out_edges(*node, None))
+            .map(|(_, target)| target)
+            .collect();
+
+        let mut order = Vec::new();
+        let mut visited: HashSet<(ComponentKind, &str)> = HashSet::new();
+        // Seed from the nodes nothing depends on, so each component is
+        // introduced by its most concrete user: a context declared before its
+        // machine still lands beside that machine instead of being hoisted to
+        // the top. Without a cycle every node is reachable from such a root.
+        for node in nodes.iter().filter(|node| !referenced.contains(*node)) {
+            self.topo_visit_all(*node, &mut visited, &mut order);
+        }
+        Ok(order)
+    }
+
+    fn topo_visit_all<'g>(
+        &'g self,
+        node: (ComponentKind, &'g str),
+        visited: &mut HashSet<(ComponentKind, &'g str)>,
+        order: &mut Vec<String>,
+    ) {
+        if !visited.insert(node) {
+            return;
+        }
+        let mut edges = self.all_out_edges(node, None);
+        // A machine introduces its abstract machine before the contexts it
+        // SEES, so a refinement's new contexts land beside the refinement
+        // rather than above its parent. `all_out_edges` lists SEES first and
+        // the sort is stable, so each kind keeps its source order.
+        edges.sort_by_key(|(edge, _)| matches!(edge, EdgeKind::Sees));
+        for (_, target) in edges {
+            // Unknown targets (referenced but absent) are silently skipped;
+            // they are surfaced elsewhere as "unknown reference" diagnostics.
+            if self.contains(target.0, target.1) {
+                self.topo_visit_all(target, visited, order);
+            }
+        }
+        order.push(node.1.to_string());
+    }
+
     // --- Cycle detection (diagnostics) ---
 
     /// Detect dependency cycles.
@@ -554,7 +621,7 @@ impl DependencyGraph {
     ) {
         state.insert(node, Visit::Active);
         path.push(node);
-        for (edge, target) in self.cycle_out_edges(node, filter) {
+        for (edge, target) in self.all_out_edges(node, filter) {
             match state.get(&target).copied() {
                 Some(Visit::Active) => {
                     if let Some(pos) = path.iter().position(|n| *n == target) {
@@ -571,8 +638,9 @@ impl DependencyGraph {
     }
 
     /// All outgoing edges of a node as `(edge kind, (target kind, target name))`,
-    /// optionally filtered to a single edge kind.
-    fn cycle_out_edges<'g>(
+    /// optionally filtered to a single edge kind. SEES edges come before
+    /// REFINES.
+    fn all_out_edges<'g>(
         &'g self,
         node: (ComponentKind, &'g str),
         filter: Option<EdgeKind>,
@@ -1047,6 +1115,83 @@ mod tests {
             order,
             vec!["m0".to_string(), "m1".to_string(), "m2".to_string()]
         );
+    }
+
+    #[test]
+    fn topological_order_all_introduces_contexts_before_their_first_user() {
+        let mut graph = DependencyGraph::new();
+        // Both contexts are declared up front: seeding from the roots is what
+        // keeps `cb` next to the refinement that sees it instead of hoisting
+        // it to the top alongside `ca`.
+        ctx(&mut graph, "ca", &[]);
+        ctx(&mut graph, "cb", &[]);
+        mch(&mut graph, "m0", None, &["ca"]);
+        mch(&mut graph, "m1", Some("m0"), &["cb"]);
+        // The abstract machine comes before the contexts the refinement adds,
+        // so each context sits just above the component that needs it.
+        assert_eq!(
+            graph.topological_order_all().unwrap(),
+            vec![
+                "ca".to_string(),
+                "m0".to_string(),
+                "cb".to_string(),
+                "m1".to_string()
+            ]
+        );
+    }
+
+    #[test]
+    fn topological_order_all_covers_every_component_once() {
+        let mut graph = DependencyGraph::new();
+        ctx(&mut graph, "cb", &["ca"]);
+        ctx(&mut graph, "cc", &["ca"]);
+        ctx(&mut graph, "ca", &[]);
+        mch(&mut graph, "m", None, &["cb", "cc"]);
+        ctx(&mut graph, "loose", &[]);
+        let order = graph.topological_order_all().unwrap();
+
+        let pos = |n: &str| order.iter().position(|x| x == n).unwrap();
+        assert!(pos("ca") < pos("cb"));
+        assert!(pos("ca") < pos("cc"));
+        assert!(pos("cc") < pos("m"));
+        // The shared parent of the diamond is emitted once, and an isolated
+        // component is not lost.
+        let mut sorted = order.clone();
+        sorted.sort();
+        assert_eq!(sorted, vec!["ca", "cb", "cc", "loose", "m"]);
+    }
+
+    #[test]
+    fn topological_order_all_ignores_unknown_targets() {
+        let mut graph = DependencyGraph::new();
+        mch(&mut graph, "m", Some("missing"), &["gone"]);
+        assert_eq!(
+            graph.topological_order_all().unwrap(),
+            vec!["m".to_string()]
+        );
+    }
+
+    #[test]
+    fn topological_order_all_reports_cycle() {
+        let mut graph = DependencyGraph::new();
+        mch(&mut graph, "m0", Some("m1"), &[]);
+        mch(&mut graph, "m1", Some("m0"), &[]);
+        ctx(&mut graph, "c", &[]);
+        let cycle = graph.topological_order_all().unwrap_err();
+        assert_eq!(cycle.kind, EdgeKind::Refines);
+        assert_eq!(cycle.components, vec!["m0".to_string(), "m1".to_string()]);
+    }
+
+    #[test]
+    fn topological_order_all_reports_a_model_that_is_only_a_cycle() {
+        // Every node is referenced, so there is no root to seed the walk from.
+        // The order must not come back empty and successful.
+        let mut graph = DependencyGraph::new();
+        ctx(&mut graph, "a", &["b"]);
+        ctx(&mut graph, "b", &["a"]);
+        let cycle = graph.topological_order_all().unwrap_err();
+        assert_eq!(cycle.kind, EdgeKind::Extends);
+        assert_eq!(cycle.components, vec!["a".to_string(), "b".to_string()]);
     }
 
     #[test]
