@@ -35,14 +35,15 @@ concurrency:
 
 env:
   CARGO_TERM_COLOR: always
-  # The submodule is always checked out here, so eventb-fuzz must fail on a
-  # missing tree-sitter grammar instead of skipping its tests.
-  EVENTB_FUZZ_REQUIRE_GRAMMAR: '1'
 
 jobs:
   test:
     name: Test Suite
     runs-on: ubuntu-latest
+    # The submodule is checked out below, so eventb-fuzz must fail on a
+    # missing tree-sitter grammar instead of skipping its tests.
+    env:
+      EVENTB_FUZZ_REQUIRE_GRAMMAR: '1'
     steps:
       - name: Checkout repository
         uses: actions/checkout@v7
@@ -162,6 +163,9 @@ jobs:
     # already holds that commit's report as the baseline for the next PR.
     if: github.event_name == 'pull_request'
     runs-on: ubuntu-latest
+    # Same submodule, same requirement as the test job.
+    env:
+      EVENTB_FUZZ_REQUIRE_GRAMMAR: '1'
     steps:
       - name: Checkout repository
         uses: actions/checkout@v7
