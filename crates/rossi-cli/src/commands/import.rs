@@ -2,7 +2,10 @@
 //!
 //! Reads Rodin inputs (`.zip` archives, individual `.buc`/`.bum` files, or
 //! directories containing them) and writes human-readable `.eventb` text:
-//! one file per component, or a single merged file with `--merge`.
+//! one file per component, or a single merged file with `--merge`. A merged
+//! file is ordered by dependency: every component follows the ones it needs,
+//! and each context is introduced just before the first component that
+//! EXTENDS or SEES it.
 //!
 //! A Rodin `.zip` may bundle several top-level projects (an Eclipse "Archive
 //! File" export of a decomposition). When more than one project is present
@@ -19,7 +22,7 @@
 //! root, so they contribute no proofs.
 
 use clap::Args;
-use rossi::{NamedComponent, NamedProject, PrettyPrinter};
+use rossi::{DependencyGraph, NamedComponent, NamedProject, PrettyPrinter};
 use rossi_build::project::discover_projects;
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -51,7 +54,8 @@ pub struct ImportArgs {
     style: StyleArgs,
 
     /// Merge all components into a single file, optionally specifying order
-    /// (e.g., --merge=M1,C1,M2). Unmentioned components are appended at the end.
+    /// (e.g., --merge=M1,C1,M2). Unmentioned components are appended in
+    /// dependency order.
     #[arg(long, num_args = 0..=1, default_missing_value = "", require_equals = true, value_name = "ORDER")]
     merge: Option<String>,
 
@@ -279,9 +283,10 @@ fn write_merged_flat(
     order: &str,
 ) -> CmdResult<()> {
     let mut components = into_single(projects);
+    order_by_dependency(&mut components);
     if !order.is_empty() {
         warn_unmatched_order(&component_names(&components), order);
-        reorder_components(&mut components, order);
+        reorder_components(&mut components, &order_names(order));
     }
     eventb_io::ensure_parent_dir(&cli.output)?;
     fs::write(&cli.output, render_merged(printer, &components))?;
@@ -306,9 +311,13 @@ fn write_merged_per_project(
             .collect();
         warn_unmatched_order(&all, order);
     }
+    let names = order_names(order);
     for mut project in projects {
+        // One graph per project: a name in a sibling project is not a
+        // dependency, so the walk must not cross the project boundary.
+        order_by_dependency(&mut project.components);
         if !order.is_empty() {
-            reorder_components(&mut project.components, order);
+            reorder_components(&mut project.components, &names);
         }
         let path = cli.output.join(format!("{}.eventb", project.name));
         fs::write(&path, render_merged(printer, &project.components))?;
@@ -422,18 +431,22 @@ fn parse_rodin_directory(dir: &Path) -> CmdResult<Vec<NamedComponent>> {
 /// Called once over all imported components, so a multi-project merge does not
 /// flag a name as missing merely because it belongs to a different project.
 fn warn_unmatched_order(all_names: &[String], order: &str) {
-    for name in order.split(',').map(|s| s.trim()) {
+    for name in order_names(order) {
         if !all_names.iter().any(|n| n == name) {
             eprintln!("Warning: '{name}' does not match any component");
         }
     }
 }
 
-/// Stable-sort `components` so those named in `order` come first, in list order;
-/// unmentioned components keep their original relative order at the end.
+/// The component names of an explicit `--merge=A,B` order list.
+fn order_names(order: &str) -> Vec<&str> {
+    order.split(',').map(|s| s.trim()).collect()
+}
+
+/// Stable-sort `components` so those named in `names` come first, in list
+/// order; unmentioned components keep their original relative order at the end.
 /// Unmatched-name warnings are emitted separately by [`warn_unmatched_order`].
-fn reorder_components(components: &mut [NamedComponent], order: &str) {
-    let names: Vec<&str> = order.split(',').map(|s| s.trim()).collect();
+fn reorder_components(components: &mut [NamedComponent], names: &[&str]) {
     let order_pos = |c: &NamedComponent| -> usize {
         let n = c.component.name();
         names
@@ -441,5 +454,25 @@ fn reorder_components(components: &mut [NamedComponent], order: &str) {
             .position(|&name| name == n)
             .unwrap_or(usize::MAX)
     };
-    components.sort_by_key(order_pos);
+    components.sort_by_cached_key(order_pos);
+}
+
+/// Stable-sort `components` so each one follows what it depends on, with every
+/// context introduced just before the first component that needs it.
+///
+/// A dependency cycle leaves the input order untouched and only warns: the
+/// cycle is the checker's to report, and merging is a text operation that
+/// should still produce the file.
+fn order_by_dependency(components: &mut [NamedComponent]) {
+    let graph = DependencyGraph::from_components(components.iter().map(|c| &c.component));
+    match graph.topological_order_all() {
+        Ok(order) => {
+            let names: Vec<&str> = order.iter().map(String::as_str).collect();
+            reorder_components(components, &names);
+        }
+        Err(cycle) => eprintln!(
+            "Warning: circular dependency ({}); merging in input order",
+            cycle.components.join(" → ")
+        ),
+    }
 }

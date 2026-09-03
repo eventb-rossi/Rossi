@@ -670,3 +670,77 @@ fn import_merge_output_passes_fmt_check() {
 
     std::fs::remove_dir_all(&tmp).ok();
 }
+
+#[test]
+fn import_merge_orders_components_by_dependency() {
+    // Loose inputs are read in command-line order, so the machine is offered
+    // first in both cases. A bare --merge must still introduce the context it
+    // SEES above it; an explicit order stays the escape hatch and wins.
+    for (case, merge_arg, context_first) in [
+        ("bare", "--merge", true),
+        ("explicit", "--merge=counter,counter_ctx", false),
+    ] {
+        let tmp = tempdir_unique("rossi-cli-import-merge-order");
+        let merged = tmp.join("merged.eventb");
+
+        let output = run_cli(&[
+            "import",
+            merge_arg,
+            "../rossi/examples/counter.bum",
+            "../rossi/examples/counter_ctx.buc",
+            "-o",
+            merged.to_str().unwrap(),
+        ]);
+        assert_cli_ok(&output, &format!("import {merge_arg} should exit 0"));
+
+        let text = std::fs::read_to_string(&merged).unwrap();
+        let context = text.find("context counter_ctx").expect("context header");
+        let machine = text.find("machine counter ").expect("machine header");
+        assert_eq!(
+            context < machine,
+            context_first,
+            "{case} merge ordered the components wrongly, got:\n{text}"
+        );
+
+        std::fs::remove_dir_all(&tmp).ok();
+    }
+}
+
+#[test]
+fn import_merge_warns_on_a_cycle_and_still_writes() {
+    // A cycle is the checker's to report; merging still produces the file,
+    // in input order.
+    let tmp = tempdir_unique("rossi-cli-import-merge-cycle");
+    // A context that EXTENDS itself: the smallest possible dependency cycle.
+    let xml = "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n\
+        <org.eventb.core.contextFile version=\"3\" \
+        org.eventb.core.configuration=\"org.eventb.core.fwd\">\
+        <org.eventb.core.extendsContext name=\"e1\" org.eventb.core.target=\"C\"/>\
+        </org.eventb.core.contextFile>\n";
+    let input = tmp.join("C.buc");
+    std::fs::write(&input, xml).unwrap();
+    let merged = tmp.join("merged.eventb");
+
+    let output = run_cli(&[
+        "import",
+        "--merge",
+        input.to_str().unwrap(),
+        "-o",
+        merged.to_str().unwrap(),
+    ]);
+    assert_cli_ok(&output, "a cycle must not fail the merge");
+
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains("circular dependency"),
+        "expected a cycle warning, got stderr={stderr}"
+    );
+    assert!(
+        std::fs::read_to_string(&merged)
+            .unwrap()
+            .contains("context C"),
+        "the merged file must still be written"
+    );
+
+    std::fs::remove_dir_all(&tmp).ok();
+}

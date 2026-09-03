@@ -254,7 +254,12 @@ rossi import project.zip --output ./project
 # Use ASCII operators (and a custom indent) in the emitted text
 rossi import project.zip --output ./project --ascii --indent="  "
 
-# Merge all components into a single file, optionally specifying order
+# Merge all components into a single file, in dependency order: every
+# component follows the ones it needs, and each context is introduced just
+# before the first component that EXTENDS or SEES it
+rossi import project.zip --output project.eventb --merge
+
+# ...or lead with an explicit order; the rest follows in dependency order
 rossi import project.zip --output project.eventb --merge=M0,C0
 ```
 
