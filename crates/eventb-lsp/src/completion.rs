@@ -318,6 +318,7 @@ impl CompletionProvider {
                     label,
                     entry.ascii,
                     alternative,
+                    entry.aliases(),
                     entry.description,
                     replace_range,
                 )
@@ -519,25 +520,48 @@ fn push_keyword_items<'a>(
     }
 }
 
+/// Build the completion item for one operator spelling.
+///
+/// `filter_text` is the ASCII spelling followed by the operator's word aliases
+/// (`">+> pinj"`), so a fuzzy-matching client finds `⤔` by `>+>` *and* by
+/// `pinj`. The aliases are otherwise reachable only through the `\name` leader
+/// input method each editor bundles separately, which leaves a plain LSP client
+/// with the ASCII spelling as the only key. The ASCII spelling stays first so a
+/// typed operator prefix still matches at offset 0 and keeps its score, and an
+/// operator without aliases keeps a bare ASCII `filter_text`.
 fn create_operator_item(
     operator: &str,
     ascii: &str,
     alternative: &str,
+    aliases: &[&str],
     description: &str,
     replace_range: Option<Range>,
 ) -> CompletionItem {
-    let detail = if alternative.is_empty() {
+    // The other ways to reach this operator: the spelling the current Unicode
+    // mode does not emit, then the leader names, shown in their `\name` form.
+    let mut spellings: Vec<String> = Vec::new();
+    if !alternative.is_empty() {
+        spellings.push(alternative.to_string());
+    }
+    spellings.extend(aliases.iter().map(|alias| format!("\\{alias}")));
+    let detail = if spellings.is_empty() {
         "Operator".to_string()
     } else {
-        format!("Operator (alternative: {})", alternative)
+        format!("Operator (alternative: {})", spellings.join(", "))
     };
+
+    let mut filter_text = ascii.to_string();
+    for alias in aliases {
+        filter_text.push(' ');
+        filter_text.push_str(alias);
+    }
 
     CompletionItem {
         label: operator.to_string(),
         kind: Some(CompletionItemKind::OPERATOR),
         detail: Some(detail),
         documentation: Some(Documentation::String(description.to_string())),
-        filter_text: Some(ascii.to_string()),
+        filter_text: Some(filter_text),
         text_edit: replace_range.map(|range| {
             CompletionTextEdit::Edit(TextEdit {
                 range,
@@ -1025,6 +1049,43 @@ mod tests {
         }
     }
 
+    /// The word aliases from `rossi::operators::aliases_for` reach every LSP
+    /// client through `filter_text`, so `⤔` is found by `pinj` and not only by
+    /// its ASCII spelling, and `detail` names the `\pinj` leader form.
+    #[test]
+    fn operator_completions_filter_on_word_aliases() {
+        let provider = CompletionProvider::new();
+        let items = provider.get_operator_completions(true, None);
+
+        let find = |label: &str| {
+            items
+                .iter()
+                .find(|item| item.label == label)
+                .unwrap_or_else(|| panic!("missing operator completion {label:?}"))
+        };
+
+        let partial_injection = find("⤔");
+        assert_eq!(partial_injection.filter_text.as_deref(), Some(">+> pinj"));
+        assert_eq!(
+            partial_injection.detail.as_deref(),
+            Some("Operator (alternative: >+>, \\pinj)")
+        );
+
+        // Every alias joins the filter key, in table order.
+        let and = find("∧");
+        assert_eq!(and.filter_text.as_deref(), Some("& and land wedge"));
+        assert_eq!(
+            and.detail.as_deref(),
+            Some("Operator (alternative: &, \\and, \\land, \\wedge)")
+        );
+
+        // An operator with neither an alternative spelling nor aliases keeps
+        // the bare ASCII filter key and the plain detail line.
+        let equal = find("=");
+        assert_eq!(equal.filter_text.as_deref(), Some("="));
+        assert_eq!(equal.detail.as_deref(), Some("Operator"));
+    }
+
     #[test]
     fn operator_completion_after_colon_replaces_the_trigger() {
         let provider = CompletionProvider::new();
@@ -1050,8 +1111,10 @@ mod tests {
             panic!("expected completion items");
         };
 
-        for (label, ascii) in [
-            ("∈", ":"),
+        // The filter text is the ASCII spelling plus any word aliases, so `∈`
+        // carries its leader names while the alias-less rows stay bare ASCII.
+        for (label, filter_text) in [
+            ("∈", ": in mem"),
             (":∈", "::"),
             (":∣", ":|"),
             (";", ";"),
@@ -1061,7 +1124,7 @@ mod tests {
                 .iter()
                 .find(|item| item.kind == Some(CompletionItemKind::OPERATOR) && item.label == label)
                 .unwrap_or_else(|| panic!("missing operator completion {label:?}"));
-            assert_eq!(item.filter_text.as_deref(), Some(ascii));
+            assert_eq!(item.filter_text.as_deref(), Some(filter_text));
             match item
                 .text_edit
                 .as_ref()
