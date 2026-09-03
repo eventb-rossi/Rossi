@@ -257,6 +257,44 @@ impl Component {
             Component::Machine(m) => &m.clauses,
         }
     }
+
+    /// Drop every source position from the component: spans, name spans and
+    /// clause regions.
+    ///
+    /// Spans are positional metadata but they take part in equality, so two
+    /// components that differ only in layout do not compare equal. Clearing
+    /// them on both sides is what makes an AST-level round-trip comparison
+    /// (parse → print → parse) meaningful. Formula nodes already ignore their
+    /// spans in `PartialEq`, so only the structural AST needs this.
+    pub fn clear_spans(&mut self) {
+        SpanEraser.visit_component(self);
+    }
+}
+
+/// Erases every span the structural AST carries.
+///
+/// Written as a visitor so it walks the same traversal every other AST
+/// transform does: a component that grows a span-bearing field is covered
+/// without touching this code.
+struct SpanEraser;
+
+impl VisitMut for SpanEraser {
+    fn visit_optional_span(&mut self, span: &mut Option<Span>) {
+        *span = None;
+    }
+
+    fn visit_context(&mut self, context: &mut Context) {
+        // A clause region's span is not optional, so the region cannot be
+        // emptied — and it is span-derived metadata anyway, whose offsets
+        // shift whenever the source is reformatted. Drop the regions whole.
+        context.clauses.clear();
+        visit_mut::walk_context(self, context);
+    }
+
+    fn visit_machine(&mut self, machine: &mut Machine) {
+        machine.clauses.clear();
+        visit_mut::walk_machine(self, machine);
+    }
 }
 
 /// Source location information for error reporting and LSP features
