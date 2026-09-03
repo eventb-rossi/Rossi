@@ -894,27 +894,44 @@ fn implicit_comprehension_binding_nothing_is_rejected() {
         else {
             panic!("expected a not-binding error for {src:?}, got {error:?}");
         };
-        assert_eq!(line, 1);
-        assert_eq!(column, src[..span.start].chars().count() + 1);
+        // Every member here starts immediately after `{`, so the report lands
+        // on `E` rather than on the brace.
+        assert_eq!((line, column), (1, 2));
         assert_eq!(src[span.start..span.end].trim(), member);
     }
 }
 
 // The point of the guard: a component holding such an axiom is rejected, not
 // aborted on. The parser is hosted by `rossi validate`, the language server and
-// any library caller, none of which survive a panic.
+// any library caller, none of which survive a panic. Checking which error comes
+// out keeps this from passing for some unrelated reason.
 #[test]
 fn a_comprehension_binding_nothing_does_not_abort_the_parser() {
     let source = "context C\naxioms\n    @a {2 ∣ ⊤} = 1\nend\n";
-    parse(source).expect_err("the axiom must be rejected, not crash the parser");
+    let error = parse(source).expect_err("the axiom must be rejected, not crash the parser");
+    assert_eq!(error.position(), Some((3, 9)), "reported at {error:?}");
 }
 
-// The guard must not swallow the forms that do bind. `{x ∣ …}` reaches the
-// identifier-list arm, so `{x + y ∣ …}` is the one that covers the implicit arm.
+// A member naming only what an enclosing binder also spells declares a fresh,
+// shadowing name rather than leaving nothing to bind, so it parses — this shape
+// used to abort the parser for the same reason `{2 ∣ ⊤}` did.
+// `implicit_set_builder_binds_every_name_its_member_writes` pins the
+// declarations that result.
 #[test]
-fn a_comprehension_that_binds_something_still_parses() {
-    for src in ["{x ∣ x > 0}", "{x + y ∣ y < x}"] {
-        parse_expression_str(src)
-            .unwrap_or_else(|e| panic!("comprehension must parse: {e:?}\n{src}"));
-    }
+fn a_comprehension_naming_only_an_enclosing_binder_parses() {
+    parse_predicate_str("∀x·{x + 0 ∣ ⊤} ⊆ s")
+        .expect("a member naming an enclosing binder must bind a shadowing name");
+}
+
+// The guard stays reachable under that reading: an enclosing binder no longer
+// empties the declaration list, but an `E` naming no identifier at all still
+// does, wherever it is written.
+#[test]
+fn a_comprehension_binding_nothing_is_rejected_under_a_quantifier() {
+    let error = parse_predicate_str("∀x·{2 ∣ ⊤} ⊆ s")
+        .expect_err("a comprehension binding nothing must not produce a predicate");
+    assert!(
+        matches!(error, ParseError::ExpressionNotBinding { .. }),
+        "expected a not-binding error, got {error:?}"
+    );
 }

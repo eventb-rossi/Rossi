@@ -2520,18 +2520,22 @@ fn parse_expression(
                             }
                             Rule::expression => {
                                 // Expression form: {E | P}. Every identifier
-                                // free in E becomes a declaration, in first-
-                                // occurrence order; occurrences already bound
-                                // by an enclosing binder stay references to it.
-                                // E is parsed in the enclosing scope and the
-                                // fresh names are then bound over it, shifting
-                                // enclosing-binder references past the new
-                                // declarations. An E that leaves nothing free
-                                // binds nothing, which no quantified expression
-                                // can represent, so it is refused here — where
-                                // Rodin refuses it, and at the same location.
+                                // written in E becomes a declaration, in
+                                // first-occurrence order. E is read in a closed
+                                // scope — the enclosing binders are hidden — so
+                                // a name in E is always the comprehension's own
+                                // and shadows an outer binder spelling it the
+                                // same way; reaching an outer binder from the
+                                // member needs the explicit form `{y · P ∣ E}`.
+                                // Rodin reads it the same way, with
+                                // `subParseNoBindingNoCheck`. That leaves an E
+                                // naming nothing at all as the only case
+                                // binding nothing (see
+                                // `ParseError::ExpressionNotBinding`).
                                 let member_span = p.as_span();
+                                let outer = std::mem::take(&mut fx.binders);
                                 let member = parse_expression(p, fx)?;
+                                fx.binders = outer;
                                 let names = first_free_names(&member);
                                 if names.is_empty() {
                                     return Err(expression_not_binding(member_span));

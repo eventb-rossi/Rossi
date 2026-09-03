@@ -86,14 +86,14 @@ pub enum ParseError {
     },
 
     /// A comprehension written in the implicit form `{E ∣ P}` whose expression
-    /// binds nothing — `{2 ∣ ⊤}`, or an `E` naming only identifiers an
-    /// enclosing binder already declares. The form takes its declarations from
-    /// the identifiers free in `E`, and a quantified expression with no
-    /// declaration is not representable, so this is refused while parsing
-    /// rather than built. Rodin refuses it the same way, and at the same place
-    /// (`ProblemKind.ExpressionNotBinding`). `line` and `column` are 1-indexed;
-    /// `span` is the byte range of `E` alone, as Rodin's location is (additive
-    /// and unreferenced by `Display`, oracle-safe).
+    /// names no identifier at all — `{2 ∣ ⊤}`. The form takes its declarations
+    /// from the identifiers `E` writes, so such an `E` binds nothing, and a
+    /// quantified expression with no declaration is not representable: it is
+    /// refused while parsing rather than built. Rodin refuses it the same way,
+    /// and at the same place (`ProblemKind.ExpressionNotBinding`). `line` and
+    /// `column` are 1-indexed; `span` is the byte range of `E`, which is where
+    /// Rodin reports it too (additive and unreferenced by `Display`,
+    /// oracle-safe).
     #[error("Expression not binding any variable in quantified expression")]
     ExpressionNotBinding {
         line: usize,

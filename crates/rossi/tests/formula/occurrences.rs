@@ -211,11 +211,12 @@ fn breaking_stops_the_walk() {
 // ---------------------------------------------------------------------
 
 #[test]
-fn implicit_set_builder_leaves_outer_bound_names_free() {
+fn implicit_set_builder_binds_every_name_its_member_writes() {
     use rossi::{ExpressionKind, PredicateKind, parse_predicate_str};
 
-    // In `∀x·{x + y∣y < x} ⊆ s`, the member expression's `x` reads the
-    // enclosing binder; only `y` is free within it and gets bound.
+    // In `∀x·{x + y∣y < x} ⊆ s` the member is read in a closed scope, so both
+    // its names are the comprehension's own and its `x` shadows the enclosing
+    // `∀x` — which is left with no occurrence. Rodin reads it the same way.
     let parsed = parse_predicate_str("∀x·{x + y∣y < x} ⊆ s").unwrap();
     let PredicateKind::Quantified { pred, .. } = parsed.kind() else {
         panic!("expected the universal quantifier");
@@ -223,9 +224,27 @@ fn implicit_set_builder_leaves_outer_bound_names_free() {
     let PredicateKind::Relational { left, .. } = pred.kind() else {
         panic!("expected the subset comparison");
     };
-    let ExpressionKind::Quantified { decls, .. } = left.kind() else {
+    let ExpressionKind::Quantified { decls, expr, .. } = left.kind() else {
         panic!("expected the comprehension");
     };
     let names: Vec<&str> = decls.iter().map(|d| d.name()).collect();
-    assert_eq!(names, ["y"]);
+    assert_eq!(names, ["x", "y"]);
+
+    // Declaration i is index n-1-i, so `x + y` is `BI_1 + BI_0`: both indices
+    // land inside the comprehension. Had `x` still read the enclosing binder it
+    // would be `BI_2`, one past the two declarations.
+    let ExpressionKind::Associative { children, .. } = expr.kind() else {
+        panic!("expected the sum");
+    };
+    let indices: Vec<&ExpressionKind> = children.iter().map(|child| child.kind()).collect();
+    assert!(
+        matches!(
+            indices[..],
+            [
+                ExpressionKind::BoundIdentifier(1),
+                ExpressionKind::BoundIdentifier(0)
+            ]
+        ),
+        "expected BI_1 + BI_0, got {indices:?}"
+    );
 }
