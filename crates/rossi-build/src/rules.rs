@@ -9,12 +9,12 @@ use crate::Severity;
 
 /// Validation rule identifiers exposed in `Diagnostic.rule_id`.
 ///
-/// Codes use the stable `EBnnn` scheme (`"EB001"`..`"EB030"`); gaps are
+/// Codes use the stable `EBnnn` scheme (`"EB001"`..`"EB031"`); gaps are
 /// rules not yet implemented in rossi (EB020 unknown
 /// type) or removed as valueless (EB013 dead
-/// constant — every hit was already an EB006 typing Error). EB023, EB024
-/// and EB028 are rossi-only extensions; EB025 is a refinement static-check
-/// emitted by `crate::build`; EB029 and EB030 are structural parse errors
+/// constant — every hit was already an EB006 typing Error). EB023, EB024,
+/// EB028 and EB031 are rossi-only extensions; EB025 is a refinement
+/// static-check emitted by `crate::build`; EB029 and EB030 are structural parse errors
 /// raised by the Camille grammar (`rossi::ParseError`), not by a check.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum RuleId {
@@ -92,10 +92,14 @@ pub enum RuleId {
     /// EB030 — An event clause is written after one it must precede (Rodin
     /// fixes the order `ANY`, `WHERE`, `WITH`, `WITNESS`, `THEN`).
     ClauseOutOfOrder,
+    /// EB031 — A structural position separates two names with a Unicode space
+    /// that Rodin's math lexer accepts but stock Camille cannot read.
+    /// (rossi-only.)
+    NonPortableWhitespace,
 }
 
 impl RuleId {
-    /// Stable string code (`"EB001"`..`"EB030"`).
+    /// Stable string code (`"EB001"`..`"EB031"`).
     #[must_use]
     pub fn code(self) -> &'static str {
         match self {
@@ -127,6 +131,7 @@ impl RuleId {
             RuleId::KeywordName => "EB028",
             RuleId::EmptyClause => "EB029",
             RuleId::ClauseOutOfOrder => "EB030",
+            RuleId::NonPortableWhitespace => "EB031",
         }
     }
 
@@ -162,6 +167,7 @@ impl RuleId {
             RuleId::KeywordName => "Structural keyword as identifier",
             RuleId::EmptyClause => "Empty clause or label",
             RuleId::ClauseOutOfOrder => "Event clause out of order",
+            RuleId::NonPortableWhitespace => "Non-portable whitespace",
         }
     }
 
@@ -249,6 +255,9 @@ impl RuleId {
             RuleId::ClauseOutOfOrder => {
                 "An event's clauses are written in a fixed order — `ANY`, `WHERE`, `WITH`, `WITNESS`, `THEN` — so a clause below one it must precede cannot be read. Move it above that clause."
             }
+            RuleId::NonPortableWhitespace => {
+                "Two names in a structural position (a component header, or an `EXTENDS` / `SETS` / `CONSTANTS` / `REFINES` / `SEES` / `VARIABLES` / `ANY` list) are separated by a Unicode space outside Camille's `layout_char` set. Rodin's math lexer treats these as whitespace and so does rossi, but stock Camille answers \"Unknown token\" and cannot open the file, so the model does not round-trip through Rodin's text editor. Run `rossi fmt -i` to rewrite the separators. The same code points inside a formula are folded into the formula text and handed to Rodin, so they are portable there and are not reported."
+            }
         }
     }
 
@@ -284,7 +293,8 @@ impl RuleId {
             | RuleId::BrokenProof
             | RuleId::ProofFileParseError
             | RuleId::ShadowedName
-            | RuleId::KeywordName => Severity::Warning,
+            | RuleId::KeywordName
+            | RuleId::NonPortableWhitespace => Severity::Warning,
         }
     }
 
@@ -340,6 +350,7 @@ impl RuleId {
             RuleId::KeywordName,
             RuleId::EmptyClause,
             RuleId::ClauseOutOfOrder,
+            RuleId::NonPortableWhitespace,
         ]
     }
 }
@@ -353,13 +364,6 @@ impl std::fmt::Display for RuleId {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::collections::HashSet;
-
-    #[test]
-    fn every_rule_has_a_unique_code() {
-        let codes: HashSet<_> = RuleId::all().iter().map(|r| r.code()).collect();
-        assert_eq!(codes.len(), RuleId::all().len());
-    }
 
     #[test]
     fn codes_are_stable() {
@@ -390,6 +394,25 @@ mod tests {
         assert_eq!(RuleId::KeywordName.code(), "EB028");
         assert_eq!(RuleId::EmptyClause.code(), "EB029");
         assert_eq!(RuleId::ClauseOutOfOrder.code(), "EB030");
+        assert_eq!(RuleId::NonPortableWhitespace.code(), "EB031");
+    }
+
+    /// `all()` is a hand-maintained array with no exhaustiveness check, unlike
+    /// the `match` arms the compiler polices. A rule missing from it emits a
+    /// SARIF `results[].ruleId` with no matching `tool.driver.rules[]` entry,
+    /// which consumers reject — so check it against the code scheme itself: a
+    /// length alone would still pass when a new variant is added and the count
+    /// bumped without touching `all()`. Comparing the exact list in catalogue
+    /// order also subsumes the uniqueness and length checks.
+    #[test]
+    fn all_lists_every_rule() {
+        // `EB001`..`EB031` minus the two documented gaps (EB013, EB020).
+        let expected: Vec<String> = (1..=31)
+            .filter(|n| !matches!(n, 13 | 20))
+            .map(|n| format!("EB{n:03}"))
+            .collect();
+        let listed: Vec<&str> = RuleId::all().iter().map(|r| r.code()).collect();
+        assert_eq!(listed, expected);
     }
 
     #[test]

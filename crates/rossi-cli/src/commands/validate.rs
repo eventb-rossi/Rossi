@@ -482,7 +482,10 @@ fn validate_text_source(
                     }
                 }
                 if !cli.no_lints {
-                    for diag in rossi_build::lint::run_component(component) {
+                    for diag in rossi_build::lint::run_component(component)
+                        .into_iter()
+                        .chain(rossi_build::lint::run_source(component, source))
+                    {
                         results.push(fold_diagnostic(input, diag, inner(), Some(source)));
                     }
                 }

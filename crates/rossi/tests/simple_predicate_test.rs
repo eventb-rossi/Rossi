@@ -1217,6 +1217,14 @@ fn test_unicode_whitespace_matches_rodin() {
             "U+{:04X} must separate tokens exactly like an ASCII space",
             separator as u32
         );
+        // `keywords::is_whitespace` is a second enumeration of the same set,
+        // for callers that scan text rather than parse it. Holding both to one
+        // table is what stops the scanner and the parser drifting apart.
+        assert!(
+            rossi::keywords::is_whitespace(separator),
+            "U+{:04X} parses as a separator but is_whitespace says otherwise",
+            separator as u32
+        );
     }
 
     for &glyph in NOT_RODIN_WHITESPACE {
@@ -1226,6 +1234,41 @@ fn test_unicode_whitespace_matches_rodin() {
             "U+{:04X} is not whitespace in Rodin; it must not glue tokens together",
             glyph as u32
         );
+        assert!(
+            !rossi::keywords::is_whitespace(glyph),
+            "U+{:04X} does not parse as a separator but is_whitespace claims it does",
+            glyph as u32
+        );
+    }
+}
+
+#[test]
+fn eb031_flags_exactly_the_rodin_separators_camille_cannot_read() {
+    // `camille_unreadable_separator` is defined as `is_whitespace` minus
+    // `camille_layout_char`, so the two lexers' sets cannot drift apart by
+    // construction. What is worth pinning is the boundary that decides whether
+    // EB031 is usable in CI at all.
+    //
+    // U+00A0: Camille's second range ends exactly on it, and it is the
+    // separator real Rodin XML contains — a warning here would fire on the
+    // common case, and `--deny-warnings` would make that a build failure.
+    assert!(rossi::keywords::is_whitespace('\u{a0}'));
+    assert!(!rossi::keywords::camille_unreadable_separator('\u{a0}'));
+
+    // U+3000: unreadable to Camille (`EB004 Unknown token`), read by rossi.
+    assert!(rossi::keywords::camille_unreadable_separator('\u{3000}'));
+
+    // U+200B: unreadable to Camille, but not a separator to rossi either, so
+    // it is not an EB031 case — rossi rejects that file outright.
+    assert!(!rossi::keywords::is_whitespace('\u{200b}'));
+    assert!(!rossi::keywords::camille_unreadable_separator('\u{200b}'));
+
+    // Every EB031 code point is a separator Camille's ranges exclude.
+    for separator in RODIN_WHITESPACE
+        .iter()
+        .filter(|&&c| rossi::keywords::camille_unreadable_separator(c))
+    {
+        assert!(!rossi::keywords::camille_layout_char(*separator));
     }
 }
 

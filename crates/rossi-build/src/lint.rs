@@ -18,6 +18,8 @@
 //!   modifies state inherited from an abstract machine
 //! - **EB028** keyword name      — declared name spells a structural keyword
 //!   that no textual notation can represent
+//! - **EB031** non-portable whitespace — a structural position separates two
+//!   names with a Unicode space stock Camille cannot read
 //!
 //! EB019 (duplicate component names) and EB021/EB022 (duplicate
 //! identifiers / labels) are project- and component-integrity failures,
@@ -31,7 +33,7 @@ use std::collections::{BTreeSet, HashMap};
 
 use rossi::ast::Span;
 use rossi::formula::tag::{AssocPredOp, RelationalOp};
-use rossi::keywords::DeclSite;
+use rossi::keywords::{DeclSite, camille_unreadable_separator, clause_holds_only_names};
 use rossi::{
     Component, ComponentId, DependencyGraph, Event, ExpressionKind, InitialisationEvent, Machine,
     Predicate, PredicateKind,
@@ -56,6 +58,11 @@ pub fn run(project: &Project) -> Vec<Diagnostic> {
     // arena entry even when another component shares its name (EB019).
     for (pc, mach_id) in project.components.iter().zip(&index.component_mach_ids) {
         diags.extend(run_component(&pc.component));
+        // EB031 needs the source text, which only textual components carry;
+        // XML imports have no `.eventb` layout to be unportable about.
+        if let Some(source) = &pc.source {
+            diags.extend(run_source(&pc.component, source));
+        }
         let Some(id) = *mach_id else {
             continue; // contexts carry no cross-component lint data
         };
@@ -92,7 +99,12 @@ pub fn run(project: &Project) -> Vec<Diagnostic> {
 /// EXTENDS parents are usually absent, so the reference-based lints would
 /// false-positive); these local passes are safe to run anywhere.
 ///
-/// Today that is EB023 (shadowed names) and EB028 (keyword names):
+/// Today that is EB023 (shadowed names) and EB028 (keyword names). EB031
+/// (non-portable whitespace) is component-local too but needs the source text,
+/// which this signature does not carry, so it lives in [`run_source`] and must
+/// be wired alongside every call to this function.
+///
+/// The older note:
 /// EB021/EB022 (duplicate identifiers / labels) are semantic errors checked
 /// by the SC build via [`crate::duplicates`], not advisories.
 ///
@@ -432,6 +444,105 @@ fn keyword_name_diag(
         rule_id: Some(RuleId::KeywordName),
         span,
     })
+}
+
+// ---------- EB031: whitespace stock Camille cannot read ---------------------
+
+/// EB031 findings in `source[region]`, one per separator Camille cannot read.
+///
+/// Comments are masked rather than scanned around: [`rossi::comments`] is the
+/// one encoding of which bytes are comment text, and `mask_comments` preserves
+/// byte length, so offsets stay valid in `source`. A clause region runs from
+/// its keyword to its last member, so a comment written between two names sits
+/// inside it — and Camille reads comment bodies whatever they contain, so a
+/// finding there would be a false alarm (a build failure under
+/// `--deny-warnings`).
+fn region_findings(component: &Component, source: &str, region: Span) -> Vec<Diagnostic> {
+    let Some(text) = source.get(region.start..region.end) else {
+        return Vec::new(); // a span from a different source than the one passed in
+    };
+    rossi::comments::mask_comments(text)
+        .char_indices()
+        .filter(|&(_, separator)| camille_unreadable_separator(separator))
+        .map(|(offset, separator)| {
+            let start = region.start + offset;
+            Diagnostic {
+                severity: RuleId::NonPortableWhitespace.default_severity(),
+                origin: component.name().to_string(),
+                message: format!(
+                    "U+{:04X} separates two names here; Rodin's math lexer reads it as \
+                     whitespace and so does rossi, but stock Camille answers \"Unknown \
+                     token\" and cannot open the file — run `rossi fmt -i` to rewrite it",
+                    separator as u32
+                ),
+                rule_id: Some(RuleId::NonPortableWhitespace),
+                span: Some(Span {
+                    start,
+                    end: start + separator.len_utf8(),
+                }),
+            }
+        })
+        .collect()
+}
+
+/// The `ANY` list's text: first parameter name through last — exactly where a
+/// separator can sit between two names.
+///
+/// Events need this because only a component's own clauses carry a
+/// [`rossi::ast::ClauseRegion`]; the parser records none for an event's
+/// clauses. That is a gap in the AST rather than a fact about Event-B, so this
+/// is a stand-in: it cannot see a separator between `ANY` and its first
+/// parameter, nor one in an event header or an event-level `REFINES`.
+fn parameter_region(event: &Event) -> Option<Span> {
+    let mut spans = event.parameters.iter().filter_map(|p| p.span);
+    let first = spans.next()?;
+    // One parameter: the region is that name, which holds no separator.
+    let last = spans.next_back().unwrap_or(first);
+    Some(Span {
+        start: first.start,
+        end: last.end,
+    })
+}
+
+/// EB031: a structural position separates two names with a Unicode space that
+/// Rodin's math lexer accepts but stock Camille cannot read.
+///
+/// `source` is the whole `.eventb` text the component was parsed from; the scan
+/// is scoped to this component's own regions, so several components sharing one
+/// file (which is how [`crate::project::ProjectComponent::from_eventb`] stores
+/// them) each report only their own findings rather than the file's.
+///
+/// Only clauses whose members are bare names are scanned
+/// ([`rossi::keywords::clause_holds_only_names`]). Inside a formula the same
+/// code points are portable, so staying out of formulas is what keeps the rule
+/// off that false-positive class without a masking pass.
+///
+/// Warn at the separator, naming the reader that breaks — the same shape the
+/// EB028 keyword-name diagnostic uses.
+#[must_use]
+pub fn run_source(component: &Component, source: &str) -> Vec<Diagnostic> {
+    // The header (`context C` / `machine M`) is a structural position too, but
+    // it is not a clause, so it carries no `ClauseRegion`.
+    let header = component
+        .span()
+        .zip(component.name_span())
+        .map(|(component_span, name)| Span {
+            start: component_span.start,
+            end: name.end,
+        });
+    let events: &[Event] = match component {
+        Component::Machine(machine) => &machine.events,
+        Component::Context(_) => &[],
+    };
+    component
+        .clauses()
+        .iter()
+        .filter(|clause| clause_holds_only_names(clause.keyword))
+        .map(|clause| clause.span)
+        .chain(header)
+        .chain(events.iter().filter_map(parameter_region))
+        .flat_map(|region| region_findings(component, source, region))
+        .collect()
 }
 
 // ---------- reference collection -------------------------------------------
@@ -2424,5 +2535,112 @@ mod tests {
             pc("M1.bum", Component::Machine(m1)),
         ]));
         assert!(eb011_on(&diags, "M1.c").is_empty(), "{diags:#?}");
+    }
+
+    // ---------- EB031: whitespace stock Camille cannot read -----------------
+    //
+    // Every expectation below was probed against `eventb-checker`, which reads
+    // Camille's `eventbstruct` grammar for structure and Rodin's real
+    // `FormulaFactory` for formulas.
+
+    /// A context whose `CONSTANTS` line reads `constants {constants}`.
+    fn ctx(constants: &str) -> String {
+        format!("context C\nconstants {constants}\naxioms\n  @a1 a = 1\n  @a2 b = 2\nend\n")
+    }
+
+    /// EB031 findings over a probe, routed through the production wiring:
+    /// `ProjectComponent::from_eventb` attaches the source exactly as the CLI
+    /// and LSP paths do, and `run` is the entry point directories and archives
+    /// reach, so this covers the `pc.source` branch too.
+    fn ws_findings(source: &str) -> Vec<Diagnostic> {
+        let components =
+            ProjectComponent::from_eventb("probe.eventb", source).expect("probe must parse");
+        run(&proj(components))
+            .into_iter()
+            .filter(|d| d.rule_id == Some(RuleId::NonPortableWhitespace))
+            .collect()
+    }
+
+    #[test]
+    fn separator_camille_cannot_read_warns_in_a_name_list() {
+        // Camille: `[2,12] Unknown token: 　` (EB004), so the file will not open
+        // in Rodin's text editor at all.
+        let source = ctx("a\u{3000}b");
+        let diags = ws_findings(&source);
+        assert_eq!(diags.len(), 1, "{diags:#?}");
+        let span = diags[0].span.expect("EB031 anchors on the separator");
+        assert_eq!(&source[span.start..span.end], "\u{3000}");
+    }
+
+    #[test]
+    fn separators_camille_reads_stay_silent() {
+        // Camille's `layout_char` second range is [127..160], so U+00A0 is the
+        // last code point it accepts — and the one that actually turns up in
+        // real Rodin XML. Reporting it would be a false alarm on the common
+        // case, and `--deny-warnings` would turn that into a build failure.
+        for separator in ['\u{a0}', ' ', '\t'] {
+            let source = ctx(&format!("a{separator}b"));
+            assert!(
+                ws_findings(&source).is_empty(),
+                "U+{:04X} is readable by Camille and must not warn",
+                separator as u32
+            );
+        }
+    }
+
+    #[test]
+    fn separator_inside_a_formula_stays_silent() {
+        // Camille lexes a formula as `all_formula_chars+`, which excludes only
+        // `layout_char`, `@` and `/`. U+3000 is none of those, so it is folded
+        // into the formula token and handed to Rodin's `FormulaFactory`, which
+        // reads it as whitespace. The oracle calls this file valid, so the scan
+        // must stay out of formulas — hence `clause_holds_only_names`.
+        let source =
+            "context C\nconstants a b\naxioms\n  @a1 a\u{3000}=\u{3000}1\n  @a2 b = 2\nend\n";
+        assert!(ws_findings(source).is_empty());
+    }
+
+    #[test]
+    fn separator_in_an_event_parameter_list_warns() {
+        // An event's clauses carry no `ClauseRegion`, so the `ANY` list needs
+        // its region built from the parameter spans — without it the rule
+        // description's `ANY` case never fired.
+        let source = "machine M\nvariables x\ninvariants\n  @i1 x = 0\nevents\n  \
+                      event INITIALISATION\n  then\n    @a1 x := 0\n  end\n  event e\n  \
+                      any p\u{3000}q\n  where\n    @g1 p = q\n  then\n    @a2 x := p\n  \
+                      end\nend\n";
+        let diags = ws_findings(source);
+        assert_eq!(diags.len(), 1, "{diags:#?}");
+        let span = diags[0].span.expect("EB031 anchors on the separator");
+        assert_eq!(&source[span.start..span.end], "\u{3000}");
+    }
+
+    #[test]
+    fn separator_inside_a_comment_stays_silent() {
+        // Camille's comment tokens accept any character (`comment =
+        // [any_char - line_break]*`), so a separator there is portable. A
+        // clause region runs keyword-to-last-member, so the comment sits
+        // inside it — and `--deny-warnings` would turn a false alarm here
+        // into a build failure.
+        for source in [
+            ctx("a // note\u{3000}here\n  b"),
+            ctx("a /* note\u{3000}here */ b"),
+        ] {
+            let diags = ws_findings(&source);
+            assert!(diags.is_empty(), "{diags:#?}");
+        }
+    }
+
+    #[test]
+    fn each_component_reports_only_its_own_separators() {
+        // `ProjectComponent::from_eventb` gives every component in a file the
+        // whole file as its `source`, so a whole-text scan would report each
+        // finding once per component. Scanning per-component clause regions is
+        // what keeps the count honest.
+        let source = "context C1\nconstants a\u{3000}b\naxioms\n  @a1 a = 1\n  @a2 b = 2\nend\n\
+                      context C2\nconstants c d\naxioms\n  @a3 c = 1\n  @a4 d = 2\nend\n";
+        let diags = ws_findings(source);
+        assert_eq!(diags.len(), 1, "{diags:#?}");
+        assert_eq!(diags[0].origin, "C1");
     }
 }
