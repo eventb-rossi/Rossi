@@ -158,6 +158,7 @@ the `rossi-build` static checker (the language server is the separate
 | `export`   | Export `.eventb`/`.txt`/dir into a Rodin `.zip` archive. |
 | `fmt`      | Reformat Event-B in place (style, operator convention, indentation). |
 | `build`    | Static-check a Rodin project and emit `.bcc` / `.bcm` checked XML. |
+| `prove`    | Check a project's stored proofs against its proof obligations. |
 | `clean`    | Drop the stored proofs whose obligation no longer exists, and empty the ones that no longer apply. |
 | `completions` | Print a shell completion script to stdout (run `rossi completions --help` for the supported shells). |
 
