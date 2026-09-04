@@ -1156,16 +1156,16 @@ mod tests {
     /// generates a different corpus from the same seed.
     #[test]
     fn normalized_generation_yields_the_same_corpus() {
+        let plain = generate_all(200);
+        if plain.is_empty() {
+            return;
+        }
         for (config, what) in [
             (unicode_config(), "--unicode"),
             (lowercase_config(), "--lowercase-keywords"),
             (normalized_config(), "both flags"),
         ] {
-            let plain = generate_all(200);
             let normalized = generate_all_with(200, config);
-            if plain.is_empty() {
-                return;
-            }
             let mut differing = 0;
             for (plain, normalized) in plain.iter().zip(&normalized) {
                 assert_eq!(
