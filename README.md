@@ -47,9 +47,10 @@ Rossi covers the full author-to-Rodin path:
 **Proof checking**
 - Stored Rodin proofs checked against regenerated obligations by reuse (re-applying the recorded rules) and by replay (re-running the reasoners)
 - Per-obligation verdicts — discharged, reviewed, pending, unattempted, broken — with the proof's recorded confidence
+- Proof-store maintenance without Rodin: drop the proofs whose obligation is gone, empty the ones that no longer open
 
 **Command-line workflows**
-- `validate`, `import`, `export`, `fmt`, `build`, and `prove` subcommands
+- `validate`, `import`, `export`, `fmt`, `build`, `prove`, and `clean` subcommands
 - Text, JSON, and SARIF 2.1.0 diagnostic output for CI and IDE integration
 
 **Editor integration (LSP)**
@@ -157,6 +158,7 @@ the `rossi-build` static checker (the language server is the separate
 | `export`   | Export `.eventb`/`.txt`/dir into a Rodin `.zip` archive. |
 | `fmt`      | Reformat Event-B in place (style, operator convention, indentation). |
 | `build`    | Static-check a Rodin project and emit `.bcc` / `.bcm` checked XML. |
+| `clean`    | Drop the stored proofs whose obligation no longer exists, and empty the ones that no longer apply. |
 | `completions` | Print a shell completion script to stdout (run `rossi completions --help` for the supported shells). |
 
 ### Validate

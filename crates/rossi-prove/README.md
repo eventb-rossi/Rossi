@@ -15,6 +15,9 @@ proofs still discharge them.
   proof that no longer applies to the regenerated sequent is broken.
 - Reports the Rodin confidence scale (discharged, reviewed, uncertain, pending,
   unattempted), taking a tree's confidence as the minimum over its nodes.
+- Rewrites a `.bpr` entry by entry — dropping a proof or emptying it in place —
+  as one verbatim streaming pass, so a proof too old or too damaged to load can
+  still be cleaned out and everything else stays byte-identical.
 - Registers the implemented reasoner families: the auto-rewriter, generalized
   modus ponens, the one-point rule, inference and structural rules, and manual
   steps.
