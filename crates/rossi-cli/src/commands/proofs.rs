@@ -1,5 +1,7 @@
-//! Local proof-state sources for `rossi export --proofs` and the proof
-//! carry in `rossi import`.
+//! Shared proof-state handling for the commands that touch `.bpr` /
+//! `.bps` / `.bpo` files: where `rossi export --proofs` and `rossi
+//! import` read local proof state from, and the verdict `rossi prove`
+//! and `rossi clean` both judge a stored proof by.
 //!
 //! Proof state is the trio Rodin keeps next to a component: `.bpr` (the
 //! proofs), `.bps` (their statuses), and `.bpo` (the obligations they were
@@ -18,8 +20,92 @@ use std::io::Read;
 use std::path::{Path, PathBuf};
 
 use rossi_build::is_normal_path_component;
+use rossi_prove::bpr::{ProofBody, ProofEntry};
+use rossi_prove::confidence::Bucket;
+use rossi_prove::po_loader::PoProject;
+use rossi_prove::status::compute_status;
+use rossi_prove::{Confidence, ProverSequent};
 
 use super::eventb_io::{CmdResult, is_zip_ext};
+
+/// One obligation's verdict, recomputed from its stored proof rather
+/// than read out of the `.bps` cache.
+///
+/// The cached status is exactly what cannot be trusted here: a proof
+/// Rodin can no longer open still carries whatever confidence it had
+/// when it last worked.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum ProofStatus {
+    /// The proof cannot be represented at all — an old storage
+    /// vintage, an extended mathematical language, or content that
+    /// does not parse.
+    Unsupported,
+    /// The obligation itself could not be loaded from its `.bpo`.
+    Error,
+    /// The stored proof no longer applies to its obligation.
+    Broken,
+    /// The proof stands, at the recorded confidence.
+    Checked(Bucket),
+}
+
+impl ProofStatus {
+    /// The word `rossi prove` and `rossi clean` print.
+    pub(crate) fn label(self) -> &'static str {
+        match self {
+            ProofStatus::Unsupported => "unsupported",
+            ProofStatus::Error => "error",
+            ProofStatus::Broken => "broken",
+            ProofStatus::Checked(Bucket::Discharged) => "discharged",
+            ProofStatus::Checked(Bucket::Reviewed) => "reviewed",
+            ProofStatus::Checked(Bucket::Pending) => "pending",
+            ProofStatus::Checked(Bucket::Unattempted) => "unattempted",
+        }
+    }
+}
+
+/// A stored proof judged against its obligation.
+pub(crate) struct Classified {
+    pub(crate) status: ProofStatus,
+    /// The sequent the verdict was computed against, when the
+    /// obligation loaded — so a caller that goes on to replay the
+    /// proof does not load it a second time.
+    pub(crate) sequent: Option<ProverSequent>,
+}
+
+/// Judges one stored proof against the obligation of the same name in
+/// `path`'s `.bpo`.
+///
+/// The single source of truth for what "broken" means: `rossi prove`
+/// reports it and `rossi clean --broken` acts on it, and the two must
+/// never disagree about which proofs are past use.
+pub(crate) fn classify(project: &PoProject, path: &str, proof: &ProofEntry) -> Classified {
+    match &proof.body {
+        ProofBody::Skipped => unreachable!("classifying a proof that was not read"),
+        ProofBody::Unsupported(_) => {
+            return Classified {
+                status: ProofStatus::Unsupported,
+                sequent: None,
+            };
+        }
+        ProofBody::Loaded(_) => {}
+    }
+    let Ok(sequent) = project.load(path, &proof.name) else {
+        return Classified {
+            status: ProofStatus::Error,
+            sequent: None,
+        };
+    };
+    let verdict = compute_status(&sequent, proof);
+    let status = if verdict.broken {
+        ProofStatus::Broken
+    } else {
+        ProofStatus::Checked(Confidence::classify(verdict.confidence.map(i64::from)))
+    };
+    Classified {
+        status,
+        sequent: Some(sequent),
+    }
+}
 
 /// Whether `name` (a basename or archive entry name) is a proof-state file.
 fn is_proof_file_name(name: &str) -> bool {

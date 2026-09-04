@@ -27,10 +27,10 @@ use clap::Args;
 use rayon::prelude::*;
 
 use rossi_prove::bpr::{Keep, ProofBody, ProofEntry, visit_bpr};
-use rossi_prove::confidence::Bucket;
 use rossi_prove::po_loader::{PoFile, PoProject};
-use rossi_prove::status::compute_status;
-use rossi_prove::{Confidence, ProofTreeNode, ReasonerProvider, RegistryProvider, Skeleton};
+use rossi_prove::{ProofTreeNode, ReasonerProvider, RegistryProvider, Skeleton};
+
+use super::proofs::ProofStatus;
 
 #[derive(Args)]
 pub struct ProveArgs {
@@ -282,43 +282,31 @@ enum Replay {
 }
 
 fn check_proof(project: &PoProject, path: &str, proof: &ProofEntry, replay: bool) -> ProofVerdict {
+    let classified = super::proofs::classify(project, path, proof);
     let mut outcome = None;
-    let status = match &proof.body {
-        ProofBody::Skipped => unreachable!("every proof is read"),
-        ProofBody::Unsupported(_) => "unsupported",
-        ProofBody::Loaded(stored) => match project.load(path, &proof.name) {
-            Err(_) => "error",
-            Ok(seq) => {
-                let verdict = compute_status(&seq, proof);
-                if replay && !verdict.broken {
-                    let skel = stored.skeleton.as_ref().expect("full parse");
-                    outcome = Some(match missing_reasoner(skel) {
-                        Some(id) => Replay::Skipped(id),
-                        None => {
-                            let mut node = ProofTreeNode::open(seq.clone());
-                            if rossi_prove::replay(&mut node, skel, &RegistryProvider) {
-                                Replay::Replayed
-                            } else {
-                                Replay::Failed
-                            }
-                        }
-                    });
-                }
-                if verdict.broken {
-                    "broken"
+    // Only a proof that still applies to its obligation is worth
+    // re-deriving, and it reuses the sequent the verdict was
+    // computed against.
+    if replay
+        && let ProofStatus::Checked(_) = classified.status
+        && let Some(seq) = classified.sequent
+        && let ProofBody::Loaded(stored) = &proof.body
+    {
+        let skel = stored.skeleton.as_ref().expect("full parse");
+        outcome = Some(match missing_reasoner(skel) {
+            Some(id) => Replay::Skipped(id),
+            None => {
+                let mut node = ProofTreeNode::open(seq);
+                if rossi_prove::replay(&mut node, skel, &RegistryProvider) {
+                    Replay::Replayed
                 } else {
-                    match Confidence::classify(verdict.confidence.map(i64::from)) {
-                        Bucket::Discharged => "discharged",
-                        Bucket::Reviewed => "reviewed",
-                        Bucket::Pending => "pending",
-                        Bucket::Unattempted => "unattempted",
-                    }
+                    Replay::Failed
                 }
             }
-        },
-    };
+        });
+    }
     ProofVerdict {
-        status,
+        status: classified.status.label(),
         replay: outcome,
     }
 }
