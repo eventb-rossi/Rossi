@@ -18,6 +18,7 @@
 //!   which is where the decision "may these two tokens touch?" is made once,
 //!   correctly, instead of at every emit site.
 
+use std::borrow::Cow;
 use std::collections::BTreeSet;
 
 use crate::choice::{ByteSource, ByteSourceExt};
@@ -60,6 +61,19 @@ pub struct Config {
     /// out, after layout has been decided on the derived spelling, so the same
     /// seed yields the same corpus either way.
     pub unicode_operators: bool,
+    /// Emit every structural keyword in lower case, whichever case the
+    /// grammar's case-insensitive keyword patterns derived.
+    ///
+    /// Camille accepts a keyword all-lower or all-upper but not mixed, and not
+    /// `BEGIN` in upper case at all, so the generator's per-letter case choice
+    /// makes it reject most models at `[1,1]` before any formula is reached.
+    /// That is the class that hides every other one, the ASCII operators
+    /// included.
+    ///
+    /// Rewritten at the same point and for the same reason as
+    /// [`Self::unicode_operators`]; `lookup` is case-insensitive, so layout
+    /// never saw the case in the first place.
+    pub lowercase_keywords: bool,
 }
 
 impl Default for Config {
@@ -70,6 +84,7 @@ impl Default for Config {
             max_components: 3,
             suppressed: Vec::new(),
             unicode_operators: false,
+            lowercase_keywords: false,
         }
     }
 }
@@ -693,18 +708,11 @@ impl<'a, 'b> Walk<'a, 'b> {
     /// re-implementing the lexer.
     fn render(&mut self) -> String {
         let tokens = std::mem::take(&mut self.tokens);
-        // Read once: the layout below must decide on the derived spelling, not
-        // the emitted one, or the two conventions stop being the same corpus.
-        let unicode = self.config.unicode_operators;
         let mut out = String::new();
         for (index, token) in tokens.iter().enumerate() {
-            let text = if unicode {
-                unicode_spelling(&token.text).unwrap_or(&token.text)
-            } else {
-                &token.text
-            };
+            let text = emitted_spelling(&token.text, self.config);
             if token.glued {
-                out.push_str(text);
+                out.push_str(&text);
                 continue;
             }
             if index == 0 || starts_a_line(&token.text) {
@@ -714,6 +722,11 @@ impl<'a, 'b> Walk<'a, 'b> {
                 if !is_structural_keyword(&token.text) {
                     out.push_str("    ");
                 }
+            // Every layout decision reads the *derived* spelling, never the
+            // emitted one, or the two conventions stop being the same corpus:
+            // `{}` and `,,` answer `may_touch` differently from `∅` and `↦`,
+            // and this short-circuit would then draw a different number of
+            // bytes from the choice stream.
             } else if !may_touch(&tokens[index - 1].text, &token.text) || self.source.ratio(1, 2) {
                 out.push(' ');
             }
@@ -726,7 +739,7 @@ impl<'a, 'b> Walk<'a, 'b> {
                 out.push_str(comment);
                 out.push(' ');
             }
-            out.push_str(text);
+            out.push_str(&text);
         }
         out.push('\n');
         out
@@ -788,6 +801,51 @@ fn literals(node: &Node) -> Vec<&str> {
         }
         node => node.transparent().map(literals).unwrap_or_default(),
     }
+}
+
+/// The spelling to write for `token` under `config`'s emission conventions.
+///
+/// The two rewrites cannot collide: rossi keeps operators and structural
+/// keywords in separate tables, and no spelling is in both.
+fn emitted_spelling<'a>(token: &'a str, config: &Config) -> Cow<'a, str> {
+    if config.unicode_operators
+        && let Some(spelling) = unicode_spelling(token)
+    {
+        return Cow::Borrowed(spelling);
+    }
+    if config.lowercase_keywords
+        && let Some(spelling) = lowercase_keyword(token)
+    {
+        return Cow::Owned(spelling);
+    }
+    Cow::Borrowed(token)
+}
+
+/// The lower-case spelling of `token`, when `token` is a structural keyword
+/// that is not already lower case.
+///
+/// The grammar spells keywords as case-insensitive patterns and the generator
+/// picks a case per letter, which Camille refuses: it takes a keyword
+/// all-lower or all-upper, but not `conteXt`, and not `BEGIN` at all.
+///
+/// `INITIALISATION` is deliberately left alone. rossi lists it among the
+/// keywords, but to Rodin it is an event *name*, and only that spelling names
+/// the initialisation event — eventb-checker reads `initialisation` as an
+/// ordinary event instead, which is a change of meaning rather than of
+/// spelling. Camille takes the name in any case, so there is nothing to fix.
+///
+/// Only whole tokens are matched, and `keywords::lookup` compares whole
+/// spellings, so a hyphenated name that embeds a keyword (`ctx0-end`) is not
+/// one and is left as derived.
+fn lowercase_keyword(token: &str) -> Option<String> {
+    let keyword = rossi::keywords::lookup(token)?;
+    if keyword.id == rossi::keywords::KeywordId::Initialisation {
+        return None;
+    }
+    token
+        .chars()
+        .any(|c| c.is_ascii_uppercase())
+        .then(|| token.to_ascii_lowercase())
 }
 
 /// The Unicode spelling of `token`, when `token` is an operator.
@@ -872,6 +930,22 @@ mod tests {
         }
     }
 
+    fn lowercase_config() -> Config {
+        Config {
+            lowercase_keywords: true,
+            ..Config::default()
+        }
+    }
+
+    /// Both conventions at once: what a checker gate actually feeds Camille.
+    fn normalized_config() -> Config {
+        Config {
+            unicode_operators: true,
+            lowercase_keywords: true,
+            ..Config::default()
+        }
+    }
+
     #[test]
     fn every_generated_model_derives_completely() {
         for model in generate_all(200) {
@@ -949,13 +1023,20 @@ mod tests {
     /// them bucketed by cause.
     #[test]
     fn generated_models_parse_or_are_rejected_cleanly() {
-        let models = generate_all(400);
+        assert_parses_or_rejects_cleanly(&generate_all(400), "generated");
+    }
+
+    /// No crash outside [`KNOWN_CRASHES`], and enough of `models` parsing to
+    /// spend the run on Rossi's accepting paths. Shared by the plain run and
+    /// the normalized ones, which are held to the same bar: normalizing
+    /// changes how a token is spelled, not whether the model is well formed.
+    fn assert_parses_or_rejects_cleanly(models: &[Generated], what: &str) {
         if models.is_empty() {
             return;
         }
         let mut accepted = 0usize;
         let mut crashes: Vec<String> = Vec::new();
-        for model in &models {
+        for model in models {
             match parse_catching(&model.text) {
                 Ok(true) => accepted += 1,
                 Ok(false) => {}
@@ -972,11 +1053,11 @@ mod tests {
             .collect();
         assert!(
             unknown.is_empty(),
-            "new parser crashes on generated input: {unknown:?}"
+            "new parser crashes on {what} input: {unknown:?}"
         );
         assert!(
             accepted * 100 >= models.len() * 25,
-            "only {accepted}/{} generated models parse, which is too few to \
+            "only {accepted}/{} {what} models parse, which is too few to \
              exercise the accepting paths",
             models.len()
         );
@@ -1074,65 +1155,99 @@ mod tests {
     /// instead of the derived one desynchronizes the choice stream and silently
     /// generates a different corpus from the same seed.
     #[test]
-    fn unicode_generation_yields_the_same_corpus() {
-        let plain = generate_all(200);
-        let unicode = generate_all_with(200, unicode_config());
-        if plain.is_empty() {
-            return;
-        }
-        let mut differing = 0;
-        for (plain, unicode) in plain.iter().zip(&unicode) {
-            assert_eq!(
-                plain.text.lines().count(),
-                unicode.text.lines().count(),
-                "layout diverged, so the two runs are not the same corpus"
-            );
-            assert_eq!(
-                plain.text.matches('@').count(),
-                unicode.text.matches('@').count(),
-                "label count diverged, so the choice streams are out of step"
-            );
-            if plain.text != unicode.text {
-                differing += 1;
+    fn normalized_generation_yields_the_same_corpus() {
+        for (config, what) in [
+            (unicode_config(), "--unicode"),
+            (lowercase_config(), "--lowercase-keywords"),
+            (normalized_config(), "both flags"),
+        ] {
+            let plain = generate_all(200);
+            let normalized = generate_all_with(200, config);
+            if plain.is_empty() {
+                return;
             }
+            let mut differing = 0;
+            for (plain, normalized) in plain.iter().zip(&normalized) {
+                assert_eq!(
+                    plain.text.lines().count(),
+                    normalized.text.lines().count(),
+                    "{what}: layout diverged, so the runs are not the same corpus"
+                );
+                assert_eq!(
+                    plain.text.matches('@').count(),
+                    normalized.text.matches('@').count(),
+                    "{what}: label count diverged, so the choice streams are out of step"
+                );
+                if plain.text != normalized.text {
+                    differing += 1;
+                }
+            }
+            assert!(differing > 0, "{what} changed nothing at all");
         }
-        assert!(differing > 0, "--unicode changed no spelling at all");
     }
 
-    /// The Unicode convention must not cost acceptance: rossi reads both, so
-    /// normalizing changes the spelling and nothing else. Same floor and the
-    /// same crash allowlist as the unnormalized run.
     #[test]
-    fn unicode_models_parse_or_are_rejected_cleanly() {
-        let models = generate_all_with(400, unicode_config());
+    fn lowercase_keyword_rewrites_structural_keywords_only() {
+        for (token, lowered) in [
+            ("conteXt", "context"),
+            ("MACHINE", "machine"),
+            ("END", "end"),
+            ("BeGiN", "begin"),
+            ("WHEN", "when"),
+            ("Theorem", "theorem"),
+            ("SKIP", "skip"),
+        ] {
+            assert_eq!(
+                lowercase_keyword(token).as_deref(),
+                Some(lowered),
+                "token {token:?}"
+            );
+        }
+        for token in [
+            // Already lower case: nothing to rewrite, and nothing allocated.
+            "context",
+            "end",
+            // An event name to Rodin, and only this spelling names the
+            // initialisation event.
+            "INITIALISATION",
+            // Not keywords: a hyphenated name that embeds one, a math token,
+            // a label, an ordinary identifier.
+            "ctx0-end",
+            "NAT",
+            "@inv1",
+            "wheres",
+        ] {
+            assert_eq!(lowercase_keyword(token), None, "token {token:?}");
+        }
+    }
+
+    /// The one keyword the case rewrite must not touch, checked on real
+    /// generated text rather than only on the helper.
+    #[test]
+    fn lowercase_generation_keeps_the_initialisation_event() {
+        let models = generate_all_with(200, lowercase_config());
         if models.is_empty() {
             return;
         }
-        let mut accepted = 0usize;
-        let mut crashes: Vec<String> = Vec::new();
-        for model in &models {
-            match parse_catching(&model.text) {
-                Ok(true) => accepted += 1,
-                Ok(false) => {}
-                Err(message) => {
-                    if !crashes.contains(&message) {
-                        crashes.push(message);
-                    }
-                }
-            }
-        }
-        let unknown: Vec<&String> = crashes
-            .iter()
-            .filter(|message| !KNOWN_CRASHES.iter().any(|known| message.contains(known)))
-            .collect();
+        let batch: String = models.iter().map(|model| model.text.as_str()).collect();
         assert!(
-            unknown.is_empty(),
-            "new parser crashes on Unicode-normalized input: {unknown:?}"
+            batch.contains("INITIALISATION"),
+            "the initialisation event was lower-cased into an ordinary one"
         );
-        assert!(
-            accepted * 100 >= models.len() * 25,
-            "only {accepted}/{} Unicode-normalized models parse",
-            models.len()
+        for keyword in ["conteXt", "CONTEXT", "Machine", "BEGIN"] {
+            assert!(!batch.contains(keyword), "{keyword} survived the rewrite");
+        }
+    }
+
+    /// Neither convention may cost acceptance: rossi reads both spellings and
+    /// both cases, so normalizing changes how a token reads and nothing else.
+    #[test]
+    fn normalized_models_parse_or_are_rejected_cleanly() {
+        assert_parses_or_rejects_cleanly(&generate_all_with(200, unicode_config()), "Unicode");
+        assert_parses_or_rejects_cleanly(&generate_all_with(200, lowercase_config()), "lower-case");
+        assert_parses_or_rejects_cleanly(
+            &generate_all_with(200, normalized_config()),
+            "normalized",
         );
     }
 

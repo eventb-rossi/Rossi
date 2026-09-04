@@ -53,9 +53,13 @@ struct GenArgs {
     #[arg(long = "suppress", value_name = "RULE")]
     suppressed: Vec<String>,
     /// Emit the Unicode spelling of every operator, which is what
-    /// eventb-checker accepts.
+    /// eventb-checker accepts. Pair with `--lowercase-keywords`.
     #[arg(long)]
     unicode: bool,
+    /// Emit every structural keyword in lower case, which is what Camille
+    /// accepts. Pair with `--unicode`.
+    #[arg(long)]
+    lowercase_keywords: bool,
 }
 
 fn main() -> ExitCode {
@@ -90,6 +94,7 @@ fn generate(args: GenArgs) -> ExitCode {
         max_tokens: args.max_tokens,
         suppressed: args.suppressed.clone(),
         unicode_operators: args.unicode,
+        lowercase_keywords: args.lowercase_keywords,
         ..Config::default()
     };
     let generator = Generator::new(&grammar, config);
