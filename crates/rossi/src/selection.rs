@@ -105,7 +105,9 @@ pub(crate) struct SyntaxSnapshot {
 
 impl SyntaxSnapshot {
     pub(crate) fn empty(text: &str) -> Self {
-        let LexicalSpans { comments, labels } = comments::lexical_spans(text);
+        let LexicalSpans {
+            comments, labels, ..
+        } = comments::lexical_spans(text);
         Self {
             root: None,
             comments,

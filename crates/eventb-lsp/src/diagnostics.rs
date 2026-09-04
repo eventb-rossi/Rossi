@@ -59,8 +59,8 @@ pub(crate) fn document_diagnostics(doc: &ParsedDocument) -> Vec<Diagnostic> {
 /// `rossi fmt --check`, not a `rossi validate` finding.
 pub const ASCII_OPERATOR_CODE: &str = "ascii-operator";
 
-/// Every ASCII operator spelling in the code of `text` (comments and labels
-/// masked first) as `(range, ASCII spelling, Unicode spelling)`: what
+/// Every ASCII operator spelling in the code of `text` (comments, labels and
+/// component names masked first) as `(range, ASCII spelling, Unicode spelling)`: what
 /// [`ascii_operator_diagnostics`] flags, and what its quick fix checks a
 /// diagnostic against, so the two can never disagree. It is exactly what the
 /// fix-all conversion would rewrite — the private-use operators, which stay
@@ -482,6 +482,33 @@ mod tests {
     use crate::document::ParsedDocument;
     use crate::lsp_types::{Diagnostic, DiagnosticSeverity, NumberOrString, Position};
     use rossi::deps::{ComponentKind, Cycle, EdgeKind};
+
+    /// A name's own segments read as ASCII spellings (see
+    /// `rossi::comments::LexicalSpans::names`); none of them is code.
+    #[test]
+    fn ascii_operator_diagnostics_skip_component_names() {
+        let text = concat!(
+            "MACHINE A-C0\n",
+            "REFINES end-to-end\n",
+            "SEES CTX-INT-1 A-or-B\n",
+            "VARIABLES x\n",
+            "INVARIANTS\n",
+            "  @i x - 1 : NAT\n",
+            "END\n",
+        );
+        let diagnostics = ascii_operator_diagnostics(text);
+        let flagged: Vec<&str> = diagnostics.iter().map(|d| d.message.as_str()).collect();
+        // Only the invariant's own operators, never a name's hyphen or a
+        // keyword-shaped segment inside one.
+        assert_eq!(
+            flagged,
+            [
+                "use `−` instead of ASCII `-`",
+                "use `∈` instead of ASCII `:`",
+                "use `ℕ` instead of ASCII `NAT`",
+            ]
+        );
+    }
 
     #[test]
     fn ascii_operator_diagnostics_flag_code_spellings_only() {

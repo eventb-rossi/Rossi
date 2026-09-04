@@ -27,6 +27,12 @@ pub struct LexicalSpans {
     /// text, so a keyword spelled inside a label (`@safety-END`) is not
     /// structural.
     pub labels: Vec<Span>,
+    /// Every component and event name: the words in the grammar's
+    /// `component_name` positions. Name text, not code — a name joins its
+    /// segments with `-`, which is not subtraction, and `-` is not a word
+    /// character, so a segment between two hyphens (`CTX-INT-1`, `A-or-B`)
+    /// is word-bounded and an operator scan would rewrite it.
+    pub names: Vec<Span>,
 }
 
 impl LexicalSpans {
@@ -73,10 +79,16 @@ impl LexicalSpans {
         out
     }
 
-    /// The comment and label spans merged into one sorted, disjoint list:
-    /// every byte a code rewrite must copy through untouched.
+    /// The comment, label and name spans merged into one sorted, disjoint
+    /// list: every byte a code rewrite must copy through untouched.
     fn opaque_spans(&self) -> Vec<Span> {
-        let mut spans: Vec<Span> = self.comments.iter().chain(&self.labels).copied().collect();
+        let mut spans: Vec<Span> = self
+            .comments
+            .iter()
+            .chain(&self.labels)
+            .chain(&self.names)
+            .copied()
+            .collect();
         spans.sort_by_key(|s| s.start);
         spans
     }
@@ -109,6 +121,12 @@ pub fn lexical_spans(source: &str) -> LexicalSpans {
     let bytes = source.as_bytes();
     let mut comments = Vec::new();
     let mut labels = Vec::new();
+    let mut names = Vec::new();
+    // Set by a keyword that introduces `component_name`s, cleared by the next
+    // structural keyword — the grammar ends each name list at its section's
+    // follow-set. Whitespace and comments may sit inside a list, so only a
+    // word or a token that cannot start a name clears it.
+    let mut expecting_names = false;
     let mut i = 0;
 
     while i < bytes.len() {
@@ -122,6 +140,7 @@ pub fn lexical_spans(source: &str) -> LexicalSpans {
                     i += 1;
                 }
                 labels.push(Span { start, end: i });
+                expecting_names = false;
             }
             b'/' if i + 1 < bytes.len() && bytes[i + 1] == b'/' => {
                 let start = i;
@@ -139,11 +158,55 @@ pub fn lexical_spans(source: &str) -> LexicalSpans {
                 i = (i + 2).min(bytes.len());
                 comments.push(Span { start, end: i });
             }
-            _ => i += 1,
+            b' ' | b'\t' | b'\n' | b'\r' => i += 1,
+            c if c.is_ascii_alphabetic() || c == b'_' => {
+                // One whole structural word: hyphen-joined, so `end-to-end` is
+                // a single name and not a keyword with a tail.
+                let start = i;
+                while i < bytes.len() && is_structural_word_byte(bytes[i]) {
+                    i += 1;
+                }
+                let word = &source[start..i];
+                if expecting_names && !crate::keywords::is_keyword(word) {
+                    names.push(Span { start, end: i });
+                } else {
+                    expecting_names = introduces_names(word);
+                }
+            }
+            _ => {
+                expecting_names = false;
+                i += 1;
+            }
         }
     }
 
-    LexicalSpans { comments, labels }
+    LexicalSpans {
+        comments,
+        labels,
+        names,
+    }
+}
+
+/// Whether `byte` continues a `component_name`: [`crate::keywords::
+/// is_structural_word_char`] over bytes, so the scan stays byte-based. A name
+/// is ASCII, so a continuation byte of a multi-byte character never matches
+/// and a name span always covers whole characters.
+fn is_structural_word_byte(byte: u8) -> bool {
+    byte.is_ascii_alphanumeric() || byte == b'_' || byte == b'-'
+}
+
+/// Whether the words after `word` name a component or event.
+///
+/// These are the grammar's `component_name` positions — `kw_context`,
+/// `kw_machine`, `kw_refines`, `kw_sees`, `kw_extends` and `kw_event`. The
+/// first three take one name and the rest a list, but the distinction costs
+/// nothing here: a list ends at the next structural keyword either way.
+fn introduces_names(word: &str) -> bool {
+    use crate::keywords::KeywordId::{Context, Event, Extends, Machine, Refines, Sees};
+    matches!(
+        crate::keywords::lookup(word).map(|k| k.id),
+        Some(Context | Machine | Refines | Sees | Extends | Event)
+    )
 }
 
 /// Byte spans of every `//...` and `/*...*/` comment in `source`.
@@ -411,6 +474,50 @@ mod tests {
         let out = map_code_segments_in_range(src, start, src.len(), |code| code.replace("<=", "≤"));
         // The `<=` inside the comment is untouched; the `<=` in `c <= d` is converted.
         assert_eq!(out, "note <= here */ c ≤ d");
+    }
+
+    /// A component or event name is name text, not code: its hyphen is not
+    /// subtraction, and a segment between two hyphens is not an operator
+    /// however it is spelled. `-` is not a word character, so `INT` in
+    /// `CTX-INT-1` is word-bounded and an operator scan would rewrite it.
+    #[test]
+    fn component_names_are_opaque_to_a_code_rewrite() {
+        for (source, name) in [
+            ("MACHINE A-C0\nEND\n", "A-C0"),
+            ("CONTEXT ctx-1\nEND\n", "ctx-1"),
+            ("MACHINE m\nREFINES end-to-end\nEND\n", "end-to-end"),
+            ("MACHINE m\nSEES CTX-INT-1\nEND\n", "CTX-INT-1"),
+            ("CONTEXT c\nEXTENDS A-or-B\nEND\n", "A-or-B"),
+            ("MACHINE m\nEVENTS\nEVENT do-step\nEND\nEND\n", "do-step"),
+        ] {
+            let masked = mask_opaque(source);
+            let start = source.find(name).expect("name occurs in source");
+            assert_eq!(
+                &masked[start..start + name.len()],
+                " ".repeat(name.len()),
+                "{name:?} must be masked in {source:?}"
+            );
+        }
+    }
+
+    /// Masking names must not swallow the formulas around them: a name list
+    /// ends at the next structural keyword, and an operator in a formula is
+    /// still code.
+    #[test]
+    fn masking_names_stops_at_the_next_clause() {
+        let source = "MACHINE m-1\nSEES c-1 c-2\nVARIABLES x\nINVARIANTS\n  @i x - 1 ∈ ℕ\nEND\n";
+        let masked = mask_opaque(source);
+        for name in ["m-1", "c-1", "c-2"] {
+            let at = source.find(name).unwrap();
+            assert_eq!(
+                &masked[at..at + name.len()],
+                " ".repeat(name.len()),
+                "{name}"
+            );
+        }
+        // The clause keywords and the formula survive.
+        assert!(masked.contains("VARIABLES x"), "masked: {masked:?}");
+        assert!(masked.contains("x - 1"), "subtraction is code: {masked:?}");
     }
 
     #[test]

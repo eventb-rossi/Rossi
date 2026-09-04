@@ -223,9 +223,9 @@ impl CodeActionProvider {
         let uri = &params.text_document.uri;
         let refactor = kind_requested(params, &CodeActionKind::REFACTOR);
         let fix_all = kind_requested(params, &FIX_ALL_KIND);
-        // Operator detection sees the code only — comments and labels masked,
-        // positions preserved — so prose and label names neither trigger a
-        // conversion nor get rewritten by one.
+        // Operator detection sees the code only — comments, labels and
+        // component names masked, positions preserved — so prose and names
+        // neither trigger a conversion nor get rewritten by one.
         let masked = rossi::comments::mask_opaque(text);
         let mut actions = Vec::new();
 
@@ -1246,6 +1246,44 @@ mod tests {
             provider.convert_to_unicode("@inv1.1 x : NAT\n@safety-END x - 1 > 0"),
             "@inv1.1 x ∈ ℕ\n@safety-END x − 1 > 0"
         );
+    }
+
+    /// The whole-document conversion is offered as a `source.fixAll` on-save
+    /// action, so it must never produce text that stops parsing. Component
+    /// and event names are the trap — see
+    /// `rossi::comments::LexicalSpans::names`.
+    #[test]
+    fn test_convert_keeps_component_and_event_names() {
+        let provider = CodeActionProvider::new();
+        let source = concat!(
+            "MACHINE A-C0\n",
+            "REFINES end-to-end\n",
+            "SEES CTX-INT-1 A-or-B\n",
+            "VARIABLES x\n",
+            "INVARIANTS\n",
+            "  @i x - 1 : NAT\n",
+            "EVENTS\n",
+            "EVENT do-step\n",
+            "THEN\n",
+            "  @a x := x - 1\n",
+            "END\n",
+            "END\n",
+        );
+        let converted = provider.convert_to_unicode(source);
+        for name in ["A-C0", "end-to-end", "CTX-INT-1", "A-or-B", "do-step"] {
+            assert!(
+                converted.contains(name),
+                "{name} was rewritten:\n{converted}"
+            );
+        }
+        // The formulas around them still convert.
+        assert!(converted.contains("x − 1 ∈ ℕ"), "{converted}");
+        assert!(converted.contains("x ≔ x − 1"), "{converted}");
+        // The invariant that matters for an on-save action: what it writes
+        // back still parses. `A−C0` would not — `component_name` takes an
+        // ASCII hyphen and nothing else.
+        rossi::parse(source).expect("the fixture parses to begin with");
+        rossi::parse(&converted).expect("the converted document must still parse");
     }
 
     #[test]
