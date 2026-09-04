@@ -52,6 +52,10 @@ struct GenArgs {
     /// isolated.
     #[arg(long = "suppress", value_name = "RULE")]
     suppressed: Vec<String>,
+    /// Emit the Unicode spelling of every operator, which is what
+    /// eventb-checker accepts.
+    #[arg(long)]
+    unicode: bool,
 }
 
 fn main() -> ExitCode {
@@ -85,6 +89,7 @@ fn generate(args: GenArgs) -> ExitCode {
         max_depth: args.max_depth,
         max_tokens: args.max_tokens,
         suppressed: args.suppressed.clone(),
+        unicode_operators: args.unicode,
         ..Config::default()
     };
     let generator = Generator::new(&grammar, config);

@@ -46,6 +46,20 @@ pub struct Config {
     /// is off, that rule is the cause. It is a diagnostic control, not part of
     /// normal generation.
     pub suppressed: Vec<String>,
+    /// Emit the Unicode spelling of every operator, whichever arm the grammar
+    /// derived.
+    ///
+    /// The tree-sitter grammar offers both conventions per operator and rossi
+    /// accepts either, so an unnormalized model is about half ASCII. Camille
+    /// and Rodin's `FormulaFactory` are Unicode-only for those spellings, so a
+    /// differential run against eventb-checker needs this on: without it
+    /// nearly every model reports a documented divergence instead of a
+    /// finding.
+    ///
+    /// Only the spelling changes. The rewrite happens as a token is written
+    /// out, after layout has been decided on the derived spelling, so the same
+    /// seed yields the same corpus either way.
+    pub unicode_operators: bool,
 }
 
 impl Default for Config {
@@ -55,6 +69,7 @@ impl Default for Config {
             max_tokens: 600,
             max_components: 3,
             suppressed: Vec::new(),
+            unicode_operators: false,
         }
     }
 }
@@ -678,10 +693,18 @@ impl<'a, 'b> Walk<'a, 'b> {
     /// re-implementing the lexer.
     fn render(&mut self) -> String {
         let tokens = std::mem::take(&mut self.tokens);
+        // Read once: the layout below must decide on the derived spelling, not
+        // the emitted one, or the two conventions stop being the same corpus.
+        let unicode = self.config.unicode_operators;
         let mut out = String::new();
         for (index, token) in tokens.iter().enumerate() {
+            let text = if unicode {
+                unicode_spelling(&token.text).unwrap_or(&token.text)
+            } else {
+                &token.text
+            };
             if token.glued {
-                out.push_str(&token.text);
+                out.push_str(text);
                 continue;
             }
             if index == 0 || starts_a_line(&token.text) {
@@ -703,7 +726,7 @@ impl<'a, 'b> Walk<'a, 'b> {
                 out.push_str(comment);
                 out.push(' ');
             }
-            out.push_str(&token.text);
+            out.push_str(text);
         }
         out.push('\n');
         out
@@ -767,6 +790,27 @@ fn literals(node: &Node) -> Vec<&str> {
     }
 }
 
+/// The Unicode spelling of `token`, when `token` is an operator.
+///
+/// A generated token is always one whole grammar literal, so an operator is
+/// matched as a unit: `lookup_token` resolves both conventions plus the
+/// input-only aliases (`,,`, `+->>`, `-->>`), while a name, number, label,
+/// comment or structural keyword misses the table and is left alone. Matching
+/// whole tokens is what keeps the hyphen of `ctx0-end` out of the rewrite: a
+/// textual scan over the rendered model would turn it into `ctx0−end`, which
+/// neither parser accepts, and masking comments and labels does not help
+/// because a component name is neither.
+///
+/// `unicode`, not `emit_text(true)`: rossi never writes the four Rodin
+/// private-use operators into a buffer because they render as tofu without
+/// Rodin's math font. A fuzz input goes to a parser, not a buffer, and
+/// `U+E100..=U+E103` are what Rodin's own lexer reads — measured against
+/// eventb-checker, which accepts all four glyphs and rejects every one of
+/// their ASCII spellings with `EB005`.
+fn unicode_spelling(token: &str) -> Option<&'static str> {
+    rossi::operators::lookup_token(token).map(|entry| entry.unicode)
+}
+
 /// Whether a token opens a structural region: a clause keyword, an event
 /// keyword, or `END`.
 ///
@@ -809,12 +853,23 @@ mod tests {
     use crate::test_support::load_grammar;
 
     fn generate_all(count: usize) -> Vec<Generated> {
+        generate_all_with(count, Config::default())
+    }
+
+    fn generate_all_with(count: usize, config: Config) -> Vec<Generated> {
         let Some(grammar) = load_grammar() else {
             return Vec::new();
         };
-        let generator = Generator::new(&grammar, Config::default());
+        let generator = Generator::new(&grammar, config);
         let mut rng = SplitMix64::new(0x5EED);
         (0..count).map(|_| generator.generate(&mut rng)).collect()
+    }
+
+    fn unicode_config() -> Config {
+        Config {
+            unicode_operators: true,
+            ..Config::default()
+        }
     }
 
     #[test]
@@ -923,6 +978,160 @@ mod tests {
             accepted * 100 >= models.len() * 25,
             "only {accepted}/{} generated models parse, which is too few to \
              exercise the accepting paths",
+            models.len()
+        );
+    }
+
+    #[test]
+    fn unicode_spelling_rewrites_operators_and_nothing_else() {
+        for (token, unicode) in [
+            (":", "∈"),
+            ("&", "∧"),
+            ("or", "∨"),
+            ("=>", "⇒"),
+            ("{}", "∅"),
+            ("NAT", "ℕ"),
+            ("POW", "ℙ"),
+            ("oftype", "⦂"),
+            ("|->", "↦"),
+            (",,", "↦"),
+            ("+->>", "⤀"),
+            ("..", "‥"),
+            (".", "·"),
+            ("-", "−"),
+            ("~", "∼"),
+            ("%", "λ"),
+            // Rodin's private-use glyphs: eventb-checker accepts these and
+            // rejects their ASCII spellings, which is why the fuzzer emits
+            // them where `rossi fmt` deliberately does not.
+            ("<+", "\u{E103}"),
+            ("<<->", "\u{E100}"),
+            ("<->>", "\u{E101}"),
+            ("<<->>", "\u{E102}"),
+        ] {
+            assert_eq!(unicode_spelling(token), Some(unicode), "token {token:?}");
+        }
+        // Everything that is not a whole operator token, above all a
+        // hyphenated component name: rewriting its `-` would break a name that
+        // only accepts ASCII, which is the trap a textual scan falls into.
+        for token in ["ctx0-end", "@inv1.1", "/* a/b */", "machine", "007", "x"] {
+            assert_eq!(unicode_spelling(token), None, "token {token:?}");
+        }
+    }
+
+    /// Normalizing operators must leave every other token byte-identical.
+    ///
+    /// The two that would break are a hyphenated name, whose `-` is not the
+    /// subtraction operator, and a comment, whose `/` is not division. Both
+    /// are guarded structurally — the rewrite matches whole tokens, and a
+    /// comment is spliced in at render time — so this pins the guarantee
+    /// against a later move to a textual pass, which could not tell them apart.
+    #[test]
+    fn unicode_generation_leaves_names_and_comments_alone() {
+        let models = generate_all_with(200, unicode_config());
+        if models.is_empty() {
+            return;
+        }
+        let batch: String = models.iter().map(|model| model.text.as_str()).collect();
+
+        assert!(
+            surrounded_by_word_chars(&batch, '-'),
+            "no hyphenated name was generated, so the test proves nothing"
+        );
+        assert!(
+            !surrounded_by_word_chars(&batch, '−'),
+            "a hyphen inside a name was rewritten to U+2212"
+        );
+
+        let opened = batch.matches("/*").count();
+        let intact: usize = BLOCK_COMMENTS
+            .iter()
+            .map(|comment| batch.matches(comment).count())
+            .sum();
+        assert_eq!(opened, intact, "a block comment was rewritten");
+    }
+
+    /// Whether `needle` ever appears between two word characters, which is
+    /// what a hyphen inside `ctx0-end` looks like and an operator never does:
+    /// `may_touch` only lets a token touch a bracket or a comma.
+    fn surrounded_by_word_chars(text: &str, needle: char) -> bool {
+        let chars: Vec<char> = text.chars().collect();
+        chars.windows(3).any(|window| {
+            window[1] == needle
+                && rossi::keywords::is_word_char(window[0])
+                && rossi::keywords::is_word_char(window[2])
+        })
+    }
+
+    /// `--unicode` must change only how operators are spelled: the two runs
+    /// are the same corpus in two conventions, which is what lets a
+    /// differential run blame a disagreement on the parsers rather than on two
+    /// different models.
+    ///
+    /// Layout is where that is easy to lose. `render` draws a random byte only
+    /// when two tokens *may* touch, and rewriting `{}` to `∅` or `,,` to
+    /// `↦` changes that answer — so deciding layout on the emitted spelling
+    /// instead of the derived one desynchronizes the choice stream and silently
+    /// generates a different corpus from the same seed.
+    #[test]
+    fn unicode_generation_yields_the_same_corpus() {
+        let plain = generate_all(200);
+        let unicode = generate_all_with(200, unicode_config());
+        if plain.is_empty() {
+            return;
+        }
+        let mut differing = 0;
+        for (plain, unicode) in plain.iter().zip(&unicode) {
+            assert_eq!(
+                plain.text.lines().count(),
+                unicode.text.lines().count(),
+                "layout diverged, so the two runs are not the same corpus"
+            );
+            assert_eq!(
+                plain.text.matches('@').count(),
+                unicode.text.matches('@').count(),
+                "label count diverged, so the choice streams are out of step"
+            );
+            if plain.text != unicode.text {
+                differing += 1;
+            }
+        }
+        assert!(differing > 0, "--unicode changed no spelling at all");
+    }
+
+    /// The Unicode convention must not cost acceptance: rossi reads both, so
+    /// normalizing changes the spelling and nothing else. Same floor and the
+    /// same crash allowlist as the unnormalized run.
+    #[test]
+    fn unicode_models_parse_or_are_rejected_cleanly() {
+        let models = generate_all_with(400, unicode_config());
+        if models.is_empty() {
+            return;
+        }
+        let mut accepted = 0usize;
+        let mut crashes: Vec<String> = Vec::new();
+        for model in &models {
+            match parse_catching(&model.text) {
+                Ok(true) => accepted += 1,
+                Ok(false) => {}
+                Err(message) => {
+                    if !crashes.contains(&message) {
+                        crashes.push(message);
+                    }
+                }
+            }
+        }
+        let unknown: Vec<&String> = crashes
+            .iter()
+            .filter(|message| !KNOWN_CRASHES.iter().any(|known| message.contains(known)))
+            .collect();
+        assert!(
+            unknown.is_empty(),
+            "new parser crashes on Unicode-normalized input: {unknown:?}"
+        );
+        assert!(
+            accepted * 100 >= models.len() * 25,
+            "only {accepted}/{} Unicode-normalized models parse",
             models.len()
         );
     }
