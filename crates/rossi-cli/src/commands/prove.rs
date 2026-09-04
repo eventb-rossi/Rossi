@@ -27,7 +27,8 @@ use clap::Args;
 use rayon::prelude::*;
 
 use rossi_prove::bpr::{Keep, ProofBody, ProofEntry, visit_bpr};
-use rossi_prove::po_loader::{PoFile, PoProject};
+use rossi_prove::confidence::Bucket;
+use rossi_prove::po_loader::PoProject;
 use rossi_prove::{ProofTreeNode, ReasonerProvider, RegistryProvider, Skeleton};
 
 use super::proofs::ProofStatus;
@@ -135,40 +136,23 @@ fn missing_reasoner(skel: &Skeleton) -> Option<String> {
     None
 }
 
-/// The `(component stem, contents)` of every file with `extension`
-/// in the input, stems keeping their archive directory prefix.
-type FileMap = BTreeMap<String, Vec<u8>>;
-
 fn prove(input: &Path, verbose: bool, replay: bool) -> Result<Summary, Box<dyn std::error::Error>> {
-    let (bpos, bprs) = collect(input)?;
+    let files = super::proofs::collect_proof_files(input)?;
+    let (bpos, bprs) = (&files.bpo, &files.bpr);
+    if bpos.is_empty() {
+        return Err(format!("no .bpo files found in {}", input.display()).into());
+    }
     let keep = if replay { Keep::Full } else { Keep::Deps };
 
     let pool = rossi_prove::thread_pool();
-
-    // One project per archive directory: hypothesis-set chains cross
-    // component files and resolve by file basename.
-    let parsed: Vec<Result<PoFile, String>> = pool.install(|| {
-        bpos.par_iter()
-            .map(|(stem, contents)| {
-                PoFile::read(contents.as_slice()).map_err(|err| format!("{stem}.bpo: {err}"))
-            })
-            .collect()
-    });
-    let mut projects: BTreeMap<&str, PoProject> = BTreeMap::new();
-    for (stem, parsed) in bpos.keys().zip(parsed) {
-        let (dir, file) = stem.rsplit_once('/').unwrap_or(("", stem));
-        projects
-            .entry(dir)
-            .or_default()
-            .insert(format!("{file}.bpo"), parsed?);
-    }
+    let projects = super::proofs::load_projects(bpos)?;
 
     // Components are independent once the projects exist: check them
     // in parallel, reporting in stem order.
     let checked: Vec<(Vec<String>, Summary)> = pool.install(|| {
         bpos.par_iter()
             .map(|(stem, _)| {
-                let (dir, file) = stem.rsplit_once('/').unwrap_or(("", stem));
+                let (dir, file) = super::proofs::split_stem(stem);
                 let bpr = bprs.get(stem).map(Vec::as_slice);
                 check_component(
                     stem,
@@ -233,7 +217,10 @@ fn check_component(
     for entry in po.sequents() {
         let name = &entry.name;
         let verdict = verdicts.get(name);
-        let status = verdict.map_or("unattempted", |verdict| verdict.status);
+        // An obligation with no stored proof was never attempted.
+        let status = verdict.map_or(ProofStatus::Checked(Bucket::Unattempted), |verdict| {
+            verdict.status
+        });
         let replay = verdict.and_then(|verdict| verdict.replay.as_ref());
         let note = match replay {
             None => String::new(),
@@ -252,16 +239,20 @@ fn check_component(
         };
         let replay_failed = matches!(replay, Some(Replay::Failed));
         match status {
-            "discharged" => summary.discharged += 1,
-            "reviewed" => summary.reviewed += 1,
-            "pending" => summary.pending += 1,
-            "unattempted" => summary.unattempted += 1,
-            "broken" => summary.broken += 1,
-            "unsupported" => summary.unsupported += 1,
-            _ => summary.errors += 1,
+            ProofStatus::Checked(Bucket::Discharged) => summary.discharged += 1,
+            ProofStatus::Checked(Bucket::Reviewed) => summary.reviewed += 1,
+            ProofStatus::Checked(Bucket::Pending) => summary.pending += 1,
+            ProofStatus::Checked(Bucket::Unattempted) => summary.unattempted += 1,
+            ProofStatus::Broken => summary.broken += 1,
+            ProofStatus::Unsupported => summary.unsupported += 1,
+            ProofStatus::Error => summary.errors += 1,
         }
-        if verbose || matches!(status, "broken" | "unsupported" | "error") || replay_failed {
-            lines.push(format!("{stem} {name}: {status}{note}"));
+        let problem = matches!(
+            status,
+            ProofStatus::Broken | ProofStatus::Unsupported | ProofStatus::Error
+        );
+        if verbose || problem || replay_failed {
+            lines.push(format!("{stem} {name}: {}{note}", status.label()));
         }
     }
     (lines, summary)
@@ -269,7 +260,7 @@ fn check_component(
 
 /// One proof's verdict against its obligation.
 struct ProofVerdict {
-    status: &'static str,
+    status: ProofStatus,
     replay: Option<Replay>,
 }
 
@@ -306,48 +297,7 @@ fn check_proof(project: &PoProject, path: &str, proof: &ProofEntry, replay: bool
         });
     }
     ProofVerdict {
-        status: classified.status.label(),
+        status: classified.status,
         replay: outcome,
     }
-}
-
-/// Collects the `.bpo` and `.bpr` files of a `.zip` archive or a
-/// project directory, keyed by component stem — through the shared
-/// proof-file walkers, so the extension set and the unsafe-basename
-/// filter stay in one place.
-fn collect(input: &Path) -> Result<(FileMap, FileMap), Box<dyn std::error::Error>> {
-    let mut bpos = FileMap::new();
-    let mut bprs = FileMap::new();
-    let mut insert = |name: &str, bytes: Vec<u8>| {
-        if let Some((stem, ext)) = name.rsplit_once('.') {
-            match ext {
-                "bpo" => {
-                    bpos.insert(stem.to_string(), bytes);
-                }
-                "bpr" => {
-                    bprs.insert(stem.to_string(), bytes);
-                }
-                _ => {}
-            }
-        }
-    };
-    if input.is_dir() {
-        for (basename, bytes) in super::proofs::proofs_in_dir(input)? {
-            insert(&basename, bytes);
-        }
-    } else {
-        let bytes = std::fs::read(input)?;
-        super::proofs::visit_zip_proofs(
-            &bytes,
-            |_| true,
-            |name, bytes| {
-                insert(name, bytes);
-                Ok(())
-            },
-        )?;
-    }
-    if bpos.is_empty() {
-        return Err(format!("no .bpo files found in {}", input.display()).into());
-    }
-    Ok((bpos, bprs))
 }

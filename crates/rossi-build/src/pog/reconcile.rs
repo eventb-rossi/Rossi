@@ -20,11 +20,17 @@
 //! A status row whose recorded stamp differs from its sequent's stamp
 //! is exactly the signal proof managers use to re-check the stored
 //! proof, so no proof-dependency analysis happens here.
+//!
+//! The module also owns the `.bps` byte format itself — the row
+//! spelling ([`fresh_status_row`]) and the surgery on it
+//! ([`reset_status_rows`]) that `rossi clean` performs outside any
+//! build, since a second writer elsewhere would be a second source of
+//! truth for the format.
 
 use std::collections::{BTreeSet, HashMap, HashSet};
 
-use quick_xml::Reader;
-use quick_xml::events::Event;
+use quick_xml::events::{BytesStart, BytesText, Event};
+use quick_xml::{Reader, Writer};
 
 use crate::ScFile;
 use crate::po_view::PoView;
@@ -282,6 +288,101 @@ pub fn fresh_status_row(name: &str, stamp: &str) -> String {
         attr::PS_MANUAL,
     ));
     row
+}
+
+/// Rewrites as fresh unattempted rows the status rows `reset` names,
+/// copying the rest of the document verbatim.
+///
+/// This is `rossi clean`'s other half: emptying a stored proof must
+/// leave its obligation unattempted, or the stale row would still
+/// claim it discharged. It is surgery rather than a regeneration
+/// because a `.bps` Rodin wrote is laid out differently from a
+/// generated one, and a maintenance pass should move only what it was
+/// asked to.
+///
+/// A row's new stamp comes from its obligation where `stamps` knows it
+/// — Rodin's own does, a proof attempt capturing the PO sequent's
+/// stamp when it is created — and otherwise from the row being
+/// replaced. Keeping the stamp is what makes the emptied state stick:
+/// Rodin's status update skips any row whose stamp still matches.
+pub fn reset_status_rows(
+    bps: &str,
+    reset: &BTreeSet<String>,
+    stamps: &HashMap<String, String>,
+) -> Result<String, quick_xml::Error> {
+    /// The replacement for `e`, when it is a row named in `reset`.
+    fn replacement(
+        e: &BytesStart<'_>,
+        reset: &BTreeSet<String>,
+        stamps: &HashMap<String, String>,
+    ) -> Option<String> {
+        if e.name().as_ref() != xtag::PS_STATUS.as_bytes() {
+            return None;
+        }
+        let name = attribute(e, attr::NAME).filter(|name| reset.contains(name))?;
+        let stamp = stamps
+            .get(&name)
+            .cloned()
+            .or_else(|| attribute(e, attr::PO_STAMP))
+            .unwrap_or_else(|| "0".into());
+        Some(fresh_status_row(&name, &stamp))
+    }
+
+    let mut reader = Reader::from_str(bps);
+    let mut out = Writer::new(Vec::with_capacity(bps.len()));
+    let mut buf = Vec::new();
+    // The elements still open below a replaced row. A status row is
+    // always self-closing in practice, but `clean` runs on whatever
+    // the user hands it, and a row written with a separate end tag
+    // would otherwise leave that tag stranded after the replacement.
+    let mut swallow: Option<usize> = None;
+    loop {
+        match reader.read_event_into(&mut buf)? {
+            Event::Start(e) => {
+                if let Some(depth) = swallow.as_mut() {
+                    *depth += 1;
+                } else if let Some(row) = replacement(&e, reset, stamps) {
+                    out.write_event(Event::Text(BytesText::from_escaped(row)))?;
+                    swallow = Some(0);
+                } else {
+                    out.write_event(Event::Start(e))?;
+                }
+            }
+            Event::Empty(e) if swallow.is_none() => {
+                if let Some(row) = replacement(&e, reset, stamps) {
+                    out.write_event(Event::Text(BytesText::from_escaped(row)))?;
+                } else {
+                    out.write_event(Event::Empty(e))?;
+                }
+            }
+            Event::End(e) => match swallow {
+                Some(0) => swallow = None,
+                Some(depth) => swallow = Some(depth - 1),
+                None => out.write_event(Event::End(e))?,
+            },
+            Event::Eof => break,
+            other => {
+                if swallow.is_none() {
+                    out.write_event(other)?;
+                }
+            }
+        }
+        buf.clear();
+    }
+    Ok(String::from_utf8(out.into_inner()).expect("events of a &str document are UTF-8"))
+}
+
+/// One attribute of a start tag, unescaped.
+fn attribute(e: &BytesStart<'_>, key: &str) -> Option<String> {
+    e.attributes().flatten().find_map(|a| {
+        (a.key.as_ref() == key.as_bytes()).then(|| {
+            let raw = String::from_utf8_lossy(&a.value);
+            match quick_xml::escape::unescape(&raw) {
+                Ok(cow) => cow.into_owned(),
+                Err(_) => raw.into_owned(),
+            }
+        })
+    })
 }
 
 /// The stamp each output element should carry.

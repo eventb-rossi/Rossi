@@ -19,14 +19,97 @@ use std::fs;
 use std::io::Read;
 use std::path::{Path, PathBuf};
 
+use rayon::prelude::*;
 use rossi_build::is_normal_path_component;
 use rossi_prove::bpr::{ProofBody, ProofEntry};
 use rossi_prove::confidence::Bucket;
-use rossi_prove::po_loader::PoProject;
+use rossi_prove::po_loader::{PoFile, PoProject};
 use rossi_prove::status::compute_status;
 use rossi_prove::{Confidence, ProverSequent};
 
 use super::eventb_io::{CmdResult, is_zip_ext};
+
+/// The `(component stem, contents)` of one kind of proof-state file,
+/// stems keeping their archive directory prefix.
+pub(crate) type FileMap = BTreeMap<String, Vec<u8>>;
+
+/// A project's proof state, split by kind.
+#[derive(Default)]
+pub(crate) struct ProofFiles {
+    /// Generated obligations.
+    pub(crate) bpo: FileMap,
+    /// The proofs themselves.
+    pub(crate) bpr: FileMap,
+    /// Per-obligation statuses.
+    pub(crate) bps: FileMap,
+}
+
+/// Collects the proof state of a `.zip` archive or a project
+/// directory, keyed by component stem.
+///
+/// Callers decide which kinds they need and which absence is fatal —
+/// `rossi prove` cannot work without obligations, `rossi clean`
+/// without proofs — so this reports no emptiness of its own.
+pub(crate) fn collect_proof_files(input: &Path) -> CmdResult<ProofFiles> {
+    let mut files = ProofFiles::default();
+    let mut insert = |name: &str, bytes: Vec<u8>| {
+        if let Some((stem, ext)) = name.rsplit_once('.') {
+            let map = match ext {
+                "bpo" => &mut files.bpo,
+                "bpr" => &mut files.bpr,
+                "bps" => &mut files.bps,
+                _ => return,
+            };
+            map.insert(stem.to_string(), bytes);
+        }
+    };
+    if input.is_dir() {
+        for (basename, bytes) in proofs_in_dir(input)? {
+            insert(&basename, bytes);
+        }
+    } else {
+        let bytes = fs::read(input)?;
+        visit_zip_proofs(
+            &bytes,
+            |_| true,
+            |name, bytes| {
+                insert(name, bytes);
+                Ok(())
+            },
+        )?;
+    }
+    Ok(files)
+}
+
+/// Parses the obligation files into one project per archive
+/// directory, because hypothesis-set chains cross component files and
+/// resolve by file basename.
+///
+/// Parsing is the expensive half of reading a project, so it runs on
+/// the shared pool.
+pub(crate) fn load_projects(bpos: &FileMap) -> CmdResult<BTreeMap<&str, PoProject>> {
+    let parsed: Vec<Result<PoFile, String>> = rossi_prove::thread_pool().install(|| {
+        bpos.par_iter()
+            .map(|(stem, contents)| {
+                PoFile::read(contents.as_slice()).map_err(|err| format!("{stem}.bpo: {err}"))
+            })
+            .collect()
+    });
+    let mut projects: BTreeMap<&str, PoProject> = BTreeMap::new();
+    for (stem, parsed) in bpos.keys().zip(parsed) {
+        let (dir, file) = split_stem(stem);
+        projects
+            .entry(dir)
+            .or_default()
+            .insert(format!("{file}.bpo"), parsed?);
+    }
+    Ok(projects)
+}
+
+/// A component stem split into its archive directory and basename.
+pub(crate) fn split_stem(stem: &str) -> (&str, &str) {
+    stem.rsplit_once('/').unwrap_or(("", stem))
+}
 
 /// One obligation's verdict, recomputed from its stored proof rather
 /// than read out of the `.bps` cache.
@@ -60,6 +143,22 @@ impl ProofStatus {
             ProofStatus::Checked(Bucket::Pending) => "pending",
             ProofStatus::Checked(Bucket::Unattempted) => "unattempted",
         }
+    }
+
+    /// Whether the stored proof is past use, so emptying it loses
+    /// nothing.
+    ///
+    /// Only a broken proof qualifies. [`ProofStatus::Unsupported`]
+    /// deliberately does not: it means *rossi* cannot represent the
+    /// proof, not that the proof is bad — most of them are an older
+    /// storage vintage Rodin reads perfectly well (23% of the models
+    /// collection's 68k stored proofs, almost all `old_vintage`).
+    /// Emptying those would destroy working proofs over a gap in this
+    /// reader. [`ProofStatus::Error`] is out for the same kind of
+    /// reason: the fault is then in the `.bpo`, and discarding the
+    /// proof would not mend it.
+    pub(crate) fn is_stale(self) -> bool {
+        matches!(self, ProofStatus::Broken)
     }
 }
 

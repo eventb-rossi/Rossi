@@ -14,6 +14,7 @@ static GLOBAL: mimalloc::MiMalloc = mimalloc::MiMalloc;
 mod commands {
     pub mod build;
     pub mod build_common;
+    pub mod clean;
     pub mod completions;
     pub mod eventb_io;
     pub mod export;
@@ -55,6 +56,9 @@ enum Command {
     /// Static-check a Rodin project and emit `.bcc` / `.bcm` output.
     #[command(about = "Static-check a Rodin project and emit .bcc/.bcm output")]
     Build(commands::build::BuildArgs),
+    /// Drop orphaned proofs and empty broken ones.
+    #[command(about = "Clean orphaned and broken proofs from a project")]
+    Clean(commands::clean::CleanArgs),
     /// Check the stored proofs of an Event-B project against its
     /// obligations.
     #[command(about = "Check stored proofs against their proof obligations")]
@@ -71,6 +75,7 @@ fn main() -> ExitCode {
         Command::Export(args) => commands::export::run(args),
         Command::Fmt(args) => commands::fmt::run(args),
         Command::Build(args) => commands::build::run_build_command(args),
+        Command::Clean(args) => commands::clean::run(args),
         Command::Prove(args) => commands::prove::run(args),
         // Derive the completion script from the same clap command tree the CLI
         // parses with, so it can never drift from the real interface.
