@@ -103,6 +103,22 @@ sudo dnf copr enable @eventb-rossi/eventb-copr
 sudo dnf install rossi
 ```
 
+### CLI — prebuilt archives
+
+Every release also attaches a standalone archive per platform to the
+[Releases page](https://github.com/eventb-rossi/rossi/releases), each holding
+both binaries. Check a download against the release's `SHA256SUMS`, then unpack
+it somewhere on your `PATH`:
+
+```bash
+tar -xzf rossi-aarch64-apple-darwin.tar.gz
+
+# macOS, and only for an archive fetched with a browser: browsers tag downloads
+# with `com.apple.quarantine`, and Gatekeeper then refuses to run binaries that
+# Rossi does not notarize. Installs from a package manager are unaffected.
+xattr -dr com.apple.quarantine rossi eventb-language-server
+```
+
 ### CLI — from crates.io
 
 ```bash
