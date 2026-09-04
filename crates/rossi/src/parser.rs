@@ -2689,12 +2689,16 @@ fn parse_predicate_application(
             }
             BuiltinPredicate::Partition => fx.ff.multiple_predicate(arguments, pred_span),
         })
-    } else if crate::builtins::is_reserved_word(&function) {
-        // A reserved word applied where no builtin predicate resolves it:
-        // the expression-only forms (`dom(x)`, `mod(x)`) and the generic
-        // atoms (`pred(x)`, `id(x)` — expressions, never predicates).
-        // Reject like Rodin instead of fabricating a user-defined predicate
-        // application named by a reserved word.
+    } else if crate::builtins::is_reserved_name(&function) {
+        // A reserved name applied where no builtin predicate resolves it:
+        // the expression-only forms (`dom(x)`, `mod(x)`), the generic atoms
+        // (`pred(x)`, `id(x)` — expressions, never predicates), and the
+        // keyword-token and ASCII-operator spellings (`INT(x)`, `POW(x)`,
+        // `not(x)`). Reject like Rodin instead of fabricating a user-defined
+        // predicate application named by a reserved name.
+        //
+        // The wider `is_reserved_name` because this is an *applied* head, not
+        // a bare identifier — see [`ParseError::ReservedWord`].
         Err(reserved_word_error(&function, function_span))
     } else {
         Ok(fx

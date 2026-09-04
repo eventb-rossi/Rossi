@@ -308,6 +308,62 @@ fn atoms_rejected_as_action_targets_and_phantom_predicates() {
 }
 
 // ============================================================================
+// A math keyword applied as a predicate head
+// ============================================================================
+
+// `predicate_application`'s head is an ASCII `identifier`, so every ASCII
+// operator and keyword spelling is shaped like one while no Unicode glyph is.
+// Left unguarded, `INT(x)` became a user-defined predicate named `INT` while
+// `ℤ(x)` could not lex at all — the same text, two spellings, two answers.
+// Rodin reads both as an expression and refuses it where a predicate belongs.
+//
+// The two spellings fail differently — the ASCII one reaches the AST builder
+// and reports a located `ReservedWord`, the Unicode one dies in the grammar —
+// so what the second column pins is only that neither is accepted.
+#[test_case::test_case("INT", "ℤ" ; "int")]
+#[test_case::test_case("NAT", "ℕ" ; "nat")]
+#[test_case::test_case("NAT1", "ℕ1" ; "nat1")]
+#[test_case::test_case("POW", "ℙ" ; "pow")]
+#[test_case::test_case("POW1", "ℙ1" ; "pow1")]
+#[test_case::test_case("UNION", "⋃" ; "quantified_union")]
+#[test_case::test_case("INTER", "⋂" ; "quantified_inter")]
+#[test_case::test_case("not", "¬" ; "negation")]
+#[test_case::test_case("or", "∨" ; "disjunction")]
+#[test_case::test_case("circ", "∘" ; "composition")]
+#[test_case::test_case("oftype", "⦂" ; "oftype")]
+#[test_case::test_case("true", "⊤" ; "true_literal")]
+#[test_case::test_case("false", "⊥" ; "false_literal")]
+fn math_keyword_rejected_as_predicate_head(ascii: &str, unicode: &str) {
+    assert_reserved(parse_predicate_str, &format!("{ascii}(x)"), ascii);
+    let applied = format!("{unicode}(x)");
+    assert!(
+        parse_predicate_str(&applied).is_err(),
+        "{applied:?} must be refused like its ASCII spelling"
+    );
+}
+
+// The guard must not reach the forms that are a different rule entirely.
+#[test]
+fn applied_keyword_forms_that_are_not_predicate_heads_still_parse() {
+    // `not` is negation when what follows it is a predicate; only the
+    // backtracked reading (`not(x)`, whose body is an expression) is a head.
+    parse_predicate_str("not(x = 1)").expect("not(…) is negation");
+    parse_predicate_str("¬(x = 1)").expect("¬(…) is negation");
+
+    // A prefix operator applied inside a comparison never reaches
+    // `predicate_application` — the whole thing is one `comparison_predicate`.
+    parse_predicate_str("POW(x) = y").expect("POW(x) is the powerset");
+    parse_predicate_str("ℙ(x) = y").expect("ℙ(x) is the powerset");
+    parse_predicate_str("UNION s · s ∈ x ∣ s = y").expect("quantified union");
+
+    // Expression position is untouched: both spellings build the same node,
+    // which is what Rodin's parser builds too (FUNIMAGE over an atomic).
+    parse_predicate_str("y = INT(x)").expect("INT(x) is a valid expression");
+    parse_predicate_str("y = ℤ(x)").expect("ℤ(x) is a valid expression");
+    parse_predicate_str("y = INT").expect("a bare INT is the integer set");
+}
+
+// ============================================================================
 // Recovery and XML import stay consistent with the strict parser
 // ============================================================================
 

@@ -35,10 +35,19 @@ pub enum ParseError {
         column: usize,
     },
 
-    /// A kernel_lang §2.2 reserved word was used as an ordinary identifier.
-    /// See [`crate::builtins::RESERVED_OPERATOR_WORDS`] /
+    /// A reserved word was used as an ordinary identifier. See
+    /// [`crate::builtins::RESERVED_OPERATOR_WORDS`] /
     /// [`crate::builtins::RESERVED_ATOM_WORDS`] for the policy (exact-case,
     /// Rodin parity). `line` and `column` are 1-indexed.
+    ///
+    /// Which list applies depends on the site. Declarations and bare
+    /// identifiers use the kernel_lang §2.2 words alone, so a constant may
+    /// still be named `NAT` as Rodin allows. A *predicate-application head*
+    /// uses the wider [`crate::builtins::is_reserved_name`], which adds the
+    /// keyword-token and ASCII-operator spellings (`INT(x)`, `POW(x)`,
+    /// `not(x)`): applied, those read as operators everywhere else in the
+    /// language, and their Unicode spellings cannot lex in that position at
+    /// all.
     #[error(
         "reserved word `{word}` cannot be used as an identifier at line {line}, column {column}"
     )]
