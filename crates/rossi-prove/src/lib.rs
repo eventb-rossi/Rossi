@@ -12,6 +12,7 @@
 use std::sync::OnceLock;
 
 pub mod bpr;
+pub mod bpr_rewrite;
 pub mod bps;
 pub mod builder;
 pub mod confidence;
@@ -29,6 +30,7 @@ mod variations;
 mod xml;
 
 pub use bpr::{BprError, Keep, ProofBody, ProofEntry, StoredProof, read_bpr, visit_bpr};
+pub use bpr_rewrite::{ProofAction, RewriteStats, rewrite_bpr};
 pub use bps::{PsStatus, read_bps};
 pub use builder::{
     Reasoner, ReasonerProvider, RegistryProvider, ReplayHints, rebuild, replay, reuse,

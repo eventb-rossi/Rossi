@@ -93,6 +93,9 @@ pub enum BprError {
     /// The XML is malformed.
     #[error("XML error: {0}")]
     Xml(#[from] quick_xml::Error),
+    /// Reading or writing the document failed.
+    #[error("I/O error: {0}")]
+    Io(#[from] std::io::Error),
     /// Not a proof file, or an unknown file version.
     #[error("unsupported proof file: {0}")]
     Unsupported(String),
@@ -101,8 +104,8 @@ pub enum BprError {
     Truncated,
 }
 
-const PR_FILE: &str = "org.eventb.core.prFile";
-const PR_PROOF: &str = "org.eventb.core.prProof";
+pub(crate) const PR_FILE: &str = "org.eventb.core.prFile";
+pub(crate) const PR_PROOF: &str = "org.eventb.core.prProof";
 const PR_RULE: &str = "org.eventb.core.prRule";
 const PR_ANTE: &str = "org.eventb.core.prAnte";
 const PR_HYP_ACTION: &str = "org.eventb.core.prHypAction";
@@ -115,7 +118,7 @@ const PR_PRED_REF: &str = "org.eventb.core.prPredRef";
 const PR_EXPR_REF: &str = "org.eventb.core.prExprRef";
 const LANG: &str = "org.eventb.core.lang";
 
-const NAME: &str = "name";
+pub(crate) const NAME: &str = "name";
 const CONFIDENCE: &str = "org.eventb.core.confidence";
 const PR_FRESH: &str = "org.eventb.core.prFresh";
 const PR_GOAL: &str = "org.eventb.core.prGoal";
