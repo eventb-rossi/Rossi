@@ -1,4 +1,5 @@
-//! Lexical comment scanning shared by the recovery parser and the LSP.
+//! Lexical scanning of the spans that are *not* code, shared by the recovery
+//! parser and the LSP: comments, labels and component names.
 //!
 //! The strict pest grammar consumes comments silently, but every consumer
 //! that scans raw source text (error recovery, semantic token placement)
@@ -7,15 +8,21 @@
 //! (issue #24). Camille and CamilleX avoid this class of bug by lexing
 //! comments before any structural decision; this module is the equivalent
 //! tokenization step for rossi's string-scanning paths.
+//!
+//! Names joined the set for the same reason and are the one part that needs
+//! more than a character rule: which words are names is a position, so the
+//! scan tracks the clause it is in. It follows the grammar's shape but is not
+//! a parser — it classifies words, never builds a tree, and the classification
+//! itself lives in [`crate::keywords`] beside the keyword table.
 
 use crate::ast::Span;
 
-/// Comment and label byte spans of `source`, from a single lexical scan.
+/// Comment, label and name byte spans of `source`, from a single lexical scan.
 ///
-/// Each vector is sorted and disjoint by construction, and labels never
-/// overlap comments. This struct is the one encoding of "which bytes are
+/// Each vector is sorted and disjoint by construction, and the three never
+/// overlap each other. This struct is the one encoding of "which bytes are
 /// opaque tokens": keyword and identifier scans consult it instead of
-/// re-deriving label or comment extents themselves.
+/// re-deriving those extents themselves.
 pub struct LexicalSpans {
     /// Every `//...` and `/*...*/` comment. A line comment ends before the
     /// terminating newline (unlike the grammar's `COMMENT` rule, which may
@@ -47,10 +54,11 @@ impl LexicalSpans {
         mask_spans(source, &self.comments)
     }
 
-    /// Position-preserving copy of `source` with every comment **and label**
-    /// byte replaced by a space: the code-only view for operator scans, in
-    /// which a label's `-` or `.` is name text rather than an operator. Same
-    /// byte-length and line-layout guarantees as [`Self::mask_comments`].
+    /// Position-preserving copy of `source` with every comment, label **and
+    /// name** byte replaced by a space: the code-only view for operator scans,
+    /// in which a label's or a component name's `-` is name text rather than
+    /// an operator. Same byte-length and line-layout guarantees as
+    /// [`Self::mask_comments`].
     pub fn mask_opaque(&self, source: &str) -> String {
         mask_spans(source, &self.opaque_spans())
     }
@@ -112,7 +120,7 @@ fn mask_spans(source: &str, spans: &[Span]) -> String {
     String::from_utf8(bytes).expect("masking spans preserves UTF-8 validity")
 }
 
-/// Lexically scan `source` for comments and labels.
+/// Lexically scan `source` for comments, labels and component names.
 ///
 /// Comment markers inside labels are ignored, matching the grammar: the
 /// compound-atomic `label` rule consumes any non-whitespace after `@`
@@ -122,11 +130,12 @@ pub fn lexical_spans(source: &str) -> LexicalSpans {
     let mut comments = Vec::new();
     let mut labels = Vec::new();
     let mut names = Vec::new();
-    // Set by a keyword that introduces `component_name`s, cleared by the next
-    // structural keyword — the grammar ends each name list at its section's
-    // follow-set. Whitespace and comments may sit inside a list, so only a
-    // word or a token that cannot start a name clears it.
-    let mut expecting_names = false;
+    // What the words after the last structural keyword are, and whether the
+    // next one is the first of its list. Whitespace and comments may sit
+    // inside a list, so only a word or a token that cannot start one moves
+    // this along.
+    let mut role = WordRole::Code;
+    let mut first = false;
     let mut i = 0;
 
     while i < bytes.len() {
@@ -140,7 +149,7 @@ pub fn lexical_spans(source: &str) -> LexicalSpans {
                     i += 1;
                 }
                 labels.push(Span { start, end: i });
-                expecting_names = false;
+                role = WordRole::Code;
             }
             b'/' if i + 1 < bytes.len() && bytes[i + 1] == b'/' => {
                 let start = i;
@@ -158,24 +167,52 @@ pub fn lexical_spans(source: &str) -> LexicalSpans {
                 i = (i + 2).min(bytes.len());
                 comments.push(Span { start, end: i });
             }
-            b' ' | b'\t' | b'\n' | b'\r' => i += 1,
             c if c.is_ascii_alphabetic() || c == b'_' => {
                 // One whole structural word: hyphen-joined, so `end-to-end` is
                 // a single name and not a keyword with a tail.
                 let start = i;
-                while i < bytes.len() && is_structural_word_byte(bytes[i]) {
+                let mut letters_only = true;
+                while i < bytes.len() && crate::keywords::is_structural_word_char(bytes[i] as char)
+                {
+                    letters_only &= bytes[i].is_ascii_alphabetic();
                     i += 1;
                 }
                 let word = &source[start..i];
-                if expecting_names && !crate::keywords::is_keyword(word) {
-                    names.push(Span { start, end: i });
+                // Every keyword is letters only and within these bounds
+                // (`keyword_shape_bounds_the_table_scan` pins both against
+                // `KEYWORDS`), so most words skip the table scan entirely —
+                // every one-letter identifier in every formula, and every name
+                // carrying a digit, `_` or `-`.
+                let keyword = (letters_only && KEYWORD_LEN.contains(&word.len()))
+                    .then(|| crate::keywords::lookup(word))
+                    .flatten();
+                // The grammar leaves the first entry of a list unguarded —
+                // `kw_sees ~ component_name ~ (!machine_section_kw ~
+                // component_name)*` — so a name or a declared identifier
+                // spelled like a keyword is taken as itself in that one
+                // position, and closes the list everywhere after it.
+                if role != WordRole::Code && (first || keyword.is_none()) {
+                    if role == WordRole::Names {
+                        names.push(Span { start, end: i });
+                    }
+                    first = false;
                 } else {
-                    expecting_names = introduces_names(word);
+                    role = keyword.map_or(WordRole::Code, |k| role_of(k.id));
+                    first = role != WordRole::Code;
                 }
             }
             _ => {
-                expecting_names = false;
-                i += 1;
+                // A separator leaves the role alone: the grammar's whitespace
+                // set is wider than ASCII, and U+00A0 is what real Rodin XML
+                // contains. Anything else ends the list.
+                let ch = source[i..]
+                    .chars()
+                    .next()
+                    .expect("every other arm advances over whole characters");
+                if !crate::keywords::is_whitespace(ch) {
+                    role = WordRole::Code;
+                }
+                i += ch.len_utf8();
             }
         }
     }
@@ -187,26 +224,36 @@ pub fn lexical_spans(source: &str) -> LexicalSpans {
     }
 }
 
-/// Whether `byte` continues a `component_name`: [`crate::keywords::
-/// is_structural_word_char`] over bytes, so the scan stays byte-based. A name
-/// is ASCII, so a continuation byte of a multi-byte character never matches
-/// and a name span always covers whole characters.
-fn is_structural_word_byte(byte: u8) -> bool {
-    byte.is_ascii_alphanumeric() || byte == b'_' || byte == b'-'
+/// Length bounds of every structural keyword spelling, the cheap prefilter
+/// before a table scan. Pinned by `keyword_shape_bounds_the_table_scan`.
+const KEYWORD_LEN: std::ops::RangeInclusive<usize> = 3..=14;
+
+/// What the words after a structural keyword are.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum WordRole {
+    /// Formula text, or nothing in particular.
+    Code,
+    /// `component_name`s, which are opaque to a code rewrite.
+    Names,
+    /// Declared identifiers. Not names, so not masked — but not keywords
+    /// either, which is what keeps a variable spelled `sees` from opening a
+    /// name list and swallowing the declarations after it.
+    Declarations,
 }
 
-/// Whether the words after `word` name a component or event.
+/// The role of the words following the clause keyword `id`.
 ///
-/// These are the grammar's `component_name` positions — `kw_context`,
-/// `kw_machine`, `kw_refines`, `kw_sees`, `kw_extends` and `kw_event`. The
-/// first three take one name and the rest a list, but the distinction costs
-/// nothing here: a list ends at the next structural keyword either way.
-fn introduces_names(word: &str) -> bool {
-    use crate::keywords::KeywordId::{Context, Event, Extends, Machine, Refines, Sees};
-    matches!(
-        crate::keywords::lookup(word).map(|k| k.id),
-        Some(Context | Machine | Refines | Sees | Extends | Event)
-    )
+/// Both arms defer to `keywords`, where the grammar fact lives: a clause holds
+/// only names or it holds formulas, and of the name-holding ones some take
+/// `component_name`s and the rest mathematical identifiers.
+fn role_of(id: crate::keywords::KeywordId) -> WordRole {
+    if crate::keywords::clause_holds_component_names(id) {
+        WordRole::Names
+    } else if crate::keywords::clause_holds_only_names(id) {
+        WordRole::Declarations
+    } else {
+        WordRole::Code
+    }
 }
 
 /// Byte spans of every `//...` and `/*...*/` comment in `source`.
@@ -282,20 +329,21 @@ pub fn comment_text(raw: &str) -> Option<String> {
     normalize_comment(inner)
 }
 
-/// Apply `f` to the code between comments and labels, leaving comment text
-/// and label text untouched.
+/// Apply `f` to the code between the opaque spans, leaving comment, label and
+/// component-name text untouched.
 ///
-/// The transformed code segments and the verbatim comments and labels are
+/// The transformed code segments and the verbatim opaque spans are
 /// reassembled in order. Used by rewrites that must never alter comment
-/// prose or a label's spelling, e.g. the LSP's ASCII ⇄ Unicode operator
-/// conversion: `@inv1.1` and `@safety-END` are names, not a dot and a minus.
+/// prose or a name's spelling, e.g. the LSP's ASCII ⇄ Unicode operator
+/// conversion: `@inv1.1`, `@safety-END` and `MACHINE A-C0` are names, not a
+/// dot and a minus.
 pub fn map_code_segments(source: &str, f: impl Fn(&str) -> String) -> String {
     map_code_segments_in_range(source, 0, source.len(), f)
 }
 
 /// Like [`map_code_segments`] but transforms only the byte range
-/// `[start, end)` of `source`, using the comment and label spans of the
-/// **whole** `source`.
+/// `[start, end)` of `source`, using the opaque spans of the **whole**
+/// `source`.
 ///
 /// Because comment extents come from the full text, a range that begins or
 /// ends inside a comment is still treated as comment text — essential when
@@ -476,48 +524,97 @@ mod tests {
         assert_eq!(out, "note <= here */ c ≤ d");
     }
 
-    /// A component or event name is name text, not code: its hyphen is not
-    /// subtraction, and a segment between two hyphens is not an operator
-    /// however it is spelled. `-` is not a word character, so `INT` in
-    /// `CTX-INT-1` is word-bounded and an operator scan would rewrite it.
+    /// `source` with each of `opaque` blanked where it occurs: the exact mask
+    /// a name (or label) is expected to produce, written without counting
+    /// spaces by hand.
+    fn blanking(source: &str, opaque: &[&str]) -> String {
+        let mut out = source.to_string();
+        for text in opaque {
+            let at = out.find(text).expect("opaque text occurs in source");
+            out.replace_range(at..at + text.len(), &" ".repeat(text.len()));
+        }
+        out
+    }
+
+    /// Names are opaque to a code rewrite — see [`LexicalSpans::names`] for
+    /// why a name's own segments read as operators.
+    ///
+    /// The last two rows are where the list ends: at the next structural
+    /// keyword, leaving the declarations and the formula as code. A declared
+    /// name that spells a keyword (`sees`) is read as the declaration the
+    /// grammar reads it as, and does not open a name list of its own.
     #[test]
     fn component_names_are_opaque_to_a_code_rewrite() {
-        for (source, name) in [
-            ("MACHINE A-C0\nEND\n", "A-C0"),
-            ("CONTEXT ctx-1\nEND\n", "ctx-1"),
-            ("MACHINE m\nREFINES end-to-end\nEND\n", "end-to-end"),
-            ("MACHINE m\nSEES CTX-INT-1\nEND\n", "CTX-INT-1"),
-            ("CONTEXT c\nEXTENDS A-or-B\nEND\n", "A-or-B"),
-            ("MACHINE m\nEVENTS\nEVENT do-step\nEND\nEND\n", "do-step"),
+        for (source, opaque) in [
+            ("MACHINE A-C0\nEND\n", &["A-C0"][..]),
+            ("CONTEXT ctx-1\nEND\n", &["ctx-1"]),
+            ("MACHINE m\nREFINES end-to-end\nEND\n", &["m", "end-to-end"]),
+            ("MACHINE m\nSEES CTX-INT-1\nEND\n", &["m", "CTX-INT-1"]),
+            ("CONTEXT c\nEXTENDS A-or-B\nEND\n", &["c", "A-or-B"]),
+            (
+                "MACHINE m\nEVENTS\nEVENT do-step\nEND\nEND\n",
+                &["m", "do-step"],
+            ),
+            (
+                "MACHINE m-1\nSEES c-1 c-2\nVARIABLES x\nINVARIANTS\n  @i x - 1 ∈ ℕ\nEND\n",
+                &["m-1", "c-1", "c-2", "@i"],
+            ),
+            (
+                "MACHINE m\nVARIABLES sees x\nINVARIANTS\n  @i x ∈ ℕ\nEND\n",
+                &["m", "@i"],
+            ),
         ] {
-            let masked = mask_opaque(source);
-            let start = source.find(name).expect("name occurs in source");
             assert_eq!(
-                &masked[start..start + name.len()],
-                " ".repeat(name.len()),
-                "{name:?} must be masked in {source:?}"
+                mask_opaque(source),
+                blanking(source, opaque),
+                "in {source:?}"
             );
         }
     }
 
-    /// Masking names must not swallow the formulas around them: a name list
-    /// ends at the next structural keyword, and an operator in a formula is
-    /// still code.
+    /// The scan skips the keyword table for any word that cannot be a
+    /// keyword. That shortcut is only sound while every spelling is letters
+    /// only and within [`KEYWORD_LEN`].
     #[test]
-    fn masking_names_stops_at_the_next_clause() {
-        let source = "MACHINE m-1\nSEES c-1 c-2\nVARIABLES x\nINVARIANTS\n  @i x - 1 ∈ ℕ\nEND\n";
-        let masked = mask_opaque(source);
-        for name in ["m-1", "c-1", "c-2"] {
-            let at = source.find(name).unwrap();
-            assert_eq!(
-                &masked[at..at + name.len()],
-                " ".repeat(name.len()),
-                "{name}"
+    fn keyword_shape_bounds_the_table_scan() {
+        for keyword in crate::keywords::KEYWORDS {
+            for spelling in keyword.spellings {
+                assert!(
+                    spelling.chars().all(|c| c.is_ascii_alphabetic()),
+                    "{spelling:?} is not letters only, so the scan would skip it"
+                );
+                assert!(
+                    KEYWORD_LEN.contains(&spelling.len()),
+                    "{spelling:?} is outside KEYWORD_LEN, so the scan would skip it"
+                );
+            }
+        }
+    }
+
+    /// A name list is separated by the grammar's whitespace, which is wider
+    /// than ASCII — U+00A0 is what real Rodin XML contains. An exotic
+    /// separator must not end the list and leave the name looking like code.
+    #[test]
+    fn an_exotic_separator_does_not_end_a_name_list() {
+        for separator in [
+            '\u{0B}', '\u{0C}', '\u{1C}', '\u{A0}', '\u{2028}', '\u{3000}',
+        ] {
+            let source = format!("MACHINE m\nSEES{separator}CTX-INT-1\nEND\n");
+            let masked = mask_opaque(&source);
+            assert!(
+                !masked.contains("CTX-INT-1"),
+                "U+{:04X} separator left the name as code: {masked:?}",
+                separator as u32
             );
         }
-        // The clause keywords and the formula survive.
-        assert!(masked.contains("VARIABLES x"), "masked: {masked:?}");
-        assert!(masked.contains("x - 1"), "subtraction is code: {masked:?}");
+    }
+
+    /// The other side of the same rule: the first entry of a name list is
+    /// unguarded, so a component named like a keyword is still a name.
+    #[test]
+    fn the_first_entry_of_a_name_list_is_a_name_even_if_it_spells_a_keyword() {
+        let masked = mask_opaque("MACHINE m\nSEES end\nEND\n");
+        assert_eq!(masked, "MACHINE  \nSEES    \nEND\n");
     }
 
     #[test]

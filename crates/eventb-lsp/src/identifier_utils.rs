@@ -113,15 +113,6 @@ const INLINE_EVENT_STATUS: [KeywordId; 3] = [
     KeywordId::Anticipated,
 ];
 
-/// Clause keywords whose operands are component names (hyphen-capable
-/// structural names): component headers and the reference clauses.
-fn is_structural_name_clause(keyword: KeywordId) -> bool {
-    matches!(
-        keyword,
-        KeywordId::Machine | KeywordId::Context | KeywordId::Event
-    ) || REFERENCE_LIST_CLAUSES.contains(&keyword)
-}
-
 /// Whether tokens on line `line_idx` sit in a structural-name position: the
 /// line opens with a structural-name clause keyword (possibly behind an
 /// inline event status like `convergent EVENT …`), or it continues a
@@ -137,7 +128,7 @@ fn in_structural_name_context(text: &str, line_idx: usize) -> bool {
     let words = text_utils::identifier_words(lines[line_idx]);
     if let Some(first) = words.first() {
         let first_keyword = keyword_id(first);
-        if first_keyword.is_some_and(is_structural_name_clause) {
+        if first_keyword.is_some_and(keywords::clause_holds_component_names) {
             return true;
         }
         // `convergent EVENT do-step` — inline status before the keyword.

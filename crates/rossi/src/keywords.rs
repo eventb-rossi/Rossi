@@ -643,6 +643,29 @@ pub fn clause_holds_only_names(keyword: KeywordId) -> bool {
     )
 }
 
+/// Whether `keyword`'s operands are `component_name`s — the hyphen-capable
+/// structural names, as opposed to the mathematical identifiers of
+/// [`clause_holds_only_names`]'s other clauses.
+///
+/// The component and event headers plus the reference clauses, matching the
+/// grammar's `component_name` positions (`kw_context`, `kw_machine`,
+/// `kw_event`, `kw_refines`, `kw_sees`, `kw_extends`). A grammar fact kept
+/// beside the keyword table for the same reason as its sibling: the LSP's
+/// structural-name scan and the comment scanner's name mask both need it, and
+/// a second copy would drift.
+#[must_use]
+pub fn clause_holds_component_names(keyword: KeywordId) -> bool {
+    matches!(
+        keyword,
+        KeywordId::Context
+            | KeywordId::Machine
+            | KeywordId::Event
+            | KeywordId::Refines
+            | KeywordId::Sees
+            | KeywordId::Extends
+    )
+}
+
 /// Whether the match of `len` bytes at byte `offset` in `text` is a whole
 /// word: neither neighboring char is a word char. Shared by the recovery
 /// parser's keyword scan and the LSP's semantic-token search so the two
