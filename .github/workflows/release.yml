@@ -136,6 +136,21 @@ jobs:
         if: matrix.target == 'aarch64-pc-windows-msvc'
         run: cargo build --release --locked --target ${{ matrix.target }} --bin rossi --bin eventb-language-server
 
+      # An arm64 Mach-O must carry a signature to exec at all: the kernel SIGKILLs
+      # an unsigned one instead of diagnosing it. The Apple linker's ad-hoc
+      # signature supplies that, and `strip = true` in [profile.release] is the
+      # standing threat to it, because stripping after the link breaks the seal.
+      # Current rustc strips through the linker so the signature is sealed last,
+      # but a regression there is silent at build time and reaches users as
+      # `Killed: 9`. x86_64 needs no signature and the linker leaves it unsigned,
+      # so only arm64 is checked.
+      - name: Verify arm64 macOS code signature
+        if: matrix.target == 'aarch64-apple-darwin'
+        run: |
+          codesign --verify --strict --verbose=2 \
+            target/${{ matrix.target }}/release/rossi \
+            target/${{ matrix.target }}/release/eventb-language-server
+
       # One flat archive per platform holding BOTH binaries plus the licenses and
       # README. Flat (no enclosing directory) keeps the VSCode downloader and a
       # future Scoop/Homebrew `bin.install` trivial. Names are version-less so the
