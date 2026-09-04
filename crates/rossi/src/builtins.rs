@@ -61,8 +61,17 @@ pub fn is_builtin(word: &str) -> bool {
 
 /// Reserved operator words of the kernel_lang §2.2 list (exact case): the
 /// closed-operator words, only meaningful applied to a parenthesized
-/// argument (`card(S)`, `dom(r)`, …) or as the infix `mod`. Illegal both as
-/// declared names and as plain identifiers inside formulas.
+/// argument (`card(S)`, `dom(r)`, `bool(P)`, …) or as the infix `mod`.
+/// Illegal both as declared names and as plain identifiers inside formulas.
+///
+/// `bool` is one of these even though its argument is a *predicate* rather
+/// than an expression, so it resolves through the grammar's `bool_expr` rule
+/// instead of [`crate::operators::BuiltinFunction`]. What puts it here is the
+/// invariant `reserved_operator_words_cover_closed_builtins` states: a closed
+/// builtin whose applied form resolves but whose bare form falls through to
+/// `identifier` is the issue-#30 inconsistency, and `bool` had exactly that
+/// shape — `bool` and `bool(x)` both parsed as a free identifier where Rodin
+/// reports a parse error.
 ///
 /// Reservation is exact-case, matching Rodin's lexer (`isValidIdentifierName`
 /// rejects exactly these spellings; `Dom`, `CARD`, `Union` are ordinary
@@ -70,6 +79,7 @@ pub fn is_builtin(word: &str) -> bool {
 /// `circ`, `oftype`, `POW`, `NAT`, …) are deliberately absent: Rodin is
 /// Unicode-only and accepts them as identifiers.
 pub const RESERVED_OPERATOR_WORDS: &[&str] = &[
+    "bool",
     "card",
     "dom",
     "finite",
@@ -85,11 +95,14 @@ pub const RESERVED_OPERATOR_WORDS: &[&str] = &[
 /// The remaining kernel_lang §2.2 reserved words (exact case): generic atoms
 /// and literals that are legal *in formulas* (`id`, `prj1`, `prj2`, `pred`,
 /// `succ` parse as bare atoms — the [`crate::operators::AtomicBuiltinKind`] relational
-/// atoms; `TRUE`/`FALSE`/`BOOL`/`bool` lex as keyword tokens there) but can
+/// atoms; `TRUE`/`FALSE`/`BOOL` lex as keyword tokens there) but can
 /// never *name* a user identifier. Together with [`RESERVED_OPERATOR_WORDS`]
 /// this forms the full §2.2 list.
+///
+/// The `bool` conversion is *not* here: it mandates parentheses, so it is a
+/// closed operator word. `BOOL`, the type, does stand bare.
 pub const RESERVED_ATOM_WORDS: &[&str] = &[
-    "BOOL", "FALSE", "TRUE", "bool", "id", "pred", "prj1", "prj2", "succ",
+    "BOOL", "FALSE", "TRUE", "id", "pred", "prj1", "prj2", "succ",
 ];
 
 /// Whether `word` is in the full kernel_lang §2.2 reserved list (exact case).
@@ -110,8 +123,9 @@ pub fn is_reserved_operator_word(word: &str) -> bool {
 /// case — uppercase number/set atoms and boolean values/type, lowercase
 /// predicate literals and the `bool` conversion. A name spelled like any of
 /// these can never be a user identifier; other-case spellings (`Nat`, `pow`,
-/// `Bool`) are ordinary identifiers. `TRUE`/`FALSE`/`BOOL`/`bool` also live in
-/// [`RESERVED_ATOM_WORDS`] and `union`/`inter` in [`RESERVED_OPERATOR_WORDS`];
+/// `Bool`) are ordinary identifiers. `TRUE`/`FALSE`/`BOOL` also live in
+/// [`RESERVED_ATOM_WORDS`] and `bool`/`union`/`inter` in
+/// [`RESERVED_OPERATOR_WORDS`];
 /// they are listed here too so the keyword-token case rule sits in one place.
 /// Structural keywords are covered separately by [`crate::keywords::is_keyword`].
 const KEYWORD_TOKEN_WORDS: &[&str] = &[
@@ -308,6 +322,10 @@ mod tests {
                 "BuiltinPredicate {p:?} missing from RESERVED_OPERATOR_WORDS"
             );
         }
+        // `bool` has no enum variant to reach it by — see
+        // `RESERVED_OPERATOR_WORDS` — so pin it by name.
+        assert!(is_reserved_operator_word("bool"));
+        assert!(!RESERVED_ATOM_WORDS.contains(&"bool"));
     }
 
     #[test]

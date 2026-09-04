@@ -139,6 +139,23 @@ fn applied_builtin_forms_still_parse() {
     parse_predicate_str("partition(S, A, B)").expect("partition must parse");
     parse_predicate_str("x = min(S) + max(S)").expect("min/max must parse");
     parse_predicate_str("u = union(S) ∪ inter(S)").expect("union/inter must parse");
+
+    parse_predicate_str("y = bool(x = 1)").expect("bool(P) must parse");
+    parse_predicate_str("bool(x = 1) = TRUE").expect("bool(P) is a BOOL expression");
+}
+
+// `bool` mandates its parentheses and a *predicate* inside them; both other
+// readings used to parse as a free identifier named `bool`, where Rodin
+// reports a parse error. See `builtins::RESERVED_OPERATOR_WORDS`.
+#[test]
+fn bool_is_closed_like_the_other_operator_words() {
+    assert_reserved(parse_predicate_str, "y = bool", "bool");
+    assert_reserved(parse_predicate_str, "y = bool(x)", "bool");
+
+    // The type and the literals are atoms and do stand bare.
+    parse_predicate_str("y = BOOL").expect("BOOL is the type, a bare atom");
+    parse_predicate_str("y = TRUE").expect("TRUE is a bare literal");
+    parse_predicate_str("y = FALSE").expect("FALSE is a bare literal");
 }
 
 #[test]
