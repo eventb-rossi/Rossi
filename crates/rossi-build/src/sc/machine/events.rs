@@ -1298,13 +1298,14 @@ fn build_event_buckets(
         }
         let checked = check_action(&act.action, scope);
         if let Some(bad) = &checked.free_identifier {
-            context.diagnostics.push(Diagnostic {
-                severity: Severity::Error,
-                origin: clause_origin(machine.machine_name, label, act.label.as_deref(), "act"),
-                message: format!("unknown identifier '{bad}' in action"),
-                rule_id: Some(crate::RuleId::UndeclaredIdentifier),
-                span: act.span,
-            });
+            context
+                .diagnostics
+                .push(crate::checked_predicate::undeclared_identifier(
+                    bad,
+                    "action",
+                    clause_origin(machine.machine_name, label, act.label.as_deref(), "act"),
+                    act.span,
+                ));
             accurate = false;
             continue;
         }

@@ -17,6 +17,7 @@
 //! are the write targets, and the SC validates them via the variable
 //! table.
 
+use rossi::ast::Span;
 use rossi::{ActionBody, Expression, LabeledPredicate, Predicate};
 
 use crate::sc::identifier_walker::{
@@ -109,6 +110,29 @@ pub fn check_action(a: &ActionBody, env: &TypeEnv) -> ActionCheck {
     }
 }
 
+/// The EB018 diagnostic for a name nothing declares, in the wording every
+/// path uses. `place` names where it was read, as the message ends
+/// (`"axiom predicate"` → "unknown identifier 'x' in axiom predicate";
+/// `"action"` → "… in action"). Shared by the SC and by the
+/// component-local pass in [`crate::identifiers`] — which reaches loose
+/// text and the editor, where no `TypeEnv` exists — so the same finding
+/// cannot be worded two ways.
+#[must_use]
+pub(crate) fn undeclared_identifier(
+    bad: &str,
+    place: &str,
+    origin: String,
+    span: Option<Span>,
+) -> Diagnostic {
+    Diagnostic {
+        severity: Severity::Error,
+        origin,
+        message: format!("unknown identifier '{bad}' in {place}"),
+        rule_id: Some(crate::RuleId::UndeclaredIdentifier),
+        span,
+    }
+}
+
 /// Resolve a labeled predicate against `env` and produce the effective
 /// label plus the full [`PredicateCheck`], or a [`Diagnostic`] if the
 /// predicate references an unknown identifier.
@@ -142,13 +166,12 @@ pub fn check_labeled_predicate(
         // Anchor on the offending identifier; fall back to the labeled
         // predicate's own span.
         let span = usage_span_in_predicate(&raw.predicate, bad).or(raw.span);
-        return Err(Diagnostic {
-            severity: Severity::Error,
-            origin: origin(&label),
-            message: format!("unknown identifier '{bad}' in {kind_name} predicate"),
-            rule_id: Some(crate::RuleId::UndeclaredIdentifier),
+        return Err(undeclared_identifier(
+            bad,
+            &format!("{kind_name} predicate"),
+            origin(&label),
             span,
-        });
+        ));
     }
     if pc.typed.is_none() {
         return Err(Diagnostic {

@@ -56,10 +56,10 @@ pub use rules::RuleId;
 
 /// Every component-local *semantic* check, for one component: the
 /// duplicate-name errors ([`duplicates::component_duplicate_diagnostics`])
-/// and the primed-declaration error ([`identifiers`]). These need no
-/// project, no cross-component resolution and no type inference, so they
-/// are the errors a lone `.eventb` file and an open editor document can
-/// decide.
+/// and the primed-declaration and primed-use errors
+/// ([`identifiers`]). These need no project, no cross-component resolution
+/// and no type inference, so they are the errors a lone `.eventb` file and
+/// an open editor document can decide.
 ///
 /// This is the `--no-semantic` half of the component-local surface; the
 /// advisory half is [`lint::run_component`] plus [`lint::run_source`],
@@ -70,6 +70,9 @@ pub use rules::RuleId;
 pub fn component_semantic_diagnostics(component: &rossi::Component) -> Vec<Diagnostic> {
     let mut diags = duplicates::component_duplicate_diagnostics(component);
     diags.extend(identifiers::component_primed_name_diagnostics(component));
+    diags.extend(identifiers::component_undeclarable_prime_diagnostics(
+        component,
+    ));
     diags
 }
 

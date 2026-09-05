@@ -207,7 +207,7 @@ fn parse_error_range(error: &rossi::ParseError, text: &str) -> Range {
 /// These are exactly the checks that need no project, no cross-component
 /// resolution, and no type inference — the component-local errors from
 /// `rossi_build::component_semantic_diagnostics` (duplicate identifiers and
-/// labels, EB021/EB022; a primed declaration, EB033),
+/// labels, EB021/EB022; a primed declaration or a primed use, EB033/EB018),
 /// the shadowed-name (EB023) and keyword-name (EB028) lints from
 /// `rossi_build::lint::run_component`, and the non-portable-whitespace
 /// advisory (EB031) from `rossi_build::lint::run_source`, which reads `text`
@@ -762,7 +762,7 @@ mod tests {
         assert_eq!(d.range.end.character, 14);
     }
 
-    // --- single-component checks (EB021-023, EB028, EB033) -------------------
+    // --- single-component lints (EB021-023, EB028, EB033) --------------------
     //
     // These exercise the run_component pass surfaced through the LSP. The
     // snippets parse cleanly (strict `rossi::parse`), so every diagnostic comes
@@ -884,6 +884,32 @@ mod tests {
         assert_eq!(diags[0].range.start.line, 2);
         assert_eq!(diags[0].range.start.character, 4);
         assert_eq!(diags[0].range.end.character, 6);
+    }
+
+    #[test]
+    fn primed_use_in_an_axiom_is_eb018_error() {
+        // The one scope finding a lone document can decide: no declaration
+        // may be primed, so nothing a SEES / EXTENDS parent could hold would
+        // ever put `c'` in scope.
+        let text = "CONTEXT c\nCONSTANTS\n    k\nAXIOMS\n    @axm1 k' = 1\nEND\n";
+        let diags = lint_for(text);
+        assert_eq!(diags.len(), 1, "{diags:?}");
+        assert_eq!(code_of(&diags[0]), Some("EB018"));
+        assert_eq!(diags[0].severity, Some(DiagnosticSeverity::ERROR));
+        assert!(
+            diags[0].message.contains("unknown identifier 'k''"),
+            "{:?}",
+            diags[0]
+        );
+    }
+
+    #[test]
+    fn bound_after_state_read_is_not_reported() {
+        // `x :∣ x' = x + 1` binds `x'` as a primed declaration in the formula
+        // model, so it is not a free primed read.
+        let text = "MACHINE m\nVARIABLES\n    x\nEVENTS\n    EVENT e\n    THEN\n        @act1 x :∣ x' = x + 1\n    END\nEND\n";
+        let diags = lint_for(text);
+        assert!(diags.is_empty(), "{diags:?}");
     }
 
     #[test]

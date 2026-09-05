@@ -926,6 +926,50 @@ fn validate_flags_a_primed_declared_name() {
 }
 
 #[test]
+fn validate_flags_a_primed_use_in_a_lone_file() {
+    // A lone `.eventb` file has no SEES / EXTENDS parents, so `validate`
+    // cannot decide most scope questions -- but it can decide this one: no
+    // declaration may be primed, so no parent could ever put `c'` in scope.
+    // The file must report exactly what the directory does.
+    let tmp = tempdir_unique("rossi-cli-primed-use");
+    std::fs::write(
+        tmp.join("C.eventb"),
+        "context C\nconstants c\naxioms\n  @a c' = 1\nend\n",
+    )
+    .unwrap();
+    let file = tmp.join("C.eventb");
+    let file = file.to_str().unwrap();
+    let dir = tmp.to_str().unwrap();
+
+    let row_of = |args: &[&str]| -> serde_json::Value {
+        let out = rossi_command()
+            .args(args)
+            .output()
+            .expect("Failed to execute command");
+        let stdout = String::from_utf8_lossy(&out.stdout);
+        let rows: Vec<serde_json::Value> =
+            serde_json::from_str(&stdout).expect("validate JSON output should parse");
+        rows.into_iter()
+            .find(|r| r["rule_id"] == "EB018")
+            .unwrap_or_else(|| panic!("expected an EB018 row in {stdout}"))
+    };
+
+    let from_file = row_of(&["validate", "--format", "json", file]);
+    let from_dir = row_of(&["validate", "--format", "json", dir]);
+    assert_eq!(from_file["error"], from_dir["error"]);
+    assert_eq!(from_file["origin"], from_dir["origin"]);
+    assert_eq!(from_file["region"], from_dir["region"]);
+    assert!(
+        from_file["error"]
+            .as_str()
+            .is_some_and(|m| m.contains("unknown identifier 'c''")),
+        "EB018 should name the primed identifier: {from_file}"
+    );
+
+    std::fs::remove_dir_all(&tmp).ok();
+}
+
+#[test]
 fn validate_flags_structural_keyword_names() {
     // A carrier set named `end` is legal in Rodin's object model but no
     // textual notation can represent it: rossi used to accept it silently and

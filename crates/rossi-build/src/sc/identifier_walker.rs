@@ -35,6 +35,7 @@ use std::ops::ControlFlow;
 
 use rossi::ast::Span;
 use rossi::formula::occurrences::{self, Occurrence, Resolution, Role};
+use rossi::names::is_primed_identifier;
 use rossi::{ActionBody, Expression, Predicate};
 
 use crate::type_env::TypeEnv;
@@ -85,6 +86,45 @@ pub fn free_identifier_in_action_rhs(body: &ActionBody, env: &TypeEnv) -> Option
     let mut v = FreeFinder { env, found: None };
     let _ = occurrences::walk_assignment(assignment, &mut Vec::new(), &mut v);
     v.found
+}
+
+/// Locate the first free primed occurrence in `pred`, with its span.
+///
+/// A primed name can never be declared (`crate::identifiers`), so this
+/// decides "not in scope" without a `TypeEnv` — which is what lets the
+/// loose-text and editor paths report it at all. Find-first, like
+/// [`free_identifier_in_predicate`], so a clause draws one diagnostic
+/// whichever path reports it.
+pub fn first_free_primed_in_predicate(pred: &Predicate) -> Option<(String, Option<Span>)> {
+    if !pred
+        .free_identifiers()
+        .iter()
+        .any(|n| is_primed_identifier(n))
+    {
+        return None;
+    }
+    let mut v = PrimedFinder { found: None };
+    let _ = occurrences::walk_predicate(pred, &mut Vec::new(), &mut v);
+    v.found
+}
+
+/// First free primed name on an action's read side. No span: the SC anchors
+/// an action diagnostic on the whole action, so its callers have nothing to
+/// do with one. The primed declarations of a such-that assignment bind in
+/// the model, so an after-state read of an assigned variable resolves and is
+/// not reported.
+pub fn first_free_primed_in_action_rhs(body: &ActionBody) -> Option<String> {
+    let assignment = body.assignment()?;
+    if !assignment
+        .free_identifiers()
+        .iter()
+        .any(|n| is_primed_identifier(n))
+    {
+        return None;
+    }
+    let mut v = PrimedFinder { found: None };
+    let _ = occurrences::walk_assignment(assignment, &mut Vec::new(), &mut v);
+    v.found.map(|(name, _)| name)
 }
 
 /// Locate the first identifier in `pred` that appears in `forbidden` and
@@ -237,6 +277,21 @@ impl occurrences::OccurrenceVisitor for FreeFinder<'_> {
             self.found = Some(occ.name.to_string());
             ControlFlow::Break(())
         }
+    }
+}
+
+/// Captures the first free primed read, with its span.
+struct PrimedFinder {
+    found: Option<(String, Option<Span>)>,
+}
+
+impl occurrences::OccurrenceVisitor for PrimedFinder {
+    fn visit(&mut self, occ: Occurrence<'_>) -> ControlFlow<()> {
+        if free_usage(&occ) && is_primed_identifier(occ.name) {
+            self.found = Some((occ.name.to_string(), occ.span));
+            return ControlFlow::Break(());
+        }
+        ControlFlow::Continue(())
     }
 }
 
@@ -467,5 +522,24 @@ mod tests {
             "expected x (stripped from x'): {refs:?}"
         );
         assert!(!refs.contains("x'"), "raw x' should not appear: {refs:?}");
+    }
+
+    #[test]
+    fn primed_finder_reports_a_free_prime_and_skips_a_bound_one() {
+        let p = parse_predicate_str("x' = 0").unwrap();
+        let (name, _) = first_free_primed_in_predicate(&p).expect("x' is free here");
+        assert_eq!(name, "x'");
+
+        // Unprimed reads are none of this finder's business.
+        assert!(first_free_primed_in_predicate(&parse_predicate_str("x = 0").unwrap()).is_none());
+
+        // `x :∣ x' = x + 1` binds `x'`; `y'` in the same position is free.
+        let bound = rossi::parse_action_str("x :∣ x' = x + 1").unwrap();
+        assert!(first_free_primed_in_action_rhs(&bound).is_none());
+        let free = rossi::parse_action_str("x :∣ y' = x + 1").unwrap();
+        assert_eq!(
+            first_free_primed_in_action_rhs(&free).as_deref(),
+            Some("y'")
+        );
     }
 }
