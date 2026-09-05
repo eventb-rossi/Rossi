@@ -171,6 +171,12 @@ Use in VS Code:
 - Breadcrumb navigation
 - Symbol search (`Ctrl+Shift+O` / `Cmd+Shift+O`)
 
+The response is always the hierarchical `DocumentSymbol[]` form, never the flat
+`SymbolInformation[]` one, with one root per component — a file holding several
+components yields several roots. Every row carries a `detail` string naming the
+Event-B construct it came from; those strings are a stable contract, listed
+under [Document symbol vocabulary](#document-symbol-vocabulary).
+
 ### Code Formatting
 
 Format Event-B documents with consistent style:
@@ -267,6 +273,129 @@ Implemented code actions include:
 
 Signature help is available for universal and existential quantifiers, lambda
 expressions, and set comprehensions. It supports both Unicode and ASCII forms.
+
+## Integration Contract
+
+Everything below is what a third-party extension or tool may rely on. The
+document symbol vocabulary and the custom request are pinned by tests, and the
+language id and wire behaviour by the wire-level suite, so none of it drifts
+silently. Anything not listed here is an implementation detail.
+
+### Language identity
+
+| | |
+|---|---|
+| Language id | `eventb` |
+| File extension | `.eventb` |
+| Settings section | `rossi` — see [Configuration](#configuration) |
+| Executable | `eventb-language-server`, speaking LSP over stdio |
+| Position encoding | UTF-16 code units, the LSP default |
+
+### Document symbol vocabulary
+
+`textDocument/documentSymbol` is the supported way to enumerate the components
+in a file: every root of the response *is* a component, so no bespoke request
+is needed and none is offered. Scanning the source with a regular expression is
+not equivalent — component keywords are case-insensitive, `rossi fmt --style
+rossi` writes `MACHINE` in upper case, and a comment or an identifier that
+merely contains `machine` defeats the match.
+
+For this machine:
+
+```eventb
+MACHINE m
+VARIABLES
+    v
+INVARIANTS
+    @inv1 v ∈ ℕ
+EVENTS
+    EVENT INITIALISATION
+    THEN
+        @act1 v := 0
+    END
+
+    EVENT step
+    ANY p
+    WHERE
+        @grd1 p ∈ ℕ
+    THEN
+        @act1 v := p
+    END
+END
+```
+
+the outline is:
+
+```text
+m                    MODULE          Machine
+├─ v                 VARIABLE        Variable
+├─ inv1              PROPERTY        Invariant
+├─ INITIALISATION    CONSTRUCTOR     Event
+│  └─ act1           PROPERTY        Action
+└─ step              FUNCTION        Event
+   ├─ p              TYPE_PARAMETER  Parameter
+   ├─ grd1           PROPERTY        Guard
+   └─ act1           PROPERTY        Action
+```
+
+The vocabulary is closed — these are all the values `detail` ever takes:
+
+| `detail` | `kind` | Produced for |
+|---|---|---|
+| `Context` | `MODULE` | context root |
+| `Machine` | `MODULE` | machine root |
+| `Set` | `ENUM` | a `SETS` entry |
+| `Constant` | `CONSTANT` | a `CONSTANTS` entry |
+| `Axiom` | `PROPERTY` | an axiom |
+| `Theorem` | `PROPERTY` | a `theorem` axiom or a `theorem` invariant |
+| `Variable` | `VARIABLE` | a `VARIABLES` entry |
+| `Invariant` | `PROPERTY` | an invariant |
+| `Variant` | `NUMBER` | present when the machine has a `VARIANT` |
+| `Event` | `CONSTRUCTOR` | `INITIALISATION` |
+| `Event` | `FUNCTION` | an event with no `STATUS` clause |
+| `Event (ordinary)` | `FUNCTION` | `STATUS ordinary` |
+| `Event (convergent)` | `FUNCTION` | `STATUS convergent` |
+| `Event (anticipated)` | `FUNCTION` | `STATUS anticipated` |
+| `Parameter` | `TYPE_PARAMETER` | an `ANY` entry |
+| `Guard` | `PROPERTY` | a `WHERE` / `WHEN` predicate |
+| `With` | `PROPERTY` | a `WITH` predicate |
+| `Witness` | `PROPERTY` | a `WITNESS` predicate |
+| `Action` | `PROPERTY` | a `THEN` / `BEGIN` action |
+
+Consuming it correctly means knowing five things:
+
+- **Only some rows carry a real range.** Component roots, events,
+  `INITIALISATION`, axioms, invariants, guards and actions have their true
+  source span. Sets, constants, variables, the `variant` row and `WITH` /
+  `WITNESS` predicates report the placeholder `(0,0)-(0,0)`, so navigating to
+  one lands at the top of the file. Use `workspace/symbol` instead when you
+  need to jump to a set, constant, or variable declaration.
+- **`Theorem` is ambiguous** between a theorem axiom and a theorem invariant.
+  The parent component tells them apart.
+- **Bare `Event` is ambiguous** between `INITIALISATION` and a status-less
+  event. The `kind` tells them apart, as does the name.
+- **Unlabeled predicates are all named `unlabeled`**, so names are not unique
+  within a parent.
+- **The `variant` row is a single lower-case literal**, emitted once even when
+  the machine declares more than one `VARIANT`.
+
+`SymbolKind` is presentational and is recorded here as it stands today,
+including one wart: `workspace/symbol` reports events as `SymbolKind::EVENT`,
+while `documentSymbol` reports them as `FUNCTION` and `INITIALISATION` as
+`CONSTRUCTOR`. Match on `detail`, not on `kind`, when the two must agree.
+
+### Custom requests
+
+`rossi/operatorTable` is the only non-standard method the server implements,
+and it exists solely because the operator table has no standard equivalent —
+it lets an editor build an input method without duplicating the mapping in its
+own source. It takes **no** `params`, and returns one row per operator
+spelling. Everything else the server offers is a standard LSP method.
+
+Three `workspace/executeCommand` commands are also registered —
+`rossi.rodin.open`, `rossi.animate.check` and `rossi.animate.po`. They drive
+external tools and are meant for the bundled extensions rather than for
+general integration.
 
 ## Semantic Analysis Reuse
 
@@ -435,24 +564,59 @@ eventb-lsp/src/
 
 ## Configuration
 
-The server supports the following configuration options (passed via LSP `workspace/configuration`):
+Settings live in the `rossi` section and reach the server over LSP
+`workspace/configuration`. Clients that send the section on its own
+(`{"format": ...}`) and clients that send the whole settings object
+(`{"rossi": {"format": ...}}`) are both accepted.
+
+These are the keys the server itself reads. An empty string or `null` means
+"follow the formatting style preset" rather than a literal value, and an
+unparseable object is rejected as a whole, leaving the previous configuration
+in place.
 
 ```typescript
 interface RossiConfig {
   format: {
-    useUnicode: boolean;      // Use Unicode operators (default: true)
-    enforceUnicode: boolean;  // Flag ASCII operator spellings (default: false)
-    indentation: string;      // Indentation string (default: "    ")
+    style: "" | "camille" | "rossi";       // preset; "" selects the default
+    useUnicode: boolean;                   // default: true
+    enforceUnicode: boolean;               // flag ASCII spellings; false
+    indentation: string;                   // default: "" (2 camille, 4 rossi)
+    keywordCase: "" | "lower" | "upper";   // default: ""
+    declLists: "" | "inline" | "one-per-line";  // default: ""
+    blankBetweenClauses: boolean | null;   // default: null (follow preset)
+    maxLineWidth: number;                  // default: 120; 0 disables wrapping
   };
   diagnostics: {
-    enabled: boolean;         // Enable diagnostics (default: true)
-    debounceMs: number;       // On-type debounce window in ms (default: 500; 0 = inline)
+    enabled: boolean;                      // default: true
+    debounceMs: number;                    // default: 500; 0 = inline
   };
   completion: {
-    enabled: boolean;         // Enable completion (default: true)
+    enabled: boolean;                      // default: true
+  };
+  inlayHints: {
+    enabled: boolean;                      // inferred types; default: true
+    wellDefinedness: boolean;              // "WD" markers; default: true
+    maxLength: number;                     // default: 32; 0 disables truncation
+  };
+  rodin: {
+    path: string;                          // default: "" (platform default)
+    workspace: string;                     // default: "" (<root>/.rossi/rodin)
+    sync: boolean;                         // live sync; default: true
+    mirrorProofs: boolean;                 // default: true
+  };
+  animate: {
+    path: string;                          // default: "" (resolve on PATH)
+    timeLimitSecs: number;                 // default: 120; 0 selects it
+    disproveTimeoutMs: number;             // default: 1000; 0 selects it
   };
 }
 ```
+
+Other `rossi.*` keys — `rossi.tool.path`, `rossi.languageServer.path`,
+`rossi.validate.onSave`, `rossi.input.*` and `rossi.trace.server` — belong to
+the editor extension rather than to the server, which never sees them. The VS
+Code extension declares the full set with descriptions in
+[`editors/vscode/package.json`](../../editors/vscode/package.json).
 
 ## Performance
 
