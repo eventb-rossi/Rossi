@@ -27,6 +27,7 @@ use crate::type_env::TypeEnv;
 use crate::xml_out::in_tag;
 use crate::{Diagnostic, Severity};
 use rossi::formula::Type;
+use rossi::names::is_primed_identifier;
 
 /// Unified view over INIT and ordinary events. Keeps [`build_event_decl`]
 /// free of `match` noise. Copy-cheap since both variants are just
@@ -782,8 +783,17 @@ pub(super) fn build_event_decl(
     // A local event parameter may not reuse any identifier already visible
     // in the machine environment. Rodin reports ParameterNameConflictError
     // and filters the parameter, leaving formulas to resolve the outer name.
-    // Names duplicated within the event are already diagnosed and filtered.
+    // Names duplicated within the event are already diagnosed and filtered,
+    // and so is a parameter carrying the after-state prime (EB033).
     let mut invalid_parameter_names = event_dups.parameters.names.clone();
+    invalid_parameter_names.extend(
+        context
+            .kind
+            .parameters()
+            .iter()
+            .filter(|parameter| is_primed_identifier(&parameter.name))
+            .map(|parameter| parameter.name.clone()),
+    );
     let inherited_parameter_names: BTreeSet<&str> = inherited
         .decl
         .into_iter()

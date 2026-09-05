@@ -16,6 +16,7 @@ mod events;
 use std::collections::{BTreeSet, HashMap};
 use std::rc::Rc;
 
+use rossi::names::is_primed_identifier;
 use rossi::{LabeledPredicate, Machine};
 
 use crate::checked_predicate::{check_expression, check_labeled_predicate};
@@ -173,10 +174,12 @@ pub fn check_machine(
     // -----------------------------------------------------------------
     // Type-infer variables from invariants.
     // -----------------------------------------------------------------
+    // A primed variable name (EB033) drops like a duplicate: Rodin's
+    // `IdentifierModule` never registers the symbol, so it cannot be typed.
     let variable_names: Vec<String> = machine
         .variables
         .iter()
-        .filter(|v| !dup_vars.contains(&v.name))
+        .filter(|v| !dup_vars.contains(&v.name) && !is_primed_identifier(&v.name))
         .map(|v| v.name.clone())
         .collect();
     // Dropped 2nd+ occurrences of a duplicated invariant label must not

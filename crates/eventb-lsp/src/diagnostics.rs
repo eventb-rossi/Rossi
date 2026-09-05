@@ -205,17 +205,17 @@ fn parse_error_range(error: &rossi::ParseError, text: &str) -> Range {
 /// convert the findings to LSP diagnostics.
 ///
 /// These are exactly the checks that need no project, no cross-component
-/// resolution, and no type inference — duplicate identifiers (EB021) and
-/// labels (EB022) from the shared `rossi_build::duplicates` core (the same
-/// detection the SC build enforces), plus the shadowed-name (EB023) and
-/// keyword-name (EB028) lints from `rossi_build::lint::run_component`, plus
-/// the non-portable-whitespace advisory (EB031) from
-/// `rossi_build::lint::run_source`, which reads `text` directly because
-/// whitespace sits between AST nodes rather than inside one — so
-/// they are safe to recompute on every keystroke alongside the parse errors.
-/// `rossi validate` runs the same two passes on loose `.eventb` text; this
-/// only maps their output into the protocol's shape. `text` is the source
-/// the components were parsed from, so the diagnostic spans index into it.
+/// resolution, and no type inference — the component-local errors from
+/// `rossi_build::component_semantic_diagnostics` (duplicate identifiers and
+/// labels, EB021/EB022; a primed declaration, EB033),
+/// the shadowed-name (EB023) and keyword-name (EB028) lints from
+/// `rossi_build::lint::run_component`, and the non-portable-whitespace
+/// advisory (EB031) from `rossi_build::lint::run_source`, which reads `text`
+/// directly because whitespace sits between AST nodes rather than inside one
+/// — so they are safe to recompute on every keystroke alongside the parse
+/// errors. `rossi validate` runs the same passes on loose `.eventb` text;
+/// this only maps their output into the protocol's shape. `text` is the
+/// source the components were parsed from, so the spans index into it.
 /// The result is lazy so the sole caller can extend its diagnostics vector
 /// directly, without a throwaway intermediate `Vec`.
 pub(crate) fn lint_diagnostics<'a>(
@@ -225,7 +225,7 @@ pub(crate) fn lint_diagnostics<'a>(
     components
         .iter()
         .flat_map(|c| {
-            rossi_build::duplicates::component_duplicate_diagnostics(c)
+            rossi_build::component_semantic_diagnostics(c)
                 .into_iter()
                 .chain(rossi_build::lint::run_component(c))
                 .chain(rossi_build::lint::run_source(c, text))
@@ -762,7 +762,7 @@ mod tests {
         assert_eq!(d.range.end.character, 14);
     }
 
-    // --- single-component lints (EB021-023, EB028) --------------------------
+    // --- single-component checks (EB021-023, EB028, EB033) -------------------
     //
     // These exercise the run_component pass surfaced through the LSP. The
     // snippets parse cleanly (strict `rossi::parse`), so every diagnostic comes
@@ -869,6 +869,21 @@ mod tests {
         assert_eq!(diags[0].range.start.line, 2);
         assert_eq!(diags[0].range.start.character, 4);
         assert_eq!(diags[0].range.end.character, 7);
+    }
+
+    #[test]
+    fn primed_declared_name_is_eb033_error() {
+        // `c'` parses as a constant name (the grammar allows the after-state
+        // prime on any identifier) but Rodin's `IdentifierModule` refuses a
+        // primed declaration outright, so this is an Error on the declaration.
+        let text = "CONTEXT c\nCONSTANTS\n    c'\nAXIOMS\n    @axm1 1 = 1\nEND\n";
+        let diags = lint_for(text);
+        assert_eq!(diags.len(), 1, "{diags:?}");
+        assert_eq!(code_of(&diags[0]), Some("EB033"));
+        assert_eq!(diags[0].severity, Some(DiagnosticSeverity::ERROR));
+        assert_eq!(diags[0].range.start.line, 2);
+        assert_eq!(diags[0].range.start.character, 4);
+        assert_eq!(diags[0].range.end.character, 6);
     }
 
     #[test]

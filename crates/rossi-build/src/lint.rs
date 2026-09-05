@@ -109,21 +109,19 @@ pub fn run(project: &Project) -> Vec<Diagnostic> {
 /// by the SC build via [`crate::duplicates`], not advisories.
 ///
 /// The two component-local check categories — advisory lints (this
-/// function) and semantic duplicate-name errors
-/// ([`crate::duplicates::component_duplicate_diagnostics`]) — are composed
-/// per-input by both `rossi validate`'s loose-text path (gated on
-/// `--no-lints` / `--no-semantic` respectively) and the LSP (merged,
-/// ungated). A new component-local check must be wired into both callers.
+/// function) and semantic errors
+/// ([`crate::component_semantic_diagnostics`]) — are composed per-input by
+/// both `rossi validate`'s loose-text path (gated on `--no-lints` /
+/// `--no-semantic` respectively) and the LSP (merged, ungated). A new
+/// component-local check joins one of those two functions, so it reaches
+/// every caller; it does not need wiring per caller.
 #[must_use]
 pub fn run_component(component: &Component) -> Vec<Diagnostic> {
     let mut diags = Vec::new();
     for_each_declared_name(component, |origin, kind, name, site, span| {
         // EB023 concerns names used in formulas, where the mathematical
         // grammar re-lexes them; component and event names never are.
-        if matches!(
-            site,
-            DeclSite::ContextItem | DeclSite::Variable | DeclSite::Parameter
-        ) {
+        if site.is_math_identifier() {
             diags.extend(shadowed_name_diag(origin, kind, name, span));
         }
         diags.extend(keyword_name_diag(origin, kind, name, site, span));
@@ -134,7 +132,7 @@ pub fn run_component(component: &Component) -> Vec<Diagnostic> {
 /// Visit every declared name of `component`: the diagnostic origin prefix
 /// (`Component`, or `Component.event` for a parameter), the kind of
 /// declaration, the name, where it is written back in text, and its span.
-fn for_each_declared_name(
+pub(crate) fn for_each_declared_name(
     component: &Component,
     mut visit: impl FnMut(&str, &str, &str, DeclSite, Option<Span>),
 ) {

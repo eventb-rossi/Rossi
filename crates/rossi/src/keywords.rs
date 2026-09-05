@@ -383,6 +383,19 @@ pub enum DeclSite {
     Parameter,
 }
 
+impl DeclSite {
+    /// Whether a name declared here is a *mathematical* identifier — one the
+    /// formula grammar re-lexes and the type environment holds. Component and
+    /// event names are `component_name`s, which never appear in a formula.
+    #[must_use]
+    pub fn is_math_identifier(self) -> bool {
+        matches!(
+            self,
+            DeclSite::ContextItem | DeclSite::Variable | DeclSite::Parameter
+        )
+    }
+}
+
 // The inline keywords re-lex a name wherever it is *used*: `theorem` in any
 // labeled predicate, so every identifier site collides with it; `skip` only
 // as an action's target, so only variables do (`x ≔ skip + 1` parses).

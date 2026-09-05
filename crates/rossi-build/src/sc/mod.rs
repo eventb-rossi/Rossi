@@ -350,10 +350,17 @@ pub fn build_project(project: &Project) -> (BuildResult, ScModel) {
     // their own. Reporting here (rather than inside each check) means a
     // structural failure that stops the build early, or a dropped element,
     // can never hide a duplicate the user needs to see.
+    // Primed declared names (EB033) are reported the same way and for the
+    // same reason: the per-component checks below only filter them out.
     for pc in &project.components {
         result
             .diagnostics
             .extend(crate::duplicates::component_duplicate_diagnostics(
+                &pc.component,
+            ));
+        result
+            .diagnostics
+            .extend(crate::identifiers::component_primed_name_diagnostics(
                 &pc.component,
             ));
     }

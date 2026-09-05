@@ -101,7 +101,8 @@ impl Occurrence<'_> {
     /// binder. The primed-name spelling is the model's representation
     /// of those declarations; this is its one decoding site.
     pub fn is_after_state_read(&self) -> bool {
-        matches!(self.resolution, Resolution::Bound { .. }) && self.name.ends_with('\'')
+        matches!(self.resolution, Resolution::Bound { .. })
+            && crate::names::is_primed_identifier(self.name)
     }
 
     /// The unprimed variable an after-state read refers to (`x` for

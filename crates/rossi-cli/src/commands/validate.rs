@@ -458,8 +458,9 @@ fn validate_stdin(cli: &ValidateArgs) -> Vec<ValidationResult> {
 /// when the text is one member of a directory project, under `inner`.
 /// Loose text has no enclosing project (its SEES/EXTENDS parents are usually
 /// absent), so only WD runs through the typed model, and only for direct file
-/// input. The duplicate-name errors (EB021/EB022) and component-local lints run
-/// directly. Reference-based lints need project paths (directories or zips).
+/// input. [`rossi_build::component_semantic_diagnostics`] and the
+/// component-local lints run directly. Reference-based lints need project
+/// paths (directories or zips).
 fn validate_text_source(
     input: Input,
     inner: Option<&str>,
@@ -475,8 +476,7 @@ fn validate_text_source(
                 .collect();
             for component in &components {
                 if !cli.no_semantic {
-                    for diag in rossi_build::duplicates::component_duplicate_diagnostics(component)
-                    {
+                    for diag in rossi_build::component_semantic_diagnostics(component) {
                         // Loose text is a single source; every span indexes into it.
                         results.push(fold_diagnostic(input, diag, inner(), Some(source)));
                     }

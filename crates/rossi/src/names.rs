@@ -130,6 +130,14 @@ pub fn is_valid_component_name(s: &str) -> bool {
     check_component_name(s).is_ok()
 }
 
+/// `true` iff `s` carries the after-state prime, mirroring Rodin's
+/// `FreeIdentifier.isPrimed()` (which is literally a suffix test). Which
+/// positions may carry one is the rule's business, not the predicate's —
+/// see `rossi_build::identifiers`.
+pub fn is_primed_identifier(s: &str) -> bool {
+    s.ends_with('\'')
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -153,6 +161,16 @@ mod tests {
             ("x'y", NameError::BadChar('\'')),
         ] {
             assert_eq!(check_math_identifier(bad), Err(err), "{bad:?}");
+        }
+    }
+
+    #[test]
+    fn primed_identifiers() {
+        for primed in ["x'", "_'", "A1'"] {
+            assert!(is_primed_identifier(primed), "{primed:?} is primed");
+        }
+        for plain in ["x", "_x", "A1", ""] {
+            assert!(!is_primed_identifier(plain), "{plain:?} is not primed");
         }
     }
 

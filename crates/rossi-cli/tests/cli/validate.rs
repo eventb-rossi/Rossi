@@ -863,6 +863,69 @@ fn validate_deny_warnings_fails_on_advisory_lints() {
 }
 
 #[test]
+fn validate_flags_a_primed_declared_name() {
+    // Rodin parses every declaration with primes disallowed
+    // (`IdentifierModule`), so `constants c'` is `InvalidIdentifierError`
+    // there and EB033 here. It is semantic rather than advisory: the exit
+    // code flips, `--no-lints` must not silence it, `--no-semantic` must.
+    let tmp = tempdir_unique("rossi-cli-primed-decl");
+    let file = tmp.join("primed.eventb");
+    std::fs::write(
+        &file,
+        "context c\nconstants c'\naxioms\n  @axm1 c' \u{2208} \u{2115}\nend\n",
+    )
+    .unwrap();
+    let path = file.to_str().unwrap();
+
+    let output = rossi_command()
+        .args(["validate", "--format", "json", path])
+        .output()
+        .expect("Failed to execute command");
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let rows: Vec<serde_json::Value> =
+        serde_json::from_str(&stdout).expect("validate JSON output should parse");
+    let eb033: Vec<&serde_json::Value> = rows.iter().filter(|r| r["rule_id"] == "EB033").collect();
+    assert_eq!(eb033.len(), 1, "exactly one EB033 row: {stdout}");
+    assert_eq!(
+        eb033[0]["severity"], "error",
+        "EB033 is Error severity: {stdout}"
+    );
+    assert!(
+        eb033[0]["error"]
+            .as_str()
+            .is_some_and(|m| m.contains("after-state prime")),
+        "EB033 message should name the prime: {stdout}"
+    );
+    assert!(
+        !output.status.success(),
+        "an Error-severity diagnostic must flip the exit code; stderr={}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+
+    let lints_off = rossi_command()
+        .args(["validate", "--format", "json", "--no-lints", path])
+        .output()
+        .expect("Failed to execute command");
+    let stdout = String::from_utf8_lossy(&lints_off.stdout);
+    assert!(
+        stdout.contains("EB033"),
+        "EB033 is semantic, not advisory: {stdout}"
+    );
+
+    let semantics_off = rossi_command()
+        .args(["validate", "--format", "json", "--no-semantic", path])
+        .output()
+        .expect("Failed to execute command");
+    let stdout = String::from_utf8_lossy(&semantics_off.stdout);
+    assert!(
+        !stdout.contains("EB033"),
+        "--no-semantic should suppress EB033: {stdout}"
+    );
+
+    std::fs::remove_dir_all(&tmp).ok();
+}
+
+#[test]
 fn validate_flags_structural_keyword_names() {
     // A carrier set named `end` is legal in Rodin's object model but no
     // textual notation can represent it: rossi used to accept it silently and

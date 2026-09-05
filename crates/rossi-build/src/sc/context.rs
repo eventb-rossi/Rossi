@@ -7,6 +7,7 @@
 
 use std::collections::HashMap;
 
+use rossi::names::is_primed_identifier;
 use rossi::{Context, LabeledPredicate, NamedElement};
 
 use crate::checked_predicate::check_labeled_predicate;
@@ -68,13 +69,16 @@ pub fn check_context(
     }
     // Filter duplicate identifiers / axiom labels per the SC drop semantics
     // documented in `crate::duplicates` (identifiers drop every occurrence;
-    // axiom labels keep the first).
+    // axiom labels keep the first). A primed declared name (EB033, reported
+    // up front in `super::build_project`) drops the same way: Rodin's
+    // `IdentifierModule` returns no symbol for it, so nothing types against
+    // it and every axiom using it cascades into EB018.
     let dups = crate::duplicates::context_duplicates(ctx);
     let dup_ids = dups.identifiers.names;
     let dup_axiom_labels = dups.axiom_labels.names;
 
     for set in &ctx.sets {
-        if dup_ids.contains(&set.name) {
+        if dup_ids.contains(&set.name) || is_primed_identifier(&set.name) {
             continue;
         }
         env.add_carrier_set(&set.name);
@@ -94,7 +98,7 @@ pub fn check_context(
     let constant_names: Vec<String> = ctx
         .constants
         .iter()
-        .filter(|c| !dup_ids.contains(&c.name))
+        .filter(|c| !dup_ids.contains(&c.name) && !is_primed_identifier(&c.name))
         .map(|c| c.name.clone())
         .collect();
     let unresolved =
@@ -144,7 +148,7 @@ pub fn check_context(
     let mut carrier_sets: Vec<CarrierSetDecl> = ctx
         .sets
         .iter()
-        .filter(|s| !dup_ids.contains(&s.name))
+        .filter(|s| !dup_ids.contains(&s.name) && !is_primed_identifier(&s.name))
         .map(|s| build_carrier_set_decl(&pc.rodin_ids, &file_root, s))
         .collect();
     carrier_sets.sort_by(|a, b| a.name.cmp(&b.name));

@@ -27,6 +27,7 @@ pub mod checked_predicate;
 pub mod duplicates;
 pub mod error;
 pub mod handles;
+pub mod identifiers;
 pub mod lint;
 pub mod normalize;
 pub mod po_view;
@@ -52,6 +53,25 @@ pub use handles::HandleUri;
 pub use project::{Project, ProjectComponent};
 pub use rossi::formula::Type;
 pub use rules::RuleId;
+
+/// Every component-local *semantic* check, for one component: the
+/// duplicate-name errors ([`duplicates::component_duplicate_diagnostics`])
+/// and the primed-declaration error ([`identifiers`]). These need no
+/// project, no cross-component resolution and no type inference, so they
+/// are the errors a lone `.eventb` file and an open editor document can
+/// decide.
+///
+/// This is the `--no-semantic` half of the component-local surface; the
+/// advisory half is [`lint::run_component`] plus [`lint::run_source`],
+/// gated on `--no-lints`. Both `rossi validate`'s loose-text path and the
+/// LSP compose exactly these, so a new component-local error joins the set
+/// here rather than in each caller.
+#[must_use]
+pub fn component_semantic_diagnostics(component: &rossi::Component) -> Vec<Diagnostic> {
+    let mut diags = duplicates::component_duplicate_diagnostics(component);
+    diags.extend(identifiers::component_primed_name_diagnostics(component));
+    diags
+}
 
 /// Static-check a whole project and emit one `.bcc` / `.bcm` per component.
 ///

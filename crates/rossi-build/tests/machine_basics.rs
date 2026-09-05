@@ -9,6 +9,8 @@
 //!   accuracy regressions.
 //! - `setcomp_lowering` (RC2): short-form set comprehension promoted to
 //!   the long form in emitted actions.
+//! - `primed_declarations`: a variable or event parameter carrying the
+//!   after-state prime is refused and dropped.
 
 mod invariants_variables {
     //! M1: smallest useful machine — SEES a context, declares variables, and
@@ -833,5 +835,114 @@ mod setcomp_lowering {
             !bcm.contains("{y∣"),
             "basic short form `{{y∣` must not survive into the .bcm:\n{bcm}"
         );
+    }
+}
+
+mod primed_declarations {
+    //! Rodin parses every declaration with `primeAllowed = false`
+    //! (`IdentifierModule`), so a primed variable or event parameter draws
+    //! `InvalidIdentifierError` and registers no symbol. rossi reports EB033
+    //! and drops the name, leaving the formulas that used it to cascade.
+
+    use rossi_build::{BuildResult, Project, ProjectComponent, RuleId, build};
+
+    fn build_source(filename: &str, source: &str) -> BuildResult {
+        let components = ProjectComponent::from_eventb(filename, source).unwrap();
+        build(&Project::new("p", components))
+    }
+
+    #[test]
+    fn primed_variable_is_rejected_and_dropped() {
+        let r = build_source(
+            "M.eventb",
+            r#"
+MACHINE M
+VARIABLES
+    v'
+INVARIANTS
+    @inv1 v' ∈ ℕ
+EVENTS
+    EVENT INITIALISATION
+    THEN
+        @act1 v' ≔ 0
+    END
+END
+"#,
+        );
+        assert!(
+            r.diagnostics
+                .iter()
+                .any(|d| d.rule_id == Some(RuleId::PrimedDeclaredName)),
+            "diagnostics: {:?}",
+            r.diagnostics
+        );
+        let bcm = &r.file("M.bcm").expect("M.bcm").contents;
+        assert!(
+            !bcm.contains("scVariable"),
+            "the primed variable must be dropped: {bcm}"
+        );
+    }
+
+    #[test]
+    fn primed_event_parameter_is_rejected() {
+        let r = build_source(
+            "N.eventb",
+            r#"
+MACHINE N
+VARIABLES
+    v
+INVARIANTS
+    @inv1 v ∈ ℕ
+EVENTS
+    EVENT INITIALISATION
+    THEN
+        @act1 v ≔ 0
+    END
+    EVENT e
+    ANY
+        p'
+    WHERE
+        @grd1 p' ∈ ℕ
+    THEN
+        @act2 v ≔ p'
+    END
+END
+"#,
+        );
+        assert!(
+            r.diagnostics
+                .iter()
+                .any(|d| d.rule_id == Some(RuleId::PrimedDeclaredName)),
+            "diagnostics: {:?}",
+            r.diagnostics
+        );
+    }
+
+    /// The primed declaration a becomes-such-that introduces lives in the
+    /// formula model, not in the machine's VARIABLES, so a machine using one
+    /// must build clean.
+    #[test]
+    fn bound_after_state_read_builds_clean() {
+        let r = build_source(
+            "K.eventb",
+            r#"
+MACHINE K
+VARIABLES
+    x
+INVARIANTS
+    @inv1 x ∈ ℕ
+EVENTS
+    EVENT INITIALISATION
+    THEN
+        @act1 x ≔ 0
+    END
+    EVENT e
+    THEN
+        @act2 x :∣ x' = x + 1
+    END
+END
+"#,
+        );
+        assert!(r.is_ok(), "diagnostics: {:?}", r.diagnostics);
     }
 }

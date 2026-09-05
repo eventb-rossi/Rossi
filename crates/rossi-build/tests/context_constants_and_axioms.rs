@@ -186,3 +186,69 @@ fn lambda_binder_typed_via_typed_sibling_across_union() {
         "both lambda binders should carry the lifted ascription: {predicate}"
     );
 }
+
+/// Rodin parity with `GenericIdentTest.testIdents_05_bug2815882`
+/// (instantiated for contexts by `TestConstants`): a primed constant draws
+/// `InvalidIdentifierError` on the declaration *and*
+/// `UndeclaredFreeIdentifierError` on the axiom that uses it, because
+/// `IdentifierModule` registers no symbol for a primed name. rossi reports
+/// EB033 and EB018 and drops the constant from the checked file.
+#[test]
+fn primed_constant_is_rejected_and_its_axiom_cascades() {
+    let source = r#"
+CONTEXT C
+CONSTANTS
+    c'
+AXIOMS
+    @axm1 c' ∈ ℕ
+END
+"#;
+    let components = ProjectComponent::from_eventb("C.eventb", source).unwrap();
+    let result = build(&Project::new("C", components));
+
+    let codes: Vec<&str> = result
+        .diagnostics
+        .iter()
+        .filter_map(|d| d.rule_id.map(|r| r.code()))
+        .collect();
+    assert!(
+        codes.contains(&"EB033") && codes.contains(&"EB018"),
+        "expected EB033 on the declaration and EB018 on the axiom: {:?}",
+        result.diagnostics
+    );
+    let bcc = result.file("C.bcc").expect("C.bcc");
+    assert!(
+        !bcc.contents.contains("scConstant"),
+        "the primed constant must be dropped: {}",
+        bcc.contents
+    );
+}
+
+/// A primed carrier set is refused the same way, and never reaches the
+/// checked file (where its name would also spell an illegal type).
+#[test]
+fn primed_carrier_set_is_rejected_and_dropped() {
+    let source = r#"
+CONTEXT S
+SETS
+    S'
+END
+"#;
+    let components = ProjectComponent::from_eventb("S.eventb", source).unwrap();
+    let result = build(&Project::new("S", components));
+
+    assert!(
+        result
+            .diagnostics
+            .iter()
+            .any(|d| d.rule_id == Some(rossi_build::RuleId::PrimedDeclaredName)),
+        "diagnostics: {:?}",
+        result.diagnostics
+    );
+    let bcc = result.file("S.bcc").expect("S.bcc");
+    assert!(
+        !bcc.contents.contains("scCarrierSet"),
+        "the primed carrier set must be dropped: {}",
+        bcc.contents
+    );
+}

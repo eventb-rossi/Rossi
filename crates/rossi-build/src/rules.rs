@@ -9,7 +9,7 @@ use crate::Severity;
 
 /// Validation rule identifiers exposed in `Diagnostic.rule_id`.
 ///
-/// Codes use the stable `EBnnn` scheme (`"EB001"`..`"EB032"`); gaps are
+/// Codes use the stable `EBnnn` scheme (`"EB001"`..`"EB033"`); gaps are
 /// rules not yet implemented in rossi (EB020 unknown
 /// type) or removed as valueless (EB013 dead
 /// constant — every hit was already an EB006 typing Error). EB023, EB024,
@@ -99,6 +99,9 @@ pub enum RuleId {
     NonPortableWhitespace,
     /// EB032 — A predicate or action is written with no `@label`.
     MissingLabel,
+    /// EB033 — A declared name carries the after-state prime (`c'`), which
+    /// only a witness label may.
+    PrimedDeclaredName,
 }
 
 impl RuleId {
@@ -136,6 +139,7 @@ impl RuleId {
             RuleId::ClauseOutOfOrder => "EB030",
             RuleId::NonPortableWhitespace => "EB031",
             RuleId::MissingLabel => "EB032",
+            RuleId::PrimedDeclaredName => "EB033",
         }
     }
 
@@ -173,6 +177,7 @@ impl RuleId {
             RuleId::ClauseOutOfOrder => "Event clause out of order",
             RuleId::NonPortableWhitespace => "Non-portable whitespace",
             RuleId::MissingLabel => "Missing label",
+            RuleId::PrimedDeclaredName => "Primed declared name",
         }
     }
 
@@ -266,6 +271,9 @@ impl RuleId {
             RuleId::MissingLabel => {
                 "An axiom, invariant, guard, witness or action is written with no `@label`. Rodin's textual grammar requires one on every item and its static checker reports a missing one as an error, so the model does not round-trip through the toolchain. Write a label before the formula; only the first `VARIANT` item may go without."
             }
+            RuleId::PrimedDeclaredName => {
+                "A carrier set, constant, variable or event parameter is declared with the after-state prime (`c'`). The prime names the post-value of an assigned variable, so it belongs to a formula and never to a declaration: Rodin parses every declaration with primes disallowed and reports `InvalidIdentifierError`, dropping the name from the checked model. Only a witness label may be primed. Rename the declaration without the prime."
+            }
         }
     }
 
@@ -293,6 +301,7 @@ impl RuleId {
             | RuleId::EmptyClause
             | RuleId::ClauseOutOfOrder
             | RuleId::MissingLabel
+            | RuleId::PrimedDeclaredName
             | RuleId::DuplicateComponent => Severity::Error,
             RuleId::WellDefinedness => Severity::Info,
             RuleId::DeadVariable
@@ -362,6 +371,7 @@ impl RuleId {
             RuleId::ClauseOutOfOrder,
             RuleId::NonPortableWhitespace,
             RuleId::MissingLabel,
+            RuleId::PrimedDeclaredName,
         ]
     }
 }
@@ -407,6 +417,7 @@ mod tests {
         assert_eq!(RuleId::ClauseOutOfOrder.code(), "EB030");
         assert_eq!(RuleId::NonPortableWhitespace.code(), "EB031");
         assert_eq!(RuleId::MissingLabel.code(), "EB032");
+        assert_eq!(RuleId::PrimedDeclaredName.code(), "EB033");
     }
 
     /// `all()` is a hand-maintained array with no exhaustiveness check, unlike
@@ -418,8 +429,8 @@ mod tests {
     /// order also subsumes the uniqueness and length checks.
     #[test]
     fn all_lists_every_rule() {
-        // `EB001`..`EB032` minus the two documented gaps (EB013, EB020).
-        let expected: Vec<String> = (1..=32)
+        // `EB001`..`EB033` minus the two documented gaps (EB013, EB020).
+        let expected: Vec<String> = (1..=33)
             .filter(|n| !matches!(n, 13 | 20))
             .map(|n| format!("EB{n:03}"))
             .collect();
