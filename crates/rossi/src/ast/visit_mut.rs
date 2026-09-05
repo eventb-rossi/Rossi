@@ -140,8 +140,10 @@ pub fn walk_labeled_predicate<V: VisitMut + ?Sized>(
 }
 
 pub fn walk_labeled_action<V: VisitMut + ?Sized>(visitor: &mut V, action: &mut LabeledAction) {
-    // See `walk_labeled_predicate` — the assignment is a formula-model
-    // tree; only the structural span is visited.
+    // See `walk_labeled_predicate` — the body is formula-coordinate, whether
+    // it is an assignment or the `skip` whose span the lowering lifts the same
+    // way. Only the structural span is visited; a shifter reaching a lifted
+    // span would move it a second time.
     visit_optional_span(visitor, &mut action.span);
 }
 

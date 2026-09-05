@@ -1655,7 +1655,7 @@ fn parse_action(pair: pest::iterators::Pair<Rule>) -> Result<ActionBody, ParseEr
     // Peek at the first inner token: if it is kw_skip this is a skip action.
     let mut inner = pair.into_inner().peekable();
     if inner.peek().map(|p| p.as_rule()) == Some(Rule::kw_skip) {
-        return Ok(ActionBody::Skip);
+        return Ok(ActionBody::Skip { span: action_span });
     }
     let inner = inner;
     let fx = &mut fx;
@@ -5958,6 +5958,30 @@ mod tests {
             span.start > event.name_span.expect("name span").end,
             "the shifted target span follows the event's own name span"
         );
+    }
+
+    /// `skip` carries the only span the lowering puts on a structural AST
+    /// field, so it is the one span that must not be shifted a second time
+    /// when the region-splitting recovery lifts a component's spans.
+    #[test]
+    fn skip_span_is_absolute_in_a_multi_component_document() {
+        let source = "CONTEXT c\nAXIOMS\n    @a x ∈\nEND\n\nMACHINE m\nEVENTS\n    EVENT e\n    THEN\n        @act1 skip\n    END\nEND";
+        let components = parse_components_with_recovery(source)
+            .component
+            .unwrap_or_default();
+        let machine = components
+            .iter()
+            .find_map(|c| match c {
+                Component::Machine(m) => Some(m),
+                Component::Context(_) => None,
+            })
+            .expect("machine recovered");
+        let action = machine.events[0].actions.first().expect("one action");
+        let ActionBody::Skip { span } = action.action else {
+            panic!("expected skip, got {:?}", action.action);
+        };
+        let span = span.expect("skip span");
+        assert_eq!(&source[span.start..span.end], "skip");
     }
 
     /// Clause regions are recorded for every clause in source order, each

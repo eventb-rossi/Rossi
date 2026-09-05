@@ -450,7 +450,7 @@ pub(crate) fn normalize_source(s: Option<String>) -> Option<String> {
 #[must_use]
 pub fn strip_type_ascriptions_action(body: ActionBody) -> ActionBody {
     match body {
-        ActionBody::Skip => ActionBody::Skip,
+        skip @ ActionBody::Skip { .. } => skip,
         ActionBody::Assignment(assignment) => {
             ActionBody::Assignment(assignment.strip_ascriptions())
         }

@@ -696,6 +696,32 @@ fn test_extended_initialisation_no_actions_roundtrip() {
 // Roundtrip example tests
 // ============================================================================
 
+// `skip` carries the only structural span an action body can own, so a machine
+// using it is the case that proves `clear_spans` reaches that span; the
+// generative round-trips never emit `skip`.
+#[test]
+fn skip_action_roundtrips() {
+    common::assert_roundtrip(
+        r#"MACHINE m
+VARIABLES
+    x
+INVARIANTS
+    @inv1 x ∈ ℕ
+EVENTS
+    EVENT INITIALISATION
+    THEN
+        @act1 x ≔ 0
+    END
+
+    EVENT idle
+    THEN
+        @act1 skip
+    END
+END
+"#,
+    );
+}
+
 // Kept as a readable pinned example of machine-level REFINES with event-level
 // REFINES/WITH; generative cover: machine_roundtrip_* in proptest_roundtrip.rs.
 #[test]

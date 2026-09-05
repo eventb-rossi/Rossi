@@ -5,6 +5,7 @@
 //! spans of identifier leaves and a few structural nodes so navigation
 //! features can rely on them.
 
+use rossi::ast::ActionBody;
 use rossi::ast::Span;
 use rossi::formula::FormulaRef;
 use rossi::{
@@ -318,4 +319,17 @@ fn variant_items_are_spanned() {
     };
     let span = machine.variants[0].span.expect("variant carries a span");
     assert_eq!(slice(source, span), "x + 1");
+}
+
+#[test]
+fn skip_action_is_spanned() {
+    // `skip` has no assignment to carry a span, so the keyword's own location
+    // used to be dropped and the enclosing labeled action was the only thing
+    // left to point at.
+    let src = "skip";
+    let body = parse_action_str(src).expect("parses");
+    let ActionBody::Skip { span } = body else {
+        panic!("expected skip, got {body:?}");
+    };
+    assert_eq!(slice(src, span.expect("skip span")), "skip");
 }

@@ -1027,7 +1027,7 @@ impl PrettyPrinter {
     /// Format an action body: `skip`, or the modelled assignment.
     pub fn print_action_body(&self, body: &crate::ast::ActionBody) -> String {
         match body {
-            crate::ast::ActionBody::Skip => "skip".to_string(),
+            crate::ast::ActionBody::Skip { .. } => "skip".to_string(),
             crate::ast::ActionBody::Assignment(assignment) => {
                 self.print_formula_assignment(assignment)
             }
@@ -2050,7 +2050,7 @@ impl PrettyPrinter {
         base_col: usize,
     ) -> String {
         match body {
-            crate::ast::ActionBody::Skip => "skip".to_string(),
+            crate::ast::ActionBody::Skip { .. } => "skip".to_string(),
             crate::ast::ActionBody::Assignment(assign) => {
                 if self.max_line_width == 0 {
                     return self.print_formula_assignment(assign);
