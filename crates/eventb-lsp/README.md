@@ -362,22 +362,19 @@ The vocabulary is closed — these are all the values `detail` ever takes:
 | `Witness` | `PROPERTY` | a `WITNESS` predicate |
 | `Action` | `PROPERTY` | a `THEN` / `BEGIN` action |
 
-Consuming it correctly means knowing five things:
+Consuming it correctly means knowing four things:
 
-- **Only some rows carry a real range.** Component roots, events,
-  `INITIALISATION`, axioms, invariants, guards and actions have their true
-  source span. Sets, constants, variables, the `variant` row and `WITH` /
-  `WITNESS` predicates report the placeholder `(0,0)-(0,0)`, so navigating to
-  one lands at the top of the file. Use `workspace/symbol` instead when you
-  need to jump to a set, constant, or variable declaration.
+- **The `variant` row is the one row you cannot navigate by.** It reports the
+  placeholder `(0,0)-(0,0)`, because the parser records no span for a `VARIANT`
+  clause. It is also a single lower-case literal, emitted once even when the
+  machine declares more than one `VARIANT`. Every other row points at its own
+  declaration.
 - **`Theorem` is ambiguous** between a theorem axiom and a theorem invariant.
   The parent component tells them apart.
 - **Bare `Event` is ambiguous** between `INITIALISATION` and a status-less
   event. The `kind` tells them apart, as does the name.
 - **Unlabeled predicates are all named `unlabeled`**, so names are not unique
   within a parent.
-- **The `variant` row is a single lower-case literal**, emitted once even when
-  the machine declares more than one `VARIANT`.
 
 `SymbolKind` is presentational and is recorded here as it stands today,
 including one wart: `workspace/symbol` reports events as `SymbolKind::EVENT`,

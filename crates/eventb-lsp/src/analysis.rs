@@ -26,7 +26,7 @@ fn extract_context_symbols(ctx: &Context, source: &str) -> Vec<DocumentSymbol> {
             set.name.clone(),
             SymbolKind::ENUM,
             "Set",
-            default_range(),
+            name_range_or(set.span.as_ref(), default_range(), source),
         ));
     }
 
@@ -36,7 +36,7 @@ fn extract_context_symbols(ctx: &Context, source: &str) -> Vec<DocumentSymbol> {
             constant.name.clone(),
             SymbolKind::CONSTANT,
             "Constant",
-            default_range(),
+            name_range_or(constant.span.as_ref(), default_range(), source),
         ));
     }
 
@@ -86,7 +86,7 @@ fn extract_machine_symbols(machine: &Machine, source: &str) -> Vec<DocumentSymbo
             var.name.clone(),
             SymbolKind::VARIABLE,
             "Variable",
-            default_range(),
+            name_range_or(var.span.as_ref(), default_range(), source),
         ));
     }
 
@@ -222,7 +222,7 @@ fn extract_event_symbol(event: &Event, source: &str) -> DocumentSymbol {
             label,
             SymbolKind::PROPERTY,
             "With",
-            default_range(),
+            name_range_or(lp.span.as_ref(), default_range(), source),
         ));
     }
 
@@ -233,7 +233,7 @@ fn extract_event_symbol(event: &Event, source: &str) -> DocumentSymbol {
             label,
             SymbolKind::PROPERTY,
             "Witness",
-            default_range(),
+            name_range_or(lp.span.as_ref(), default_range(), source),
         ));
     }
 
@@ -635,5 +635,40 @@ mod tests {
                 (SymbolKind::PROPERTY, "Action".to_string()),
             ]
         );
+    }
+
+    #[test]
+    fn declaration_symbols_point_at_their_declaration() {
+        use crate::lsp_types::Position;
+
+        // Sets, constants, variables and WITH / WITNESS predicates used to
+        // report the (0, 0) default even though the parser records a span for
+        // each, so jumping to one from the outline landed at the top of the
+        // file instead of on the declaration.
+        let context_source =
+            "CONTEXT c\nSETS\n    S\nCONSTANTS\n    k\nAXIOMS\n    @axm1 k ∈ S\nEND";
+        let component = parse(context_source).unwrap();
+        let symbols = extract_symbols(&component, context_source);
+        let children = symbols[0].children.as_ref().unwrap();
+
+        assert_eq!(children[0].name, "S");
+        assert_eq!(children[0].range.start, Position::new(2, 4));
+        assert_eq!(children[1].name, "k");
+        assert_eq!(children[1].range.start, Position::new(4, 4));
+
+        let machine_source = "MACHINE m\nVARIABLES\n    v\nEVENTS\n    EVENT step\n    WITH\n        @wth1 ⊤\n    WITNESS\n        @wit1 ⊤\n    THEN\n        @act1 v := 0\n    END\nEND";
+        let component = parse(machine_source).unwrap();
+        let symbols = extract_symbols(&component, machine_source);
+        let children = symbols[0].children.as_ref().unwrap();
+
+        assert_eq!(children[0].name, "v");
+        assert_eq!(children[0].range.start, Position::new(2, 4));
+
+        let event = children.iter().find(|s| s.name == "step").unwrap();
+        let event_children = event.children.as_ref().unwrap();
+        let with = event_children.iter().find(|s| s.name == "wth1").unwrap();
+        assert_eq!(with.range.start, Position::new(6, 8));
+        let witness = event_children.iter().find(|s| s.name == "wit1").unwrap();
+        assert_eq!(witness.range.start, Position::new(8, 8));
     }
 }
