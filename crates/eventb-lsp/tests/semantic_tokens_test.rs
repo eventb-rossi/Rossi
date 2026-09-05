@@ -532,3 +532,26 @@ fn constants_are_read_only_variables_not_numbers() {
         );
     }
 }
+
+/// An action's lowering can put two AST nodes on one piece of source — the
+/// target and the synthesized right-hand `f` of `f(x) ≔ E`, the write target
+/// and the primed declaration of `x :∣ P` — and each carries the span of the
+/// identifier that is actually written. The encoded stream must still hold one
+/// token per position: overlapping tokens are outside the protocol, and here
+/// the two would disagree about the token type.
+#[test]
+fn lowered_actions_emit_one_token_per_position() {
+    for text in [
+        "MACHINE m\nVARIABLES\n    f\nINVARIANTS\n    @inv1 f ∈ ℕ → ℕ\nEVENTS\n    EVENT e\n    THEN\n        @act1 f(0) ≔ 1\n    END\nEND\n",
+        "MACHINE m\nVARIABLES\n    x\nINVARIANTS\n    @inv1 x ∈ ℕ\nEVENTS\n    EVENT e\n    THEN\n        @act1 x :∣ x' = x + 1\n    END\nEND\n",
+    ] {
+        let tokens = decode_tokens(text);
+        let mut positions: Vec<_> = tokens.iter().map(|&(line, col, ..)| (line, col)).collect();
+        positions.dedup();
+        assert_eq!(
+            positions.len(),
+            tokens.len(),
+            "two tokens share a position in {text:?}: {tokens:?}"
+        );
+    }
+}

@@ -1730,6 +1730,11 @@ fn parse_action(pair: pest::iterators::Pair<Rule>) -> Result<ActionBody, ParseEr
         let overwrite_rhs = fx.ff.associative_expression(
             AssocExprOp::Ovr,
             vec![
+                // Nothing here carries a span: the maplet, the set extension
+                // and the override are not spelled in the source, and the one
+                // `f` that is belongs to the target below. Giving this copy
+                // the same span would put two nodes on one token, which
+                // find-references and semantic tokens would each report twice.
                 fx.ff.free_identifier(&function, None, None),
                 fx.ff.set_extension(vec![maplet], None),
             ],
@@ -1794,7 +1799,12 @@ fn parse_action(pair: pest::iterators::Pair<Rule>) -> Result<ActionBody, ParseEr
             let idents = target_idents(fx, &variables);
             let primed: Vec<BoundIdentDecl> = variables
                 .iter()
-                .map(|(name, _)| fx.ff.bound_ident_decl(format!("{name}'"), None, None, None))
+                .map(|(name, span)| {
+                    // `x'` is not written anywhere, but it is derived from the
+                    // `x` that is, so it points there.
+                    fx.ff
+                        .bound_ident_decl(format!("{name}'"), *span, None, None)
+                })
                 .collect();
             let depth = fx.push_decls(&primed);
             let pred = parse_predicate_inner(rhs, false, fx);

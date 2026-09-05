@@ -772,6 +772,12 @@ impl<'a> SemanticTokensBuilder<'a> {
     fn build(mut self) -> SemanticTokens {
         // Sort tokens by position (line, then column)
         self.tokens.sort_by_key(|t| (t.line, t.start));
+        // `x :∣ P` puts two nodes on one token: the write target and the
+        // primed declaration derived from it, which disagree about the token
+        // type. The protocol forbids overlapping tokens, so keep the first
+        // emitted for a position — the sort is stable and the occurrence walk
+        // reaches the written node before the derived one.
+        self.tokens.dedup_by_key(|t| (t.line, t.start));
 
         // Convert to LSP delta-encoded format using SemanticToken structs
         let mut data = Vec::new();

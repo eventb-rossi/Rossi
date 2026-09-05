@@ -232,6 +232,20 @@ fn function_override_target_is_spanned() {
     };
     assert_eq!(slice(src, idents[0].span().expect("target span")), "f");
     assert_eq!(idents[0].span().unwrap().start, 0);
+
+    // Nothing the lowering synthesizes is spanned: the override, the set
+    // extension and the copy of `f` inside it are not spelled in the source,
+    // and the one `f` that is belongs to the target asserted above. Two nodes
+    // on one token would be reported twice by find-references.
+    let AssignmentKind::BecomesEqualTo { values, .. } = assignment.kind() else {
+        unreachable!("checked above");
+    };
+    let ExpressionKind::Associative { children, .. } = values[0].kind() else {
+        panic!("expected the override, got {:?}", values[0]);
+    };
+    assert_eq!(values[0].span(), None, "the override node spells nothing");
+    assert_eq!(children[0].span(), None, "the copied `f` spells nothing");
+    assert_eq!(children[1].span(), None, "the set extension spells nothing");
 }
 
 #[test]
@@ -243,6 +257,13 @@ fn becomes_such_that_target_is_spanned() {
         panic!("expected becomes-such-that");
     };
     assert_eq!(slice(src, idents[0].span().unwrap()), "x");
+
+    // `x'` is nowhere in the source, but it is derived from the `x` that is,
+    // so it points at that identifier rather than nowhere.
+    let AssignmentKind::BecomesSuchThat { primed, .. } = assignment.kind() else {
+        unreachable!("checked above");
+    };
+    assert_eq!(slice(src, primed[0].span().expect("primed decl span")), "x");
 }
 
 #[test]
