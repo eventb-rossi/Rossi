@@ -362,13 +362,15 @@ The vocabulary is closed — these are all the values `detail` ever takes:
 | `Witness` | `PROPERTY` | a `WITNESS` predicate |
 | `Action` | `PROPERTY` | a `THEN` / `BEGIN` action |
 
-Consuming it correctly means knowing four things:
+Consuming it correctly means knowing five things:
 
-- **The `variant` row is the one row you cannot navigate by.** It reports the
-  placeholder `(0,0)-(0,0)`, because the parser records no span for a `VARIANT`
-  clause. It is also a single lower-case literal, emitted once even when the
-  machine declares more than one `VARIANT`. Every other row points at its own
-  declaration.
+- **Every row points at its own declaration**, so any of them can be navigated
+  to. A row falls back to `(0,0)-(0,0)` only where there is genuinely no source
+  text to point at — a component imported from Rodin XML, or a region the
+  parser could not recover.
+- **The `variant` row collapses the clause.** It is a single lower-case
+  literal, emitted once even when the machine declares more than one `VARIANT`,
+  and it points at the first of them.
 - **`Theorem` is ambiguous** between a theorem axiom and a theorem invariant.
   The parent component tells them apart.
 - **Bare `Event` is ambiguous** between `INITIALISATION` and a status-less

@@ -108,13 +108,14 @@ fn extract_machine_symbols(machine: &Machine, source: &str) -> Vec<DocumentSymbo
         symbols.push(create_symbol(label, SymbolKind::PROPERTY, detail, range));
     }
 
-    // Add VARIANT if present
-    if !machine.variants.is_empty() {
+    // Add VARIANT if present. The clause collapses to one row, so with
+    // several items written it points at the first.
+    if let Some(variant) = machine.variants.first() {
         symbols.push(create_symbol(
             "variant".to_string(),
             SymbolKind::NUMBER,
             "Variant",
-            default_range(),
+            name_range_or(variant.span.as_ref(), default_range(), source),
         ));
     }
 
@@ -635,6 +636,29 @@ mod tests {
                 (SymbolKind::PROPERTY, "Action".to_string()),
             ]
         );
+    }
+
+    #[test]
+    fn the_variant_row_points_at_the_variant() {
+        use crate::lsp_types::Position;
+
+        // The variant row reported the (0, 0) default until `ast::Variant`
+        // grew a span; it was the last outline row that could not be
+        // navigated to.
+        let source =
+            "MACHINE m\nVARIABLES\n    v\nINVARIANTS\n    @inv1 v ∈ ℕ\nVARIANT\n    @vrn1 v\nEND";
+        let component = parse(source).unwrap();
+        let symbols = extract_symbols(&component, source);
+        let variant = symbols[0]
+            .children
+            .as_ref()
+            .unwrap()
+            .iter()
+            .find(|s| s.name == "variant")
+            .expect("variant symbol present");
+
+        assert_eq!(variant.range.start, Position::new(6, 4));
+        assert_ne!(variant.range, default_range());
     }
 
     #[test]
