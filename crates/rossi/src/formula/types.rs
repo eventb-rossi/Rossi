@@ -504,9 +504,12 @@ mod tests {
     fn parser_owned_spellings_fall_through() {
         for (s, expected) in [
             ("INT", Some(Type::Int)),
-            ("ℙ1(S)", Some(Type::pow(Type::given("S")))),
             ("POW(ℤ)", Some(Type::pow(Type::Int))),
             ("ℤ × S", Some(Type::prod(Type::Int, Type::given("S")))),
+            (
+                "S↔T",
+                Some(Type::relation(Type::given("S"), Type::given("T"))),
+            ),
             ("card", None),
             ("S(x)", None),
         ] {
@@ -533,7 +536,7 @@ mod tests {
         // Well-formed expressions that are not type spellings, the
         // parametric form (a function application to the parser), and
         // malformed input.
-        for s in ["1+2", "S∪T", "x↦y", "{1}", "List(ℤ)", "ℙ(", ""] {
+        for s in ["1+2", "S∪T", "x↦y", "{1}", "ℙ1(S)", "List(ℤ)", "ℙ(", ""] {
             assert_eq!(Type::parse_rodin(s), None, "accepted {s:?}");
         }
     }

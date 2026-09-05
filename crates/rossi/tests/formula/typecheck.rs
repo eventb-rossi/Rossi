@@ -114,6 +114,22 @@ fn declaration_annotations_constrain_the_body() {
     assert_eq!(result.inferred.get("y"), Some(&Type::Int));
 }
 
+/// `↔` is a type spelling, as it is for Rodin's parser — `S ↔ T` reads as
+/// `ℙ(S × T)` rather than leaving the declaration unconstrained.
+#[test]
+fn relation_annotations_constrain_the_body() {
+    // ∀f⦂S↔T · f = g infers g ⦂ ℙ(S×T) from the annotation alone.
+    let relation = ff().binary_expression(BinaryExprOp::Rel, fid("S"), fid("T"), None);
+    let annotated = ff().bound_ident_decl("f", None, Some(relation), None);
+    let pred = forall(vec![annotated], eq_pred(bid(0), fid("g")));
+    let result = pred.type_check(&env(&[]));
+    assert!(result.is_success());
+    assert_eq!(
+        result.inferred.get("g"),
+        Some(&Type::relation(Type::given("S"), Type::given("T")))
+    );
+}
+
 #[test]
 fn ascriptions_are_checked_constraints() {
     // (x ⦂ ℤ) with x undeclared: x is inferred integer.

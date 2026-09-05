@@ -167,6 +167,11 @@ impl Expression {
     /// Whether this expression denotes a type: `ℤ`, `BOOL`, a carrier
     /// set, a power set or relation or cartesian product of type
     /// expressions, or a parametric type built from a type constructor.
+    ///
+    /// This reads a *type-checked* tree, so a carrier set must already
+    /// carry `ℙ(Given(name))`. Before type-checking — in the parser, say —
+    /// `typecheck::type_from_expression` answers the same question about
+    /// the same shapes without that requirement.
     pub fn is_type_expression(&self) -> bool {
         match self.kind() {
             ExpressionKind::Atomic(AtomicOp::Integer | AtomicOp::Bool) => true,

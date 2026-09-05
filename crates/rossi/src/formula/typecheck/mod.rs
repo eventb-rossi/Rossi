@@ -139,14 +139,23 @@ impl TypeCheckMediator<'_, '_> {
 }
 
 /// Interprets an expression as a type spelling: `ℤ`, `BOOL`, a free
-/// identifier as a given set, `ℙ(·)`/`ℙ1(·)`, and products.
+/// identifier as a given set, `ℙ(·)`, products and relations.
+///
+/// The accepted set is Rodin's, which pairs `Expression.isATypeExpression`
+/// with `Expression.toType`: `ℙ1(·)` is a set constructor and not a type,
+/// while `S ↔ T` is one and reads as `ℙ(S × T)`.
+///
+/// [`Expression::is_type_expression`] answers the same question about a
+/// *type-checked* tree and must accept the same shapes; the two differ only
+/// in the identifier rule, where it demands a solved `ℙ(Given(name))` and
+/// this reads any name as a given set. Keep them in step.
 pub fn type_from_expression(expr: &Expression) -> Option<Type> {
     match expr.kind() {
         ExpressionKind::Atomic(AtomicOp::Integer) => Some(Type::Int),
         ExpressionKind::Atomic(AtomicOp::Bool) => Some(Type::Bool),
         ExpressionKind::FreeIdentifier(name) => Some(Type::given(name.clone())),
         ExpressionKind::Unary {
-            op: UnaryExprOp::Pow | UnaryExprOp::Pow1,
+            op: UnaryExprOp::Pow,
             child,
         } => Some(Type::pow(type_from_expression(child)?)),
         ExpressionKind::Binary {
@@ -154,6 +163,14 @@ pub fn type_from_expression(expr: &Expression) -> Option<Type> {
             left,
             right,
         } => Some(Type::prod(
+            type_from_expression(left)?,
+            type_from_expression(right)?,
+        )),
+        ExpressionKind::Binary {
+            op: BinaryExprOp::Rel,
+            left,
+            right,
+        } => Some(Type::relation(
             type_from_expression(left)?,
             type_from_expression(right)?,
         )),
