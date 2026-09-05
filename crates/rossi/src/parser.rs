@@ -1273,15 +1273,37 @@ fn parse_machine(pair: pest::iterators::Pair<Rule>) -> Result<Component, ParseEr
                         .extend(collect_theorem_predicates(pair, Rule::kw_theorems)?);
                 }
                 Rule::machine_clause_variant => {
-                    let mut label = None;
+                    // The clause has no per-item rule to take a span from, so
+                    // the item's span is composed: it starts at the label when
+                    // one is written and at the expression otherwise.
+                    let mut label: Option<(String, usize)> = None;
                     for vp in pair.into_inner() {
                         match vp.as_rule() {
                             Rule::kw_variant => {}
-                            Rule::label => label = extract_label(vp),
+                            Rule::label => {
+                                // Read the span before `extract_label` consumes
+                                // the pair.
+                                let start = vp.as_span().start();
+                                label = extract_label(vp).map(|text| (text, start));
+                            }
                             _ => {
+                                // The `expression` rule absorbs the whitespace
+                                // up to the next item or clause, so trim it the
+                                // way clause spans are trimmed.
+                                let expression_span =
+                                    trimmed_span(vp.as_span().start(), vp.as_str());
+                                let (label, start) = label
+                                    .take()
+                                    .map_or((None, expression_span.start), |(text, start)| {
+                                        (Some(text), start)
+                                    });
                                 machine.variants.push(crate::ast::Variant {
-                                    label: label.take(),
+                                    label,
                                     expression: parse_expression(vp, &mut Fx::new())?,
+                                    span: Some(Span {
+                                        start,
+                                        end: expression_span.end,
+                                    }),
                                 });
                             }
                         }
@@ -4328,7 +4350,7 @@ fn parse_context_with_recovery(
 /// Split a recovered `VARIANT` clause body into its optionally labeled
 /// items: `[expr] (@label expr)*`. A label cannot contain whitespace and
 /// an expression cannot contain `@`, so every `@` starts a new item.
-fn split_variant_items(body: &str) -> Vec<(Option<String>, &str)> {
+fn split_variant_items(body: &str) -> Vec<VariantItem<'_>> {
     let mut boundaries: Vec<usize> = body
         .char_indices()
         .filter(|(_, c)| *c == '@')
@@ -4338,7 +4360,11 @@ fn split_variant_items(body: &str) -> Vec<(Option<String>, &str)> {
     let mut items = Vec::new();
     let head = body[..boundaries[0]].trim();
     if !head.is_empty() {
-        items.push((None, head));
+        items.push(VariantItem {
+            label: None,
+            expression: head,
+            whole: head,
+        });
     }
     for pair in boundaries.windows(2) {
         let item = &body[pair[0] + 1..pair[1]];
@@ -4347,10 +4373,26 @@ fn split_variant_items(body: &str) -> Vec<(Option<String>, &str)> {
             None => (item, ""),
         };
         if !expr.is_empty() {
-            items.push((Some(label.to_string()), expr));
+            items.push(VariantItem {
+                label: Some(label.to_string()),
+                expression: expr,
+                // From the `@` through the expression, so the caller can span
+                // the item the way the strict parser does — label included.
+                whole: body[pair[0]..pair[1]].trim_end(),
+            });
         }
     }
     items
+}
+
+/// One item of a `VARIANT` clause recovered from text.
+struct VariantItem<'a> {
+    label: Option<String>,
+    /// The expression alone, which is what parses.
+    expression: &'a str,
+    /// The item as written, `@label` included; a subslice of the same text
+    /// the caller passed in, so its offset is recoverable.
+    whole: &'a str,
 }
 
 /// Attempt to parse a machine with error recovery
@@ -4409,11 +4451,21 @@ fn parse_machine_with_recovery(
     if let Some(region) = variant {
         let kw_len = crate::keywords::spell(KeywordId::Variant).len();
         let body = text.masked[region.span.start + kw_len..region.span.end].trim();
-        for (label, part) in split_variant_items(body) {
-            if let Ok(expression) = parse_expression_str(part) {
-                machine
-                    .variants
-                    .push(crate::ast::Variant { label, expression });
+        for item in split_variant_items(body) {
+            // The items are subslices of the masked text, whose offsets are the
+            // document's, so these are where the item sits in the file. Without
+            // the `with_span_base` shift the expression's own spans would be
+            // relative to the item and resolve against the wrong region.
+            let expression_start = subslice_offset(&text.masked, item.expression);
+            let start = subslice_offset(&text.masked, item.whole);
+            if let Ok(expression) =
+                with_span_base(expression_start, || parse_expression_str(item.expression))
+            {
+                machine.variants.push(crate::ast::Variant {
+                    label: item.label,
+                    expression,
+                    span: Some(segment_span(start, item.whole)),
+                });
             }
         }
     }
@@ -4688,7 +4740,7 @@ impl RecoveryFormulaKind {
                 !items.is_empty()
                     && items
                         .iter()
-                        .all(|(_, part)| parse_expression_str(part).is_ok())
+                        .all(|item| parse_expression_str(item.expression).is_ok())
             }
             (Self::Event, KeywordId::Then) => {
                 try_parse_labeled_action_from_text(content, 0).is_ok()

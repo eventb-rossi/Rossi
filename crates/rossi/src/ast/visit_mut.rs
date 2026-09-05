@@ -7,7 +7,7 @@
 
 use super::{
     ClauseRegion, Component, Context, Event, FileMetadata, InitialisationEvent, LabeledAction,
-    LabeledPredicate, Machine, NamedElement, Span,
+    LabeledPredicate, Machine, NamedElement, Span, Variant,
 };
 
 /// A mutable AST visitor whose methods recurse by default.
@@ -34,6 +34,10 @@ pub trait VisitMut {
 
     fn visit_labeled_action(&mut self, action: &mut LabeledAction) {
         walk_labeled_action(self, action);
+    }
+
+    fn visit_variant(&mut self, variant: &mut Variant) {
+        walk_variant(self, variant);
     }
 
     fn visit_event(&mut self, event: &mut Event) {
@@ -103,8 +107,9 @@ pub fn walk_machine<V: VisitMut + ?Sized>(visitor: &mut V, machine: &mut Machine
     for invariant in &mut machine.invariants {
         visitor.visit_labeled_predicate(invariant);
     }
-    // The variants are formula-model expressions — immutable, out of this
-    // legacy visitor's reach.
+    for variant in &mut machine.variants {
+        visitor.visit_variant(variant);
+    }
     if let Some(initialisation) = &mut machine.initialisation {
         visitor.visit_initialisation(initialisation);
     }
@@ -138,6 +143,12 @@ pub fn walk_labeled_action<V: VisitMut + ?Sized>(visitor: &mut V, action: &mut L
     // See `walk_labeled_predicate` — the assignment is a formula-model
     // tree; only the structural span is visited.
     visit_optional_span(visitor, &mut action.span);
+}
+
+pub fn walk_variant<V: VisitMut + ?Sized>(visitor: &mut V, variant: &mut Variant) {
+    // See `walk_labeled_predicate` — the expression is a formula-model
+    // tree; only the structural span is visited.
+    visit_optional_span(visitor, &mut variant.span);
 }
 
 pub fn walk_event<V: VisitMut + ?Sized>(visitor: &mut V, event: &mut Event) {

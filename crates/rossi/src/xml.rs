@@ -695,6 +695,8 @@ fn parse_machine_xml_with_name(
                                     None,
                                     "expression",
                                 )?,
+                                // Rodin XML carries no source text to index.
+                                span: None,
                             });
                         }
                     }

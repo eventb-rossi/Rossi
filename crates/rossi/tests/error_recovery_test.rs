@@ -1944,3 +1944,43 @@ END
         "action span must cover its label-inclusive source"
     );
 }
+
+#[test]
+fn recovery_anchors_variant_spans_in_the_document() {
+    // The recovery path parsed each variant item out of a detached slice, so
+    // the expression's own spans were relative to that slice and resolved
+    // against the wrong region of the file. The item span is new besides.
+    let source = "\
+MACHINE m
+VARIABLES
+    x
+INVARIANTS
+    @inv1 broken @#$ syntax
+VARIANT
+    @vrn1 x
+EVENTS
+    EVENT step
+    THEN
+        @act1 x ≔ 1
+    END
+END
+";
+    let result = parse_with_recovery(source);
+    assert!(result.has_recovered(), "expected recovery with errors");
+    let m = expect_machine(&result);
+    let variant = &m.variants[0];
+
+    let span = variant.span.expect("recovered variant carries a span");
+    assert_eq!(
+        &source[span.start..span.end],
+        "@vrn1 x",
+        "variant span must cover its label-inclusive source"
+    );
+
+    let expression_span = variant.expression.span().expect("expression span");
+    assert_eq!(
+        &source[expression_span.start..expression_span.end],
+        "x",
+        "the expression must be spanned in document coordinates"
+    );
+}

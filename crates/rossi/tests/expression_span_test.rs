@@ -277,3 +277,24 @@ fn propositional_leaves_of_a_parsed_guard_resolve_to_their_source() {
         ]
     );
 }
+
+#[test]
+fn variant_items_are_spanned() {
+    // The variant row used to be the one machine element with no span at all,
+    // so an outline could not navigate to it. The span covers the item as
+    // written, label included, like a labeled predicate's.
+    let source = "MACHINE m\nVARIABLES\n    x\nVARIANT\n    @vrn1 x\nEND";
+    let rossi::Component::Machine(machine) = rossi::parse(source).unwrap() else {
+        panic!("expected a machine");
+    };
+    let span = machine.variants[0].span.expect("variant carries a span");
+    assert_eq!(slice(source, span), "@vrn1 x");
+
+    // Unlabeled, the item is just the expression.
+    let source = "MACHINE m\nVARIABLES\n    x\nVARIANT\n    x + 1\nEND";
+    let rossi::Component::Machine(machine) = rossi::parse(source).unwrap() else {
+        panic!("expected a machine");
+    };
+    let span = machine.variants[0].span.expect("variant carries a span");
+    assert_eq!(slice(source, span), "x + 1");
+}

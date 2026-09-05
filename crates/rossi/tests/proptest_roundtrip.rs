@@ -721,11 +721,16 @@ fn arb_machine() -> impl Strategy<Value = Component> {
                     .map(|expression| Variant {
                         label: None,
                         expression,
+                        span: None,
                     })
                     .chain(
                         labeled_variants
                             .into_iter()
-                            .map(|(label, expression)| Variant { label, expression }),
+                            .map(|(label, expression)| Variant {
+                                label,
+                                expression,
+                                span: None,
+                            }),
                     )
                     .collect();
                 machine.initialisation = initialisation;

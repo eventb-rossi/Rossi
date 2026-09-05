@@ -206,7 +206,7 @@ pub(crate) fn machine_file_duplicates(m: &Machine) -> MachineFileDuplicates {
             &m.name,
         ),
         variant_labels: namespace_duplicates(
-            m.variants.iter().map(|v| (v.effective_label(), None)),
+            m.variants.iter().map(|v| (v.effective_label(), v.span)),
             RuleId::DuplicateLabel,
             "variant label",
             &scope,

@@ -67,6 +67,9 @@ pub struct Variant {
 
     /// The variant expression
     pub expression: Expression,
+
+    /// Source location of the whole item, label included
+    pub span: Option<Span>,
 }
 
 impl Variant {
