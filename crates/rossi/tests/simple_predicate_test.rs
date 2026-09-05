@@ -3,7 +3,10 @@
 mod common;
 
 use rossi::formula::tag::AssocPredOp;
-use rossi::{ExpressionKind, PredicateKind, parse, parse_action_str, parse_expression_str};
+use rossi::{
+    ExpressionKind, ParseError, PredicateKind, parse, parse_action_str, parse_expression_str,
+    parse_predicate_str,
+};
 
 #[test]
 fn test_binary_addition_ast_structure() {
@@ -1553,4 +1556,95 @@ fn test_typed_forall_mixed() {
         }
         other => panic!("Expected Quantified ForAll, got {:?}", other),
     }
+}
+
+// ============================================================================
+// A ⦂ annotation must denote a type
+// ============================================================================
+
+// Rodin parses the annotation with `MainParsers.TYPE_PARSER`, which reads a
+// full expression and then demands `Expression.isATypeExpression`. Inside a
+// type every bare name is a given set, so the accepted grammar is `ℤ`, `BOOL`,
+// an identifier, `ℙ(τ)`, `τ × τ`, `τ ↔ τ` and parentheses.
+#[test_case::test_case("ℤ" ; "integer")]
+#[test_case::test_case("BOOL" ; "boolean")]
+#[test_case::test_case("S" ; "carrier_set")]
+#[test_case::test_case("ℙ(ℤ)" ; "power_set")]
+#[test_case::test_case("ℤ×BOOL" ; "product")]
+#[test_case::test_case("ℤ↔ℤ" ; "relation")]
+#[test_case::test_case("ℙ(S×T)" ; "power_set_of_product")]
+#[test_case::test_case("(ℤ×ℤ)" ; "parenthesized")]
+fn type_annotations_are_accepted(spelling: &str) {
+    parse_predicate_str(&format!("∀x⦂{spelling} · x = x")).expect("a type annotation parses");
+}
+
+// Everything else Rodin reports as "Expression doesn't denote a type": `ℕ` and
+// `ℙ1` are sets rather than types, the function arrows are not type
+// constructors (only `↔` is), and the rest never reach `isATypeExpression`.
+#[test_case::test_case("ℤ(1)" ; "application")]
+#[test_case::test_case("ℕ" ; "natural")]
+#[test_case::test_case("ℙ1(ℤ)" ; "non_empty_power_set")]
+#[test_case::test_case("ℤ→ℤ" ; "total_function")]
+#[test_case::test_case("ℤ⇸ℤ" ; "partial_function")]
+#[test_case::test_case("ℤ∪ℤ" ; "union")]
+#[test_case::test_case("{1}" ; "set_extension")]
+#[test_case::test_case("1" ; "integer_literal")]
+#[test_case::test_case("card(S)" ; "cardinality")]
+fn non_type_annotations_are_rejected(spelling: &str) {
+    assert_not_a_type(&format!("∀x⦂{spelling} · x = x"));
+}
+
+/// Assert that `predicate` is refused for spelling a `⦂` annotation that is
+/// not a type. `#[track_caller]` keeps a failure pointing at the case.
+#[track_caller]
+fn assert_not_a_type(predicate: &str) {
+    let error = parse_predicate_str(predicate).expect_err("a non-type annotation is refused");
+    assert!(
+        matches!(error, ParseError::InvalidTypeExpression { .. }),
+        "{predicate}: {error:?}"
+    );
+}
+
+// `parse_bound_decl` is the one funnel for every binder, so the rejection has
+// to reach the λ pattern, the comprehension and the quantified set operators
+// as well as ∀/∃.
+#[test_case::test_case("∃x⦂ℕ · x = x" ; "exists")]
+#[test_case::test_case("(λx⦂ℕ · x = x ∣ x) = f" ; "lambda_pattern")]
+#[test_case::test_case("{x⦂ℕ · x = x ∣ x} = s" ; "comprehension")]
+#[test_case::test_case("(⋃x⦂ℕ · x = x ∣ {x}) = s" ; "quantified_union")]
+#[test_case::test_case("(⋂x⦂ℕ · x = x ∣ {x}) = s" ; "quantified_inter")]
+fn every_binder_site_rejects_a_non_type(predicate: &str) {
+    assert_not_a_type(predicate);
+}
+
+// The ascription operator takes the same type grammar — Rodin runs the very
+// same `TYPE_PARSER` from `SubParsers.OftypeParser`. Its *left* operand stays
+// lenient, which is a separate divergence.
+#[test_case::test_case("∅ ⦂ ℙ(ℤ)" ; "power_set_of_integer")]
+#[test_case::test_case("prj1 ⦂ ℙ(ℤ×BOOL×ℤ)" ; "generic_atom")]
+fn type_ascriptions_are_accepted(expression: &str) {
+    assert!(parses_as_ascription(expression), "{expression}");
+}
+
+#[test_case::test_case("∅ ⦂ {1}" ; "set_extension")]
+#[test_case::test_case("∅ ⦂ ℕ" ; "natural")]
+fn non_type_ascriptions_are_rejected(expression: &str) {
+    let error = parse_expression_str(expression).expect_err("a non-type ascription is refused");
+    assert!(
+        matches!(error, ParseError::InvalidTypeExpression { .. }),
+        "{expression}: {error:?}"
+    );
+}
+
+// The caret sits on the annotation, which is where Rodin reports it too.
+#[test]
+fn the_rejection_points_at_the_annotation() {
+    let source = "∀ x ⦂ ℤ(1) · x = x";
+    let error = parse_predicate_str(source).expect_err("refused");
+    let ParseError::InvalidTypeExpression { line, column, span } = error else {
+        panic!("expected InvalidTypeExpression, got {error:?}");
+    };
+    assert_eq!((line, column), (1, 7));
+    let span = span.expect("the annotation is located");
+    assert_eq!(&source[span.start..span.end], "ℤ(1)");
 }

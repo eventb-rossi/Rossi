@@ -54,6 +54,34 @@ fn arb_identifier() -> impl Strategy<Value = String> {
     ]
 }
 
+/// The type spellings a `⦂` may carry: `ℤ`, `BOOL`, a name read as a given
+/// set, `ℙ(τ)`, `τ × τ` and `τ ↔ τ`. The parser refuses anything else on the
+/// right of a `⦂`, so both the annotation and the ascription draw from here.
+///
+/// Spelled out rather than derived from `Type::to_expression`, which cannot
+/// write `↔` (there is no `Type::Rel` — `Type::relation` folds to `ℙ(·×·)`)
+/// and stamps its identifiers with a solved type these trees leave `None`.
+fn arb_type_expression() -> impl Strategy<Value = Expression> {
+    let leaf = prop_oneof![
+        Just(ff().atomic_expression(AtomicOp::Integer, None, None)),
+        Just(ff().atomic_expression(AtomicOp::Bool, None, None)),
+        arb_identifier().prop_map(|name| ff().free_identifier(&name, None, None)),
+    ];
+    leaf.prop_recursive(3, 8, 2, |inner| {
+        prop_oneof![
+            inner
+                .clone()
+                .prop_map(|child| ff().unary_expression(UnaryExprOp::Pow, child, None)),
+            (
+                prop_oneof![Just(BinaryExprOp::CProd), Just(BinaryExprOp::Rel)],
+                inner.clone(),
+                inner,
+            )
+                .prop_map(|(op, left, right)| ff().binary_expression(op, left, right, None)),
+        ]
+    })
+}
+
 /// Disjoint pool for bound declarations in quantified constructs, with both
 /// bare (`p1`) and annotated (`p1⦂ℤ`) declarations. Bodies are drawn from
 /// the free pool, which never mentions these names, so binders are unused
@@ -63,10 +91,14 @@ fn arb_bound_decl() -> impl Strategy<Value = BoundIdentDecl> {
     fn bare(name: &str) -> BoundIdentDecl {
         ff().bound_ident_decl(name, None, None, None)
     }
-    fn annotated(name: &str, atom: AtomicOp) -> BoundIdentDecl {
-        let annotation = ff().atomic_expression(atom, None, None);
-        ff().bound_ident_decl(name, None, Some(annotation), None)
-    }
+    // One type strategy, shared by the annotated arms: `prop_recursive`
+    // rebuilds its closure per sample, so building it three times would
+    // triple that work for no extra coverage.
+    let ty = arb_type_expression().boxed();
+    let annotated = |name: &'static str| {
+        ty.clone()
+            .prop_map(move |annotation| ff().bound_ident_decl(name, None, Some(annotation), None))
+    };
     prop_oneof![
         Just(bare("p1")),
         Just(bare("p2")),
@@ -74,9 +106,9 @@ fn arb_bound_decl() -> impl Strategy<Value = BoundIdentDecl> {
         Just(bare("q1")),
         Just(bare("q2")),
         Just(bare("q3")),
-        Just(annotated("p1", AtomicOp::Integer)),
-        Just(annotated("p2", AtomicOp::Natural)),
-        Just(annotated("q1", AtomicOp::Bool)),
+        annotated("p1"),
+        annotated("p2"),
+        annotated("q1"),
     ]
 }
 
@@ -289,8 +321,9 @@ fn arb_expression_impl(depth: u32, desired_size: u32) -> impl Strategy<Value = E
             (inner.clone(), inner.clone()).prop_map(|(relation, set)| {
                 ff().binary_expression(BinaryExprOp::RelImage, relation, set, None)
             }),
-            // Type ascription e ⦂ T.
-            (inner.clone(), inner.clone()).prop_map(|(expr, ty)| ff().ascription(expr, ty, None)),
+            // Type ascription e ⦂ T, whose right operand must denote a type.
+            (inner.clone(), arb_type_expression())
+                .prop_map(|(expr, ty)| ff().ascription(expr, ty, None)),
             // Ident-list comprehension {ids ∣ P}: the value is the binder
             // chain in declaration order.
             (

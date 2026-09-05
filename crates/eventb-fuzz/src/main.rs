@@ -162,6 +162,7 @@ fn category_of(error: &rossi::ParseError) -> &'static str {
         E::IncompatibleOperators { .. } => "IncompatibleOperators",
         E::AssignmentInPredicate { .. } => "AssignmentInPredicate",
         E::ExpressionNotBinding { .. } => "ExpressionNotBinding",
+        E::InvalidTypeExpression { .. } => "InvalidTypeExpression",
         E::EmptyExpression => "EmptyExpression",
         E::EmptyPredicate => "EmptyPredicate",
         E::MissingPredicate => "MissingPredicate",

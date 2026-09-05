@@ -12,6 +12,7 @@ use crate::formula::tag::{
     AssocExprOp, AssocPredOp, AtomicOp, BinaryExprOp, BinaryPredOp, LiteralPredOp, QuantExprOp,
     QuantPredOp, RelationalOp, UnaryExprOp,
 };
+use crate::formula::typecheck::type_from_expression;
 use crate::formula::{
     BoundIdentDecl, Expression, ExpressionKind, Form, FormulaFactory, Predicate, PredicateKind,
 };
@@ -644,7 +645,15 @@ fn parse_bound_decl(
         match p.as_rule() {
             Rule::op_oftype => {}
             Rule::ident_binder_type => {
-                annotation = Some(parse_expression(p, fx)?);
+                let type_span = p.as_span();
+                let spelling = parse_expression(p, fx)?;
+                // Rodin's `TYPE_PARSER` parses a full expression here and
+                // then demands that it denote a type; the grammar rule is
+                // wider than the type grammar in the same way.
+                if type_from_expression(&spelling).is_none() {
+                    return Err(invalid_type_expression(type_span));
+                }
+                annotation = Some(spelling);
             }
             _ => {}
         }
@@ -1935,7 +1944,14 @@ fn parse_binary_expr(
         }
 
         let right_pair = inner.next().ok_or(ParseError::EmptyExpression)?;
+        let right_span = right_pair.as_span();
         let right = parse_expression(right_pair, fx)?;
+        // An ascription's type side takes the same type grammar as a binder
+        // annotation — Rodin runs the one `TYPE_PARSER` for both. The left
+        // operand stays lenient; that is a divergence of its own.
+        if op == BinaryOp::OfType && type_from_expression(&right).is_none() {
+            return Err(invalid_type_expression(right_span));
+        }
         match assoc_of(op).filter(|_| op != BinaryOp::OfType) {
             // A same-operator chain folds into one n-ary node: operands
             // accumulate in the run and the node is built once when the
@@ -2034,6 +2050,23 @@ fn expression_not_binding(span: pest::Span<'_>) -> ParseError {
         line,
         column,
         span: Some(Span::from_pest(span)),
+    }
+}
+
+/// Build a [`ParseError::InvalidTypeExpression`] anchored at the annotation
+/// `span`, which is the location Rodin reports too. The rule runs on into
+/// the whitespace it consumed after the annotation, so the byte range stops
+/// at the last non-space byte. Called only on the rejection path.
+fn invalid_type_expression(span: pest::Span<'_>) -> ParseError {
+    let (line, column) = span.start_pos().line_col();
+    let start = span.start();
+    ParseError::InvalidTypeExpression {
+        line,
+        column,
+        span: Some(Span {
+            start,
+            end: start + span.as_str().trim_end().len(),
+        }),
     }
 }
 

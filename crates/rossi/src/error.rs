@@ -110,6 +110,22 @@ pub enum ParseError {
         span: Option<Span>,
     },
 
+    /// A `⦂` annotation whose right-hand side does not denote a type — a
+    /// binder declaration `∀x⦂ℤ(1)·…` or an ascription `∅ ⦂ {1}`. Rodin reads
+    /// both with one `TYPE_PARSER`, which parses a full expression and then
+    /// demands `Expression.isATypeExpression`, so this is a parse error there
+    /// too (`ProblemKind.InvalidTypeExpression`) rather than a typing one. The
+    /// accepted spellings are `ℤ`, `BOOL`, an identifier read as a given set,
+    /// `ℙ(τ)`, `τ × τ` and `τ ↔ τ`. `line` and `column` are 1-indexed; `span`
+    /// is the byte range of the annotation, where Rodin reports it too
+    /// (additive and unreferenced by `Display`, oracle-safe).
+    #[error("Expression doesn't denote a type")]
+    InvalidTypeExpression {
+        line: usize,
+        column: usize,
+        span: Option<Span>,
+    },
+
     /// A clause header (`WHERE`, `INVARIANTS`, `THEN`, …) with nothing under
     /// it: the next token already opens another section. Reported at the
     /// keyword, because the clause is what is wrong — the parser would
@@ -366,6 +382,7 @@ impl ParseError {
             | ParseError::IncompatibleOperators { line, span, .. }
             | ParseError::AssignmentInPredicate { line, span, .. }
             | ParseError::ExpressionNotBinding { line, span, .. }
+            | ParseError::InvalidTypeExpression { line, span, .. }
             | ParseError::AssignmentArityMismatch { line, span, .. } => {
                 *line += line_delta;
                 shift_span(span, byte_delta);
@@ -421,6 +438,7 @@ impl ParseError {
             | ParseError::IncompatibleOperators { line, column, .. }
             | ParseError::AssignmentInPredicate { line, column, .. }
             | ParseError::ExpressionNotBinding { line, column, .. }
+            | ParseError::InvalidTypeExpression { line, column, .. }
             | ParseError::AssignmentArityMismatch { line, column, .. }
             | ParseError::ClauseError { line, column, .. }
             | ParseError::RecoverableError { line, column, .. } => Some((*line, *column)),
@@ -449,6 +467,7 @@ impl ParseError {
             | ParseError::IncompatibleOperators { span, .. }
             | ParseError::AssignmentInPredicate { span, .. }
             | ParseError::ExpressionNotBinding { span, .. }
+            | ParseError::InvalidTypeExpression { span, .. }
             | ParseError::AssignmentArityMismatch { span, .. }
             | ParseError::RecoverableError { span, .. } => *span,
             ParseError::FileContext { source, .. } => source.span(),
