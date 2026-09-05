@@ -542,4 +542,98 @@ mod tests {
         let sym3 = extract_event_symbol(&anticipated_event, source);
         assert_eq!(sym3.detail, Some("Event (anticipated)".to_string()));
     }
+
+    #[test]
+    fn document_symbol_detail_vocabulary_is_stable() {
+        // `detail` is how an editor outline and any third-party integrator tell
+        // one Event-B construct from another, so these strings are a contract:
+        // the table in the crate README must keep matching them. The three
+        // status-qualified event forms are pinned by
+        // `test_event_status_in_detail`; everything else is pinned here.
+        fn flatten(symbols: &[DocumentSymbol], out: &mut Vec<(SymbolKind, String)>) {
+            for symbol in symbols {
+                out.push((symbol.kind, symbol.detail.clone().expect("detail set")));
+                flatten(symbol.children.as_deref().unwrap_or(&[]), out);
+            }
+        }
+
+        let vocabulary = |source: &str| {
+            let component = parse(source).unwrap();
+            let mut out = Vec::new();
+            flatten(&extract_symbols(&component, source), &mut out);
+            out
+        };
+
+        let context_source = r#"
+        CONTEXT c
+        SETS
+            S
+        CONSTANTS
+            k
+        AXIOMS
+            @axm1 k ∈ S
+            theorem @thm1 ⊤
+        END
+        "#;
+        assert_eq!(
+            vocabulary(context_source),
+            vec![
+                (SymbolKind::MODULE, "Context".to_string()),
+                (SymbolKind::ENUM, "Set".to_string()),
+                (SymbolKind::CONSTANT, "Constant".to_string()),
+                (SymbolKind::PROPERTY, "Axiom".to_string()),
+                (SymbolKind::PROPERTY, "Theorem".to_string()),
+            ]
+        );
+
+        let machine_source = r#"
+        MACHINE m
+        VARIABLES
+            v
+        INVARIANTS
+            @inv1 v ∈ ℕ
+            theorem @thm1 ⊤
+        VARIANT
+            v
+        EVENTS
+            EVENT INITIALISATION
+            THEN
+                @act1 v := 0
+            END
+
+            EVENT step
+            ANY p
+            WHERE
+                @grd1 p ∈ ℕ
+            WITH
+                @wth1 ⊤
+            WITNESS
+                @wit1 ⊤
+            THEN
+                @act1 v := p
+            END
+        END
+        "#;
+        assert_eq!(
+            vocabulary(machine_source),
+            vec![
+                (SymbolKind::MODULE, "Machine".to_string()),
+                (SymbolKind::VARIABLE, "Variable".to_string()),
+                (SymbolKind::PROPERTY, "Invariant".to_string()),
+                (SymbolKind::PROPERTY, "Theorem".to_string()),
+                (SymbolKind::NUMBER, "Variant".to_string()),
+                // INITIALISATION is a CONSTRUCTOR carrying the bare "Event",
+                // while a status-less regular event is a FUNCTION carrying the
+                // same string: the kind is what separates them.
+                (SymbolKind::CONSTRUCTOR, "Event".to_string()),
+                (SymbolKind::PROPERTY, "Action".to_string()),
+                (SymbolKind::FUNCTION, "Event".to_string()),
+                (SymbolKind::TYPE_PARAMETER, "Parameter".to_string()),
+                (SymbolKind::PROPERTY, "Guard".to_string()),
+                (SymbolKind::PROPERTY, "With".to_string()),
+                (SymbolKind::PROPERTY, "Witness".to_string()),
+                (SymbolKind::PROPERTY, "Action".to_string()),
+            ]
+        );
+    }
 }
