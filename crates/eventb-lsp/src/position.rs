@@ -134,6 +134,15 @@ impl<'a> PositionIndex<'a> {
         Self { text, line_offsets }
     }
 
+    /// A source [`Span`] as an LSP [`Range`], both endpoints located through
+    /// the index rather than by scanning the document from the start.
+    pub(crate) fn range(&self, span: &Span) -> Range {
+        Range {
+            start: self.position(span.start),
+            end: self.position(span.end),
+        }
+    }
+
     pub(crate) fn position(&self, byte_offset: usize) -> Position {
         let mut offset = byte_offset.min(self.text.len());
         while !self.text.is_char_boundary(offset) {

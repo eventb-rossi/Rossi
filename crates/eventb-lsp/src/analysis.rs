@@ -3,13 +3,17 @@
 //! This module analyzes Event-B components and extracts symbols for navigation
 //! and other LSP features.
 
-use crate::identifier_utils::span_to_range;
 use crate::lsp_types::{DocumentSymbol, Range, SymbolKind};
+use crate::position::PositionIndex;
 use rossi::ast::Span;
 use rossi::{Component, Context, Event, EventStatus, Machine};
 
 /// Extract document symbols from a component
 pub fn extract_symbols(component: &Component, source: &str) -> Vec<DocumentSymbol> {
+    // One line index for the whole document: every symbol below resolves its
+    // span through it, and locating a byte offset by scanning from the start
+    // of the file each time would make a request quadratic in the source.
+    let source = &PositionIndex::new(source);
     match component {
         Component::Context(ctx) => extract_context_symbols(ctx, source),
         Component::Machine(machine) => extract_machine_symbols(machine, source),
@@ -17,7 +21,7 @@ pub fn extract_symbols(component: &Component, source: &str) -> Vec<DocumentSymbo
 }
 
 /// Extract symbols from a Context
-fn extract_context_symbols(ctx: &Context, source: &str) -> Vec<DocumentSymbol> {
+fn extract_context_symbols(ctx: &Context, source: &PositionIndex<'_>) -> Vec<DocumentSymbol> {
     let mut symbols = Vec::new();
 
     // Add SETS as enum symbols
@@ -26,7 +30,7 @@ fn extract_context_symbols(ctx: &Context, source: &str) -> Vec<DocumentSymbol> {
             set.name.clone(),
             SymbolKind::ENUM,
             "Set",
-            name_range_or(set.span.as_ref(), default_range(), source),
+            span_range(set.span, source),
         ));
     }
 
@@ -36,7 +40,7 @@ fn extract_context_symbols(ctx: &Context, source: &str) -> Vec<DocumentSymbol> {
             constant.name.clone(),
             SymbolKind::CONSTANT,
             "Constant",
-            name_range_or(constant.span.as_ref(), default_range(), source),
+            span_range(constant.span, source),
         ));
     }
 
@@ -46,19 +50,13 @@ fn extract_context_symbols(ctx: &Context, source: &str) -> Vec<DocumentSymbol> {
             .label
             .clone()
             .unwrap_or_else(|| "unlabeled".to_string());
-        let range = axiom
-            .span
-            .as_ref()
-            .map_or_else(default_range, |span| span_to_range(span, source));
+        let range = span_range(axiom.span, source);
         let detail = if axiom.is_theorem { "Theorem" } else { "Axiom" };
         symbols.push(create_symbol(label, SymbolKind::PROPERTY, detail, range));
     }
 
     // Wrap in a parent symbol for the context
-    let range = ctx
-        .span
-        .as_ref()
-        .map_or_else(default_range, |span| span_to_range(span, source));
+    let range = span_range(ctx.span, source);
     let name_range = name_range_or(ctx.name_span.as_ref(), range, source);
 
     let context_symbol = DocumentSymbol {
@@ -77,7 +75,7 @@ fn extract_context_symbols(ctx: &Context, source: &str) -> Vec<DocumentSymbol> {
 }
 
 /// Extract symbols from a Machine
-fn extract_machine_symbols(machine: &Machine, source: &str) -> Vec<DocumentSymbol> {
+fn extract_machine_symbols(machine: &Machine, source: &PositionIndex<'_>) -> Vec<DocumentSymbol> {
     let mut symbols = Vec::new();
 
     // Add VARIABLES as variable symbols
@@ -86,7 +84,7 @@ fn extract_machine_symbols(machine: &Machine, source: &str) -> Vec<DocumentSymbo
             var.name.clone(),
             SymbolKind::VARIABLE,
             "Variable",
-            name_range_or(var.span.as_ref(), default_range(), source),
+            span_range(var.span, source),
         ));
     }
 
@@ -96,10 +94,7 @@ fn extract_machine_symbols(machine: &Machine, source: &str) -> Vec<DocumentSymbo
             .label
             .clone()
             .unwrap_or_else(|| "unlabeled".to_string());
-        let range = invariant
-            .span
-            .as_ref()
-            .map_or_else(default_range, |span| span_to_range(span, source));
+        let range = span_range(invariant.span, source);
         let detail = if invariant.is_theorem {
             "Theorem"
         } else {
@@ -115,7 +110,7 @@ fn extract_machine_symbols(machine: &Machine, source: &str) -> Vec<DocumentSymbo
             "variant".to_string(),
             SymbolKind::NUMBER,
             "Variant",
-            name_range_or(variant.span.as_ref(), default_range(), source),
+            span_range(variant.span, source),
         ));
     }
 
@@ -129,19 +124,13 @@ fn extract_machine_symbols(machine: &Machine, source: &str) -> Vec<DocumentSymbo
                 .label
                 .clone()
                 .unwrap_or_else(|| "unlabeled".to_string());
-            let range = action
-                .span
-                .as_ref()
-                .map_or_else(default_range, |span| span_to_range(span, source));
+            let range = span_range(action.span, source);
             init_children.push(create_symbol(label, SymbolKind::PROPERTY, "Action", range));
         }
 
         // The whole event spans the outline row; the INITIALISATION name token
         // is its selection range, mirroring a regular event.
-        let range = init
-            .span
-            .as_ref()
-            .map_or_else(default_range, |span| span_to_range(span, source));
+        let range = span_range(init.span, source);
         let selection_range = name_range_or(init.name_span.as_ref(), range, source);
 
         let init_symbol = DocumentSymbol {
@@ -168,10 +157,7 @@ fn extract_machine_symbols(machine: &Machine, source: &str) -> Vec<DocumentSymbo
     }
 
     // Wrap in a parent symbol for the machine
-    let range = machine
-        .span
-        .as_ref()
-        .map_or_else(default_range, |span| span_to_range(span, source));
+    let range = span_range(machine.span, source);
     let name_range = name_range_or(machine.name_span.as_ref(), range, source);
 
     let machine_symbol = DocumentSymbol {
@@ -190,7 +176,7 @@ fn extract_machine_symbols(machine: &Machine, source: &str) -> Vec<DocumentSymbo
 }
 
 /// Extract symbol from an Event
-fn extract_event_symbol(event: &Event, source: &str) -> DocumentSymbol {
+fn extract_event_symbol(event: &Event, source: &PositionIndex<'_>) -> DocumentSymbol {
     let mut children = Vec::new();
 
     // Add parameters
@@ -199,7 +185,7 @@ fn extract_event_symbol(event: &Event, source: &str) -> DocumentSymbol {
             param.name.clone(),
             SymbolKind::TYPE_PARAMETER,
             "Parameter",
-            name_range_or(param.span.as_ref(), default_range(), source),
+            span_range(param.span, source),
         ));
     }
 
@@ -209,10 +195,7 @@ fn extract_event_symbol(event: &Event, source: &str) -> DocumentSymbol {
             .label
             .clone()
             .unwrap_or_else(|| "unlabeled".to_string());
-        let range = guard
-            .span
-            .as_ref()
-            .map_or_else(default_range, |span| span_to_range(span, source));
+        let range = span_range(guard.span, source);
         children.push(create_symbol(label, SymbolKind::PROPERTY, "Guard", range));
     }
 
@@ -223,7 +206,7 @@ fn extract_event_symbol(event: &Event, source: &str) -> DocumentSymbol {
             label,
             SymbolKind::PROPERTY,
             "With",
-            name_range_or(lp.span.as_ref(), default_range(), source),
+            span_range(lp.span, source),
         ));
     }
 
@@ -234,7 +217,7 @@ fn extract_event_symbol(event: &Event, source: &str) -> DocumentSymbol {
             label,
             SymbolKind::PROPERTY,
             "Witness",
-            name_range_or(lp.span.as_ref(), default_range(), source),
+            span_range(lp.span, source),
         ));
     }
 
@@ -244,10 +227,7 @@ fn extract_event_symbol(event: &Event, source: &str) -> DocumentSymbol {
             .label
             .clone()
             .unwrap_or_else(|| "unlabeled".to_string());
-        let range = action
-            .span
-            .as_ref()
-            .map_or_else(default_range, |span| span_to_range(span, source));
+        let range = span_range(action.span, source);
         children.push(create_symbol(label, SymbolKind::PROPERTY, "Action", range));
     }
 
@@ -259,10 +239,7 @@ fn extract_event_symbol(event: &Event, source: &str) -> DocumentSymbol {
         None => "Event".to_string(),
     };
 
-    let range = event
-        .span
-        .as_ref()
-        .map_or_else(default_range, |span| span_to_range(span, source));
+    let range = span_range(event.span, source);
     let name_range = name_range_or(event.name_span.as_ref(), range, source);
 
     DocumentSymbol {
@@ -298,8 +275,13 @@ fn create_symbol(name: String, kind: SymbolKind, detail: &str, range: Range) -> 
 }
 
 /// `name_span` as a range, or `fallback` when absent.
-fn name_range_or(name_span: Option<&Span>, fallback: Range, source: &str) -> Range {
-    name_span.map_or(fallback, |s| span_to_range(s, source))
+fn name_range_or(name_span: Option<&Span>, fallback: Range, source: &PositionIndex<'_>) -> Range {
+    name_span.map_or(fallback, |s| source.range(s))
+}
+
+/// A declared element's own range, or the span-less default.
+fn span_range(span: Option<Span>, source: &PositionIndex<'_>) -> Range {
+    span.map_or_else(default_range, |s| source.range(&s))
 }
 
 /// Create a default range (0,0)-(0,0)
@@ -314,6 +296,7 @@ pub(crate) fn default_range() -> Range {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::lsp_types::Position;
     use rossi::{LabeledPredicate, parse};
 
     #[test]
@@ -336,7 +319,7 @@ mod tests {
         }];
 
         let source = "";
-        let symbols = extract_context_symbols(&ctx, source);
+        let symbols = extract_context_symbols(&ctx, &PositionIndex::new(source));
 
         assert_eq!(symbols.len(), 1); // One top-level context symbol
         let ctx_symbol = &symbols[0];
@@ -379,7 +362,7 @@ mod tests {
         }];
 
         let source = "";
-        let symbols = extract_machine_symbols(&machine, source);
+        let symbols = extract_machine_symbols(&machine, &PositionIndex::new(source));
 
         assert_eq!(symbols.len(), 1); // One top-level machine symbol
         let machine_symbol = &symbols[0];
@@ -474,8 +457,6 @@ mod tests {
 
     #[test]
     fn initialisation_document_symbol_selects_the_name() {
-        use crate::lsp_types::Position;
-
         // The INITIALISATION outline entry's selection range is the name token,
         // not the (0, 0) default it used to fall back to.
         let source = "MACHINE m\nVARIABLES\n    v\nEVENTS\n    EVENT INITIALISATION\n    THEN\n        @act1 v := 0\n    END\nEND";
@@ -510,7 +491,7 @@ mod tests {
         event.span = Some(rossi::ast::Span { start: 40, end: 55 });
         event.name_span = None;
 
-        let sym = extract_event_symbol(&event, source);
+        let sym = extract_event_symbol(&event, &PositionIndex::new(source));
 
         // selectionRange.start must be ≥ range.start (line then column).
         let r = sym.range;
@@ -534,13 +515,14 @@ mod tests {
         anticipated_event.status = Some(EventStatus::Anticipated);
 
         let source = "";
-        let sym1 = extract_event_symbol(&ordinary_event, source);
+        let index = PositionIndex::new(source);
+        let sym1 = extract_event_symbol(&ordinary_event, &index);
         assert_eq!(sym1.detail, Some("Event (ordinary)".to_string()));
 
-        let sym2 = extract_event_symbol(&convergent_event, source);
+        let sym2 = extract_event_symbol(&convergent_event, &index);
         assert_eq!(sym2.detail, Some("Event (convergent)".to_string()));
 
-        let sym3 = extract_event_symbol(&anticipated_event, source);
+        let sym3 = extract_event_symbol(&anticipated_event, &index);
         assert_eq!(sym3.detail, Some("Event (anticipated)".to_string()));
     }
 
@@ -551,19 +533,17 @@ mod tests {
         // the table in the crate README must keep matching them. The three
         // status-qualified event forms are pinned by
         // `test_event_status_in_detail`; everything else is pinned here.
-        fn flatten(symbols: &[DocumentSymbol], out: &mut Vec<(SymbolKind, String)>) {
-            for symbol in symbols {
-                out.push((symbol.kind, symbol.detail.clone().expect("detail set")));
-                flatten(symbol.children.as_deref().unwrap_or(&[]), out);
-            }
+        fn flatten(symbols: &[DocumentSymbol]) -> Vec<(SymbolKind, String)> {
+            symbols
+                .iter()
+                .flat_map(|symbol| {
+                    std::iter::once((symbol.kind, symbol.detail.clone().expect("detail set")))
+                        .chain(flatten(symbol.children.as_deref().unwrap_or(&[])))
+                })
+                .collect()
         }
 
-        let vocabulary = |source: &str| {
-            let component = parse(source).unwrap();
-            let mut out = Vec::new();
-            flatten(&extract_symbols(&component, source), &mut out);
-            out
-        };
+        let vocabulary = |source: &str| flatten(&extract_symbols(&parse(source).unwrap(), source));
 
         let context_source = r#"
         CONTEXT c
@@ -639,36 +619,11 @@ mod tests {
     }
 
     #[test]
-    fn the_variant_row_points_at_the_variant() {
-        use crate::lsp_types::Position;
-
-        // The variant row reported the (0, 0) default until `ast::Variant`
-        // grew a span; it was the last outline row that could not be
-        // navigated to.
-        let source =
-            "MACHINE m\nVARIABLES\n    v\nINVARIANTS\n    @inv1 v ∈ ℕ\nVARIANT\n    @vrn1 v\nEND";
-        let component = parse(source).unwrap();
-        let symbols = extract_symbols(&component, source);
-        let variant = symbols[0]
-            .children
-            .as_ref()
-            .unwrap()
-            .iter()
-            .find(|s| s.name == "variant")
-            .expect("variant symbol present");
-
-        assert_eq!(variant.range.start, Position::new(6, 4));
-        assert_ne!(variant.range, default_range());
-    }
-
-    #[test]
     fn declaration_symbols_point_at_their_declaration() {
-        use crate::lsp_types::Position;
-
-        // Sets, constants, variables and WITH / WITNESS predicates used to
-        // report the (0, 0) default even though the parser records a span for
-        // each, so jumping to one from the outline landed at the top of the
-        // file instead of on the declaration.
+        // Sets, constants, variables, the variant row and WITH / WITNESS
+        // predicates used to report the (0, 0) default even though the parser
+        // records a span for each, so jumping to one from the outline landed
+        // at the top of the file instead of on the declaration.
         let context_source =
             "CONTEXT c\nSETS\n    S\nCONSTANTS\n    k\nAXIOMS\n    @axm1 k ∈ S\nEND";
         let component = parse(context_source).unwrap();
@@ -687,6 +642,19 @@ mod tests {
 
         assert_eq!(children[0].name, "v");
         assert_eq!(children[0].range.start, Position::new(2, 4));
+
+        let variant_source =
+            "MACHINE m\nVARIABLES\n    v\nINVARIANTS\n    @inv1 v ∈ ℕ\nVARIANT\n    @vrn1 v\nEND";
+        let component = parse(variant_source).unwrap();
+        let symbols = extract_symbols(&component, variant_source);
+        let variant = symbols[0]
+            .children
+            .as_ref()
+            .unwrap()
+            .iter()
+            .find(|s| s.name == "variant")
+            .expect("variant symbol present");
+        assert_eq!(variant.range.start, Position::new(6, 4));
 
         let event = children.iter().find(|s| s.name == "step").unwrap();
         let event_children = event.children.as_ref().unwrap();
